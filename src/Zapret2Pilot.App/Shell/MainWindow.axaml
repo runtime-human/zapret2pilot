@@ -1,0 +1,233 @@
+<Window
+    x:Class="Zapret2Pilot.App.Shell.MainWindow"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Zapret2Pilot.App.Shell"
+    x:DataType="vm:MainWindowViewModel"
+    x:CompileBindings="True"
+    Title="{Binding WindowTitle}"
+    Width="1180"
+    Height="760"
+    MinWidth="980"
+    MinHeight="640"
+    Background="{StaticResource Z2P.Brush.Background}">
+
+  <Grid ColumnDefinitions="260,*">
+
+    <Border Grid.Column="0" Classes="Sidebar">
+      <DockPanel Margin="20">
+
+        <StackPanel DockPanel.Dock="Top" Spacing="4">
+          <TextBlock
+              Text="{Binding AppName}"
+              FontSize="22"
+              FontWeight="SemiBold"
+              Foreground="{StaticResource Z2P.Brush.TextPrimary}" />
+
+          <TextBlock
+              Text="{Binding AppVersion}"
+              Classes="Muted" />
+        </StackPanel>
+
+        <StackPanel DockPanel.Dock="Bottom" Spacing="8">
+          <Border
+              Height="1"
+              Background="{StaticResource Z2P.Brush.Border}"
+              Margin="0,0,0,8" />
+
+          <TextBlock Text="Документация" Classes="Body" />
+          <TextBlock Text="О программе" Classes="Body" />
+        </StackPanel>
+
+        <ItemsControl
+            Margin="0,72,0,0"
+            ItemsSource="{Binding SidebarItems}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:SidebarItemViewModel">
+              <Border Classes="NavItem">
+                <Grid ColumnDefinitions="24,*">
+                  <TextBlock
+                      Grid.Column="0"
+                      Text="{Binding Marker}"
+                      Foreground="{StaticResource Z2P.Brush.Primary}" />
+
+                  <TextBlock
+                      Grid.Column="1"
+                      Text="{Binding Title}"
+                      FontSize="14"
+                      Foreground="{StaticResource Z2P.Brush.TextPrimary}" />
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+      </DockPanel>
+    </Border>
+
+    <Grid Grid.Column="1" RowDefinitions="72,*">
+
+      <Grid
+          Grid.Row="0"
+          ColumnDefinitions="*,Auto"
+          Margin="28,0">
+        <TextBlock
+            VerticalAlignment="Center"
+            Text="{Binding PageTitle}"
+            Classes="PageTitle" />
+
+        <StackPanel
+            Grid.Column="1"
+            Orientation="Horizontal"
+            Spacing="16"
+            VerticalAlignment="Center">
+          <TextBlock Text="RU" Classes="Body" />
+          <TextBlock Text="⚙" Classes="Body" />
+        </StackPanel>
+      </Grid>
+
+      <ScrollViewer Grid.Row="1">
+        <StackPanel Margin="28,0,28,28" Spacing="18">
+
+          <Border Classes="Card">
+            <Grid ColumnDefinitions="Auto,*,260" ColumnSpacing="20">
+
+              <Border
+                  Width="64"
+                  Height="64"
+                  CornerRadius="32"
+                  Background="#DCFCE7"
+                  VerticalAlignment="Top">
+                <TextBlock
+                    Text="✓"
+                    FontSize="38"
+                    FontWeight="SemiBold"
+                    Foreground="{StaticResource Z2P.Brush.Success}"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center" />
+              </Border>
+
+              <StackPanel Grid.Column="1" Spacing="10">
+                <TextBlock
+                    Text="{Binding StatusTitle}"
+                    FontSize="24"
+                    FontWeight="SemiBold"
+                    Foreground="{StaticResource Z2P.Brush.TextPrimary}" />
+
+                <TextBlock
+                    Text="{Binding StatusSubtitle}"
+                    Classes="Body" />
+
+                <TextBlock
+                    Text="{Binding StatusDescription}"
+                    Classes="Body" />
+
+                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
+                  <Button Content="Остановить" Command="{Binding StopCommand}" />
+                  <Button Content="Проверить сейчас" Command="{Binding CheckNowCommand}" />
+                  <Button Content="Диагностика" Command="{Binding OpenDiagnosticsCommand}" />
+                </StackPanel>
+
+                <TextBlock
+                    Text="{Binding LastAction}"
+                    Classes="Muted"
+                    Margin="0,6,0,0" />
+              </StackPanel>
+
+              <Grid
+                  Grid.Column="2"
+                  RowDefinitions="Auto,Auto,Auto,Auto"
+                  ColumnDefinitions="*,Auto"
+                  RowSpacing="10"
+                  VerticalAlignment="Center">
+
+                <TextBlock Grid.Row="0" Text="Время работы" Classes="Muted" />
+                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding UptimeText}" Classes="Body" />
+
+                <TextBlock Grid.Row="1" Text="Режим работы" Classes="Muted" />
+                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding WorkMode}" Classes="Body" />
+
+                <TextBlock Grid.Row="2" Text="Текущий профиль" Classes="Muted" />
+                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding CurrentProfile}" Classes="Body" />
+
+                <TextBlock Grid.Row="3" Text="Последняя проверка" Classes="Muted" />
+                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding LastCheckText}" Classes="Body" />
+              </Grid>
+
+            </Grid>
+          </Border>
+
+          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="18" RowSpacing="18">
+
+            <Border Grid.Row="0" Grid.Column="0" Classes="Card">
+              <StackPanel Spacing="12">
+                <TextBlock Text="Режим работы" Classes="CardTitle" />
+                <TextBlock Text="{Binding WorkMode}" FontSize="20" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding WorkModeDescription}" TextWrapping="Wrap" Classes="Body" />
+                <TextBlock Text="{Binding LastModeAction}" TextWrapping="Wrap" Classes="Muted" />
+                <TextBlock Text="Подробнее о режиме →" Classes="Body" />
+              </StackPanel>
+            </Border>
+
+            <Border Grid.Row="0" Grid.Column="1" Classes="Card">
+              <StackPanel Spacing="12">
+                <TextBlock Text="Текущий профиль обхода" Classes="CardTitle" />
+                <TextBlock Text="{Binding CurrentProfileBadge}" FontSize="20" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding CurrentProfileDescription}" TextWrapping="Wrap" Classes="Body" />
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <Button Content="Закрепить профиль" Command="{Binding PinProfileCommand}" />
+                  <Button Content="Подробнее →" Command="{Binding OpenProfileDetailsCommand}" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="0" Classes="Card">
+              <StackPanel Spacing="12">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="Проверка ключевых сервисов" Classes="CardTitle" />
+                  <Button Grid.Column="1" Content="Проверить" Command="{Binding CheckNowCommand}" />
+                </Grid>
+
+                <ItemsControl ItemsSource="{Binding KeyServices}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:DashboardServiceStatusViewModel">
+                      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="18" Margin="0,4">
+                        <TextBlock Grid.Column="0" Text="{Binding Name}" Classes="Body" />
+                        <TextBlock Grid.Column="1" Text="{Binding Status}" Classes="Body" />
+                        <TextBlock Grid.Column="2" Text="{Binding Latency}" Classes="Muted" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock Text="{Binding ServicesUpdatedText}" Classes="Muted" />
+              </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="1" Classes="Card">
+              <StackPanel Spacing="12">
+                <TextBlock Text="Последние события" Classes="CardTitle" />
+
+                <ItemsControl ItemsSource="{Binding RecentEvents}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:RecentEventViewModel">
+                      <Grid ColumnDefinitions="72,*,Auto" ColumnSpacing="12" Margin="0,4">
+                        <TextBlock Grid.Column="0" Text="{Binding Time}" Classes="Muted" />
+                        <TextBlock Grid.Column="1" Text="{Binding Message}" Classes="Body" />
+                        <TextBlock Grid.Column="2" Text="{Binding Severity}" Classes="Muted" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock Text="Перейти ко всем событиям →" Classes="Body" />
+              </StackPanel>
+            </Border>
+
+          </Grid>
+
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+  </Grid>
+</Window>
