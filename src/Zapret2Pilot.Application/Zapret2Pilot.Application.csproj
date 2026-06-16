@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Application</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Application</RootNamespace>
+    <Description>Application orchestration skeleton for Zapret2Pilot.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Zapret2Pilot.Core\Zapret2Pilot.Core.csproj" />
+  </ItemGroup>
+</Project>
