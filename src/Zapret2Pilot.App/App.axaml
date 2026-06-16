@@ -1,0 +1,11 @@
+<Application
+    x:Class="Zapret2Pilot.App.App"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedThemeVariant="Light">
+
+  <Application.Styles>
+    <FluentTheme />
+    <StyleInclude Source="avares://Zapret2Pilot.App/Shared/Theme/LightTheme.axaml" />
+  </Application.Styles>
+</Application>
