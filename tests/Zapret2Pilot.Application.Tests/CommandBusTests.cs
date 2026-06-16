@@ -17,7 +17,7 @@ public sealed class CommandBusTests
         serviceProvider.Register<ICommandHandler<PingCommand, PingResponse>>(
             new PingCommandHandler());
 
-        ICommandBus commandBus = new CommandBus(serviceProvider);
+        CommandBus commandBus = new(serviceProvider);
 
         Result<PingResponse> result = await commandBus.SendAsync(
             new PingCommand("test"),
@@ -30,7 +30,7 @@ public sealed class CommandBusTests
     [Fact]
     public static async Task SendAsyncReturnsFailureWhenHandlerIsMissing()
     {
-        ICommandBus commandBus = new CommandBus(new TestServiceProvider());
+        CommandBus commandBus = new(new TestServiceProvider());
 
         Result<PingResponse> result = await commandBus.SendAsync(
             new PingCommand("test"),
@@ -45,7 +45,7 @@ public sealed class CommandBusTests
     [Fact]
     public static async Task SendAsyncRejectsNullCommand()
     {
-        ICommandBus commandBus = new CommandBus(new TestServiceProvider());
+        CommandBus commandBus = new(new TestServiceProvider());
 
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
             commandBus.SendAsync<PingResponse>(
@@ -66,7 +66,7 @@ public sealed class CommandBusTests
         serviceProvider.Register<ICommandHandler<PingCommand, PingResponse>>(
             new FailingPingCommandHandler(error));
 
-        ICommandBus commandBus = new CommandBus(serviceProvider);
+        CommandBus commandBus = new(serviceProvider);
 
         Result<PingResponse> result = await commandBus.SendAsync(
             new PingCommand("test"),
