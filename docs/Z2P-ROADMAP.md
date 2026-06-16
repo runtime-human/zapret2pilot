@@ -17,6 +17,23 @@ Substeps:
 
 ### 0.0.1-a — Build foundation
 
+Status: Implemented.
+
+Implemented in:
+
+- solution file;
+- `src/` and `tests/` layout;
+- `Directory.Build.props`;
+- `Directory.Packages.props`;
+- `global.json`;
+- `VERSION = 0.0.1`;
+- `.gitignore`;
+- minimal root `README.md`;
+- `Zapret2Pilot.Core` skeleton;
+- `Zapret2Pilot.Application` skeleton;
+- `Zapret2Pilot.Core.Tests`;
+- `Zapret2Pilot.Application.Tests`.
+
 Scope:
 
 - solution file;
