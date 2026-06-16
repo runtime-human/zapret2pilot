@@ -1,8 +1,10 @@
 # Zapret2Pilot / Z2P — Decision Log
 
-This is a lightweight decision log. Larger decisions can later become ADR files.
+This is a lightweight decision log. Full ADR files can be created later under `docs/adr/`.
 
-## 2026-06 — Product identity
+## DEC-0001 — Product identity
+
+Date: 2026-06
 
 Decision:
 
@@ -10,132 +12,220 @@ Decision:
 - Short name: Z2P.
 - Main executable: z2p.exe.
 
-Reason:
+Rationale:
 
-- Full product name is readable in UI/docs.
-- Short executable name is convenient for files, CLI and internal tooling.
+- Full name is clear for UI/docs.
+- Short name is practical for executables, commands, files and logs.
 
-## 2026-06 — No Windows Service in initial architecture
+## DEC-0002 — No Windows Service in MVP
 
-Decision:
-
-- Initial architecture uses elevated single-process desktop app.
-- No Windows Service.
-
-Reason:
-
-- Simpler installation and development.
-- Lower IPC/service complexity.
-
-Risk:
-
-- UAC appears on full app start.
-- Strong in-process runtime containment is mandatory.
-
-Mitigation:
-
-- Job Objects;
-- Global Mutex ownership;
-- lock metadata recovery;
-- tray behavior;
-- crash handling.
-
-## 2026-06 — Generic Host inside app
+Date: 2026-06
 
 Decision:
 
-- Use Microsoft.Extensions.Hosting inside Avalonia app.
+- Do not use Windows Service in the initial architecture.
+- Use elevated single-process desktop app.
 
-Reason:
+Rationale:
 
-- structured lifetime;
-- DI;
-- configuration;
-- logging;
-- hosted services;
-- graceful startup/shutdown.
+- Simpler installation and implementation.
+- No service lifecycle/IPC complexity in MVP.
 
-Not a Windows Service.
+Consequence:
 
-## 2026-06 — ReactiveUI for Presentation Layer
+- UAC appears on each full app launch.
+- Runtime Kernel must compensate with process safety, Job Objects, mutex ownership and recovery.
 
-Decision:
-
-- Use ReactiveUI + System.Reactive for ViewModels.
-- Do not mix CommunityToolkit.Mvvm ViewModels.
-
-Reason:
-
-- Z2P is event-heavy;
-- runtime and UI state are naturally observable;
-- scheduler-aware UI updates are critical.
-
-## 2026-06 — RuntimeProcessHost uses Job Objects
+## DEC-0003 — Elevated single-process app
 
 Decision:
 
-- winws2 process must be assigned to Windows Job Object with kill-on-close.
+- `z2p.exe` runs elevated.
+- While app is open or in tray, runtime operations do not require repeated UAC.
 
-Reason:
+Consequence:
 
-- prevents orphan winws2 when z2p.exe crashes.
+- Elevated UI has higher security risk.
+- Must use command allowlist, SafePathResolver, AtomicFileWriter, trust levels and no arbitrary execution.
 
-## 2026-06 — Runtime ownership model
-
-Decision:
-
-- Global Mutex for ownership.
-- Lock file for metadata only.
-
-Reason:
-
-- avoids TOCTOU lock-file ownership bug;
-- keeps recovery data available.
-
-## 2026-06 — No network router inside Z2P
+## DEC-0004 — Generic Host inside app
 
 Decision:
 
-- Z2P does not implement traffic router, URL router, packet router or VPN-like route engine.
+- Use `Microsoft.Extensions.Hosting` inside Avalonia app.
+- This is not a Windows Service.
 
-Reason:
+Rationale:
 
-- zapret2/winws2 owns network packet/runtime behavior;
-- Z2P manages profiles, runtime lifecycle and diagnostics.
+- Structured lifecycle.
+- DI/config/logging.
+- Clean `IHostedService` startup/shutdown.
 
-## 2026-06 — Typed profiles, not raw args
-
-Decision:
-
-- ProfileDocument -> ProfileDefinition -> CompiledZapretPlan -> winws2 args.
-
-Reason:
-
-- validation;
-- testability;
-- rollback;
-- UI editor;
-- safer elevated app behavior.
-
-## 2026-06 — SQLite WAL
+## DEC-0005 — ReactiveUI for Presentation Layer
 
 Decision:
 
-- SQLite uses WAL, busy_timeout, synchronous=NORMAL, foreign_keys=ON.
+- Use ReactiveUI + System.Reactive for UI ViewModels.
+- Do not mix with CommunityToolkit.Mvvm ViewModels.
 
-Reason:
+Rationale:
 
-- avoid SQLITE_BUSY and UI freezes under background writes.
+- Z2P is event-heavy.
+- Runtime/health/log/diagnostic streams map naturally to observables.
+- Scheduler-aware UI updates are important for Avalonia.
 
-## 2026-06 — Auto Doctor bounded
+## DEC-0006 — Runtime Kernel inside z2p.exe
+
+Decision:
+
+- Runtime lifecycle is centralized in Runtime Kernel.
+
+Includes:
+
+- RuntimeSupervisor;
+- RuntimeProcessHost;
+- RuntimeTransactionManager;
+- RuntimeKernelStateStore;
+- RuntimeOwnership primitives;
+- CrashLoopGuard.
+
+## DEC-0007 — Job Objects are mandatory
+
+Decision:
+
+- RuntimeProcessHost must use Windows Job Objects with kill-on-close behavior.
+
+Rationale:
+
+- Prevent orphan `winws2.exe` after `z2p.exe` crash.
+
+## DEC-0008 — Runtime ownership = Mutex + metadata lock
+
+Decision:
+
+- Atomic ownership uses Global Mutex.
+- Lock file is metadata only.
+
+Mutex:
+
+```text
+Global\Z2P_RUNTIME_OWNER_v1
+```
+
+Lock:
+
+```text
+C:\ProgramData\Zapret2Pilot\runtime\z2p-runtime.lock
+```
+
+## DEC-0009 — No network router inside Z2P
+
+Decision:
+
+- Z2P uses NavigationRouter, CommandBus, EventRouter and ProfileSelector.
+- Z2P does not implement TrafficRouter, UrlRouter, PacketRouter, ProxyRouter or VPN-like router.
+
+Rationale:
+
+- zapret2/winws2 owns packet/runtime behavior.
+- Z2P owns management, profiles, diagnostics and UI.
+
+## DEC-0010 — Raw winws2 args are generated artifacts
+
+Decision:
+
+```text
+ProfileDocument → ProfileDefinition → CompiledZapretPlan → winws2 args
+```
+
+Raw args are not source of truth.
+
+## DEC-0011 — Deterministic RuntimePlanCache
+
+Decision:
+
+- RuntimePlanCacheKey is content-addressed.
+- Cache by ProfileId only is forbidden.
+
+Inputs:
+
+- profile document hash;
+- strategy pack hash;
+- hostlist fingerprints;
+- runtime manifest hash;
+- compiler version;
+- compiler options hash.
+
+## DEC-0012 — SQLite WAL
+
+Decision:
+
+SQLite initializer must apply:
+
+```sql
+PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
+PRAGMA synchronous=NORMAL;
+PRAGMA foreign_keys=ON;
+```
+
+## DEC-0013 — Atomic generated files
+
+Decision:
+
+- All generated runtime files use AtomicFileWriter.
+- Generated files are placed under ProgramData, not Program Files.
+
+## DEC-0014 — SafePathResolver
+
+Decision:
+
+- All imported/user paths pass through SafePathResolver.
+- Paths must remain inside allowed roots.
+
+## DEC-0015 — Auto Doctor is bounded
 
 Decision:
 
 - Auto Doctor has Quick and Full modes.
 - It is not a full DPI checker.
+- It does not inspect every URL.
+- It does not do MITM.
 
-Reason:
+## DEC-0016 — Privacy-first diagnostics
 
-- avoid unbounded diagnostics;
-- reduce false positives;
-- avoid privacy risks.
+Decision:
+
+- No cloud telemetry.
+- No browsing history.
+- No URL query params.
+- Diagnostics export is redacted by default.
+
+## DEC-0017 — Fake runtime test-only
+
+Decision:
+
+- Fake runtime support must not live in production runtime project.
+- Use `Zapret2Pilot.Testing` or test tool project.
+
+## DEC-0018 — Scheduled Task autostart is P1
+
+Decision:
+
+- MVP does not promise UAC-free autostart.
+- Future autostart may use Windows Task Scheduler after explicit user consent.
+
+## DEC-0019 — Main UI title/status hierarchy
+
+Decision:
+
+- No duplicated runtime statuses in sidebar/topbar/dashboard.
+- Main runtime status appears in dashboard status card.
+- Tray icon separately shows runtime state.
+
+## DEC-0020 — First milestone excludes real winws2
+
+Decision:
+
+- First implementation milestone is skeleton only.
+- No real runtime launch before Runtime Kernel safety primitives exist.
