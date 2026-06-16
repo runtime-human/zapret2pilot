@@ -229,3 +229,20 @@ Decision:
 
 - First implementation milestone is skeleton only.
 - No real runtime launch before Runtime Kernel safety primitives exist.
+
+## DEC-0021 — Initial solution foundation
+
+Date: 2026-06
+
+Decision:
+
+- Initialize repository code with a classic `.sln` solution file.
+- Use `net10.0` for initial Core/Application projects.
+- Use Central Package Management via `Directory.Packages.props`.
+- Use xUnit v3 for initial unit tests.
+- Keep `0.0.1-a` build-only: no UI, runtime, storage or probing scope.
+
+Rationale:
+
+- `.sln` is stable and easy to review.
+- `0.0.1-a` must establish restore/build/test foundation without introducing Avalonia, runtime process handling, SQLite or Auto Doctor risk.
