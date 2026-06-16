@@ -12,7 +12,7 @@ public sealed class MainWindowViewModel : ReactiveObject
     {
         SidebarItems =
         [
-            new SidebarItemViewModel("Главная", isSelected: true),
+            new SidebarItemViewModel("Главная", IsSelected: true),
             new SidebarItemViewModel("Профили"),
             new SidebarItemViewModel("Правила"),
             new SidebarItemViewModel("Auto Doctor"),
@@ -64,40 +64,40 @@ public sealed class MainWindowViewModel : ReactiveObject
         });
     }
 
-    public string AppName => "Zapret2Pilot";
+    public string AppName { get; } = "Zapret2Pilot";
 
-    public string AppVersion => "v0.0.1";
+    public string AppVersion { get; } = "v0.0.1";
 
-    public string WindowTitle => "Zapret2Pilot";
+    public string WindowTitle { get; } = "Zapret2Pilot";
 
-    public string PageTitle => "Главная";
+    public string PageTitle { get; } = "Главная";
 
-    public string StatusTitle => "Обход активен";
+    public string StatusTitle { get; } = "Обход активен";
 
-    public string StatusSubtitle => "Текущий профиль работает стабильно.";
+    public string StatusSubtitle { get; } = "Текущий профиль работает стабильно.";
 
-    public string StatusDescription => "Ключевые проверки пройдены.";
+    public string StatusDescription { get; } = "Ключевые проверки пройдены.";
 
-    public string UptimeText => "2 ч 47 мин";
+    public string UptimeText { get; } = "2 ч 47 мин";
 
-    public string WorkMode => "Автопилот";
+    public string WorkMode { get; } = "Автопилот";
 
-    public string CurrentProfile => "Сбалансированный";
+    public string CurrentProfile { get; } = "Сбалансированный";
 
-    public string CurrentProfileBadge => "Сбалансированный    Рекомендуется";
+    public string CurrentProfileBadge { get; } = "Сбалансированный    Рекомендуется";
 
-    public string LastCheckText => "12:43";
+    public string LastCheckText { get; } = "12:43";
 
-    public string WorkModeDescription =>
+    public string WorkModeDescription { get; } =
         "Z2P автоматически выбирает профиль, проверяет сеть и использует резервный сценарий при проблемах.";
 
-    public string LastModeAction =>
+    public string LastModeAction { get; } =
         "Последнее действие: проверил сервисы — профиль не менялся.";
 
-    public string CurrentProfileDescription =>
+    public string CurrentProfileDescription { get; } =
         "Оптимальный баланс скорости, стабильности и совместимости для большинства сетей. Выбран автоматически на основе диагностики сети и доступности сервисов.";
 
-    public string ServicesUpdatedText => "Обновлено: 12:43";
+    public string ServicesUpdatedText { get; } = "Обновлено: 12:43";
 
     public IReadOnlyList<SidebarItemViewModel> SidebarItems { get; }
 
