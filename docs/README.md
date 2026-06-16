@@ -10,7 +10,7 @@ This directory is the working source of truth for Zapret2Pilot architecture and 
 - `Z2P-ROADMAP.md` — versioned implementation plan.
 - `Z2P-UI-DESIGN.md` — UI and UX canon.
 - `Z2P-SOURCES-OFFICIAL.md` — official documentation sources for architecture decisions.
-- `Z2P-CODEX-HANDOFF.md` — reusable instructions for Codex implementation tasks.
+- `Z2P-CHATGPT-HANDOFF.md` — implementation handoff for coding through ChatGPT.
 - `Z2P-DECISION-LOG.md` — lightweight decision log.
 
 ## Current direction
@@ -27,3 +27,9 @@ Zapret2Pilot is a Windows-first desktop control plane for zapret2/winws2:
 - Privacy-first diagnostics and logs.
 
 All implementation tasks must keep these documents consistent.
+
+## Working model
+
+Code is implemented through ChatGPT in small steps.
+
+Do not use Codex as the implementation executor for this project.
