@@ -40,7 +40,7 @@ internal static class Program
             .Configure<App>()
             .UsePlatformDetect()
             .WithInterFont()
-            .UseReactiveUI()
+            .UseReactiveUI(static _ => { })
             .LogToTrace();
     }
 }
