@@ -259,23 +259,29 @@ Decision:
 - Build and start `Microsoft.Extensions.Hosting` inside the Avalonia app process.
 - Keep `0.0.1-b` UI-only with mock/design-time dashboard data.
 
-Package baseline:
+## DEC-0023 — Core primitives baseline
 
-- Avalonia: `12.0.4`.
-- ReactiveUI.Avalonia: `12.0.3`.
-- ReactiveUI: `23.2.28`.
-- System.Reactive: `6.1.0`.
-- Microsoft.Extensions.Hosting: `10.0.9`.
+Date: 2026-06
+
+Decision:
+
+- Add Core result primitives: `Result`, `Result<T>`, `Unit`, `ErrorInfo`, `ErrorSeverity` and `ErrorCategory`.
+- Keep generic result factories on non-generic `Result`.
+- Do not expose public static factory methods on `Result<T>`.
+- Use `Unit.Instance => default`.
+- Implement typed IDs as standalone `sealed record class` types.
+- Do not introduce a `StringId` base class.
+- Do not manually declare `operator ==` or `operator !=` on typed IDs.
 
 Rationale:
 
-- `ReactiveUI.Avalonia` is the maintained package line for ReactiveUI + Avalonia integration.
-- `ReactiveUI.Avalonia 12.0.3` depends on `Avalonia >= 12.0.4`, so the Avalonia packages are pinned to `12.0.4`.
-- The shell must prove Avalonia, ReactiveUI and Generic Host integration without runtime/process/storage risk.
+- Core primitives must remain dependency-free and analyzer-safe under `TreatWarningsAsErrors=true`.
+- Non-generic `Result` factories avoid CA1000 static members on generic types.
+- Standalone typed ID records avoid invalid `default(struct)` states and keep public APIs explicit.
+- Record-synthesized equality is accepted as language behavior; manual reference-type equality operators are not used.
 
-Consequences:
+Scope:
 
-- `0.0.1-b` does not implement NavigationRouter yet.
-- `0.0.1-b` does not implement UI scheduler abstraction yet.
-- `0.0.1-b` does not start or stop `winws2`.
-- Runtime, storage, probing and profile compiler remain future roadmap steps.
+- `Zapret2Pilot.Core` only;
+- unit tests under `Zapret2Pilot.Core.Tests`;
+- no UI, Application, runtime, SQLite, Windows Service, WinDivert or real `winws2` integration.
