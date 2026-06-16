@@ -246,3 +246,36 @@ Rationale:
 
 - `.sln` is stable and easy to review.
 - `0.0.1-a` must establish restore/build/test foundation without introducing Avalonia, runtime process handling, SQLite or Auto Doctor risk.
+
+## DEC-0022 — Avalonia + ReactiveUI shell baseline
+
+Date: 2026-06
+
+Decision:
+
+- Add `Zapret2Pilot.App` as the Avalonia desktop shell project.
+- Use `ReactiveUI.Avalonia`, not deprecated `Avalonia.ReactiveUI`.
+- Use ReactiveUI ViewModels and System.Reactive commands for the shell baseline.
+- Build and start `Microsoft.Extensions.Hosting` inside the Avalonia app process.
+- Keep `0.0.1-b` UI-only with mock/design-time dashboard data.
+
+Package baseline:
+
+- Avalonia: `12.0.4`.
+- ReactiveUI.Avalonia: `12.0.3`.
+- ReactiveUI: `23.2.28`.
+- System.Reactive: `6.1.0`.
+- Microsoft.Extensions.Hosting: `10.0.9`.
+
+Rationale:
+
+- `ReactiveUI.Avalonia` is the maintained package line for ReactiveUI + Avalonia integration.
+- `ReactiveUI.Avalonia 12.0.3` depends on `Avalonia >= 12.0.4`, so the Avalonia packages are pinned to `12.0.4`.
+- The shell must prove Avalonia, ReactiveUI and Generic Host integration without runtime/process/storage risk.
+
+Consequences:
+
+- `0.0.1-b` does not implement NavigationRouter yet.
+- `0.0.1-b` does not implement UI scheduler abstraction yet.
+- `0.0.1-b` does not start or stop `winws2`.
+- Runtime, storage, probing and profile compiler remain future roadmap steps.
