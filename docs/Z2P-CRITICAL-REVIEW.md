@@ -1,60 +1,128 @@
 # Zapret2Pilot / Z2P — Critical Review Register
 
-This document tracks critical review findings accepted into the architecture.
+This document records accepted critical review findings. It is not a praise document. It exists to prevent architecture debt before implementation.
 
-## P0 — must be fixed before Runtime Kernel implementation
+## Status legend
 
-### 1. Job Objects are mandatory
+- **Accepted / P0** — must be fixed before or during foundational implementation.
+- **Accepted / P1** — must be fixed before internal MVP.
+- **Accepted / P2** — later improvement.
+- **Rejected** — intentionally not adopted.
 
-Problem: lock files and exit coordinators do not prevent `winws2.exe` from surviving a crash of `z2p.exe`.
+## 1. Job Objects are mandatory
 
-Decision: RuntimeProcessHost must create a Windows Job Object, set kill-on-close behavior and assign winws2 to it.
+Status: **Accepted / P0**
 
-Required components:
+Problem:
 
-- WindowsJobObjectFactory;
-- RuntimeJobHandle;
-- RuntimeProcessHost integration;
-- Windows-only integration test.
-
-### 2. Lock file is not ownership
-
-Problem: PID check + lock file has TOCTOU risk and stale metadata risk.
+- RuntimeLockManager and RuntimeExitCoordinator do not prevent orphan `winws2.exe` after `z2p.exe` crash.
+- Lock file is recovery metadata, not process containment.
 
 Decision:
 
-```text
-Global Mutex = ownership
-Lock file    = metadata
-```
+- RuntimeProcessHost must create Windows Job Object.
+- RuntimeProcessHost must set kill-on-close behavior.
+- RuntimeProcessHost must assign `winws2.exe` to the Job Object.
 
-Mutex name:
+Files/classes:
+
+- `Zapret2Pilot.Runtime/RuntimeProcessHost.cs`
+- `Zapret2Pilot.Platform.Windows/Jobs/WindowsJobObjectFactory.cs`
+- `Zapret2Pilot.Platform.Windows/Jobs/WindowsJobHandle.cs`
+
+Tests:
+
+- Windows-only integration test with fake runtime.
+- Verify child runtime terminates when job handle is closed.
+
+## 2. Lock file TOCTOU risk
+
+Status: **Accepted / P0**
+
+Problem:
+
+- `check PID → write lock file` is not atomic.
+- Another process may perform the same sequence.
+
+Decision:
+
+- Use Global Mutex for atomic runtime ownership.
+- Use lock file only for recovery metadata.
+
+Required mutex:
 
 ```text
 Global\Z2P_RUNTIME_OWNER_v1
 ```
 
-Process ownership detection must verify PID, executable path, command line hash, plan hash and creation time.
+Required lock file:
 
-### 3. Generic Host inside Avalonia app
+```text
+C:\ProgramData\Zapret2Pilot\runtime\z2p-runtime.lock
+```
 
-Problem: manual bootstrapper chain makes startup/shutdown order fragile.
+Tests:
 
-Decision: use Microsoft.Extensions.Hosting inside `z2p.exe`.
+- concurrent ownership acquisition;
+- stale lock recovery;
+- lock file without mutex ownership must not be trusted.
 
-This is not Windows Service.
+## 3. Process ownership must not rely on PID only
 
-### 4. UI dispatch strategy
+Status: **Accepted / P0**
 
-Problem: runtime/background events cannot mutate ViewModel state directly.
+Decision:
 
-Decision: UI uses ReactiveUI + System.Reactive and central UI scheduler abstraction.
+RuntimeOwnershipDetector must verify:
 
-No direct `Dispatcher.UIThread.Post` outside UI infrastructure.
+- PID exists;
+- process name;
+- executable path;
+- command line hash;
+- compiled plan hash;
+- process creation time compatibility.
 
-### 5. SQLite WAL and busy timeout
+## 4. Generic Host inside Avalonia app
 
-Problem: background writes and UI reads can cause SQLITE_BUSY and UI freezes.
+Status: **Accepted / P0**
+
+Decision:
+
+- Use `Microsoft.Extensions.Hosting` inside `z2p.exe`.
+- Do not add Windows Service.
+
+Hosted services:
+
+- RuntimeSupervisorHostedService;
+- RuntimeHealthMonitorHostedService;
+- RuntimeRecoveryHostedService;
+- EventJournalHostedService;
+- NetworkChangeMonitorHostedService;
+- StorageRetentionHostedService.
+
+## 5. ReactiveUI vs CommunityToolkit.Mvvm
+
+Status: **Accepted / P0**
+
+Decision:
+
+- Presentation Layer uses ReactiveUI + System.Reactive.
+- Do not use CommunityToolkit.Mvvm as primary UI ViewModel framework.
+- Do not mix ReactiveUI ViewModels with Toolkit ViewModels.
+
+## 6. UI thread dispatch strategy
+
+Status: **Accepted / P0**
+
+Decision:
+
+- Add UI scheduler abstraction.
+- Runtime/Application layers must not call Avalonia Dispatcher directly.
+- UI subscriptions observe on UI scheduler.
+
+## 7. SQLite WAL and busy timeout
+
+Status: **Accepted / P0**
 
 Decision:
 
@@ -65,62 +133,185 @@ PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 ```
 
-### 6. RuntimePlanCache must be deterministic
+## 8. RuntimePlanCache invalidation
 
-Problem: caching by ProfileId can apply stale plans when hostlists or strategy packs change.
+Status: **Accepted / P0**
 
-Decision: cache key is hash of all inputs.
+Decision:
 
-### 7. Atomic writes for generated files
+RuntimePlanCacheKey must include hashes of:
 
-Problem: generated hostlists/configs may be read partially or locked by AV/scanners.
+- ProfileDocument;
+- StrategyPackDocument;
+- hostlist fingerprints;
+- runtime manifest;
+- compiler version;
+- compiler options.
 
-Decision: all generated runtime files use AtomicFileWriter.
+Each input mutation must cause cache miss.
 
-### 8. Safe path resolution
+## 9. Atomic writes for generated runtime files
 
-Problem: elevated GUI importing profiles creates path traversal risk.
+Status: **Accepted / P0**
 
-Decision: all external/user paths go through SafePathResolver and must remain inside allowed roots.
+Decision:
 
-### 9. Network change hooks
+- All generated runtime files must use AtomicFileWriter.
+- Write temp file in same directory, flush, atomic move, verify final file readable.
 
-Problem: profile may become invalid after Wi-Fi/Ethernet/VPN changes.
+## 10. SafePathResolver
 
-Decision: add NetworkChangeMonitor hooks in P0; advanced network-aware binding is P1.
+Status: **Accepted / P0**
 
-### 10. Crash loop backoff
+Decision:
 
-Problem: immediate restart attempts create crash loops.
+- Imported paths are relative by default.
+- Resolved paths must stay inside allowed roots.
+- Arbitrary absolute paths are forbidden unless explicitly trusted/advanced.
 
-Decision: RuntimeSupervisor uses CrashLoopGuard with exponential backoff and resets only after stability window.
+## 11. Auto Doctor false positives
 
-## P1 — before internal MVP
+Status: **Accepted / P1**
 
-- DiagnosticsRedactor algorithm and tests.
-- Storage retention service.
-- Auto Doctor Quick/Full modes.
-- ProbeFailureClass taxonomy.
-- ProfileScoringWeights as named config + table-driven tests.
-- Tray status icon states.
-- HVCI/WinDivert compatibility diagnostics.
-- Scheduled Task autostart provider if autostart is added.
-- RuntimePlanDiff UI.
+Decision:
 
-## P2 — after MVP
+- Add ProbeFailureClass.
+- Separate DPI/network artifacts from application errors.
+- Only network/DPI evidence should increase profile aggressiveness.
 
-- Signed strategy packs.
-- Runtime updater with rollback.
-- QUIC probe.
-- Advanced TCP/L4 probes.
-- Community profiles.
-- Advanced Lua validation.
+## 12. Auto Doctor time budget
 
-## Explicitly rejected shortcuts
+Status: **Accepted / P1**
 
-- UI directly starts/kills runtime.
-- `.bat` / `.cmd` as architecture.
-- raw winws2 args as profile source of truth.
-- traffic/per-URL router inside Z2P.
-- unbounded Auto Doctor.
-- fake runtime inside production Runtime project.
+Decision:
+
+- Key Services Check: short/lightweight.
+- Auto Doctor Quick: approximately 45 seconds.
+- Auto Doctor Full: up to 90–120 seconds.
+
+## 13. Network change detection
+
+Status: **Accepted / P0 hooks, P1 behavior**
+
+Decision:
+
+- Add NetworkChangeMonitor hooks in P0.
+- P0 reaction: warning + lightweight check.
+- P1 reaction: network-aware profile binding.
+
+## 14. Crash loop backoff
+
+Status: **Accepted / P0**
+
+Decision:
+
+- Add CrashLoopGuard.
+- Use exponential backoff.
+- Reset crash counter only after stability window and successful health check.
+
+## 15. Global exception handling
+
+Status: **Accepted / P0**
+
+Decision:
+
+- Add GlobalExceptionHandler.
+- Add CrashReportWriter.
+- On next start show recovery screen if needed.
+
+## 16. Fake runtime must not be production code
+
+Status: **Accepted / P0**
+
+Decision:
+
+- Put fake runtime in `Zapret2Pilot.Testing` or test tool project.
+
+## 17. RuntimeStateStore naming conflict
+
+Status: **Accepted / P0**
+
+Decision:
+
+- Runtime layer: `RuntimeKernelStateStore`.
+- Application/UI projection: `DashboardStateStore` or `RuntimeApplicationState`.
+
+## 18. ProfileDocument vs ProfileDefinition boundary
+
+Status: **Accepted / P0**
+
+Decision:
+
+- ProfileDocument = storage/import/export DTO.
+- ProfileDefinition = validated domain model.
+- Compiler accepts ProfileDefinition only.
+
+## 19. Diagnostics redaction algorithm
+
+Status: **Accepted / P0**
+
+Decision:
+
+- Deterministic redaction rules.
+- Stable hashes with local salt where needed.
+- Remove URL query data.
+- Redaction tests required.
+
+## 20. Elevated GUI security risk
+
+Status: **Accepted / ongoing**
+
+Decision:
+
+Compensate with:
+
+- command allowlist;
+- typed commands;
+- SafePathResolver;
+- no arbitrary execution;
+- trust levels;
+- advanced mode gate;
+- atomic generated files;
+- manifest verification;
+- redacted diagnostics.
+
+## 21. Autostart reality
+
+Status: **Accepted / P1**
+
+Decision:
+
+- MVP does not promise elevated autostart.
+- P1 may add Scheduled Task with explicit user consent.
+
+## 22. SmartScreen / signing / trust
+
+Status: **Accepted / release concern**
+
+Decision:
+
+- Internal builds can be unsigned.
+- Public preview should have signing strategy.
+- Stable public release should have code signing and checksums.
+
+## 23. Windows HVCI / WinDivert compatibility
+
+Status: **Accepted / P1**
+
+Decision:
+
+- RuntimeCompatibilityChecker should detect blocked runtime states.
+- UI should show `BlockedByOS` / HVCI-friendly explanation instead of generic crash.
+
+## 24. ApplyProfile downtime
+
+Status: **Accepted / UX warning**
+
+Decision:
+
+- UI must warn that applying profile may interrupt bypass for a few seconds.
+- Some existing connections may need browser refresh.
+
+## 25. Current review conclusion
+
+The architecture remains valid, but Runtime Kernel implementation must start with process safety and concurrency primitives, not with UI buttons or direct process launch.
