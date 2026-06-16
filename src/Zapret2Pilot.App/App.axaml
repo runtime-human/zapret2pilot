@@ -6,6 +6,6 @@
 
   <Application.Styles>
     <FluentTheme />
-    <StyleInclude Source="avares://Zapret2Pilot.App/Shared/Theme/LightTheme.axaml" />
+    <StyleInclude Source="avares://z2p/Shared/Theme/LightTheme.axaml" />
   </Application.Styles>
 </Application>
