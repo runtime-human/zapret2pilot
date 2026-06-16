@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Core</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Core</RootNamespace>
+    <Description>Core domain skeleton for Zapret2Pilot.</Description>
+  </PropertyGroup>
+</Project>
