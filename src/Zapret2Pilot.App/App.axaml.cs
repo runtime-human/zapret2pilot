@@ -1,4 +1,3 @@
-using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Microsoft.Extensions.DependencyInjection;
@@ -6,7 +5,7 @@ using Zapret2Pilot.App.Shell;
 
 namespace Zapret2Pilot.App;
 
-public sealed partial class App : Application
+public sealed partial class App : Avalonia.Application
 {
     public override void Initialize()
     {
