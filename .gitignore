@@ -1,0 +1,50 @@
+# Build outputs
+bin/
+obj/
+artifacts/
+publish/
+
+# Test outputs
+TestResults/
+coverage/
+coverage.xml
+coverage.cobertura.xml
+*.trx
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / ReSharper
+_ReSharper*/
+*.DotSettings.user
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and local runtime leftovers
+*.log
+logs/
+*.dmp
+*.mdmp
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+.nuget/packages/
+
+# Temporary files
+*.tmp
+*.temp
