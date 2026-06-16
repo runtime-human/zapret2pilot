@@ -6,7 +6,7 @@ namespace Zapret2Pilot.Core.Tests;
 public sealed class CoreAssemblyMarkerTests
 {
     [Fact]
-    public void Core_identity_matches_project_canon()
+    public void CoreIdentityMatchesProjectCanon()
     {
         Assert.Equal("Zapret2Pilot", CoreAssemblyMarker.ProductName);
         Assert.Equal("Z2P", CoreAssemblyMarker.ShortName);
