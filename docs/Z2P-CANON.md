@@ -12,7 +12,25 @@ Zapret2Pilot is a modern Windows desktop manager and control plane for zapret2/w
 
 It is not a VPN, proxy, MITM tool, packet engine, traffic router or per-URL routing layer.
 
-## 2. Core architecture decision
+## 2. Source of truth and implementation model
+
+GitHub repository: `MrFr3di/zapret2pilot`.
+
+Docs source of truth: `docs/` in GitHub.
+
+Project Sources are not the primary source of truth.
+
+Code is designed, written and reviewed through ChatGPT in small steps. Codex is not used as the implementation executor for this project.
+
+Every architecture-changing implementation step must keep these files consistent:
+
+- `docs/Z2P-CANON.md`;
+- `docs/Z2P-ARCHITECTURE.md`;
+- `docs/Z2P-CRITICAL-REVIEW.md`;
+- `docs/Z2P-ROADMAP.md`;
+- `docs/Z2P-DECISION-LOG.md`.
+
+## 3. Core architecture decision
 
 Zapret2Pilot is an **elevated single-process desktop application**.
 
@@ -30,7 +48,7 @@ User starts z2p.exe
 
 When the application is fully closed and started again, Windows will show UAC again.
 
-## 3. Explicit non-goals
+## 4. Explicit non-goals
 
 Do not build:
 
@@ -49,7 +67,7 @@ Do not build:
 
 No arbitrary command execution from UI.
 
-## 4. Runtime Kernel
+## 5. Runtime Kernel
 
 Because there is no service, Zapret2Pilot must have a strong internal Runtime Kernel inside `z2p.exe`.
 
@@ -69,7 +87,7 @@ Runtime Kernel owns:
 
 The UI must never call `Process.Start`, `Process.Kill`, WinDivert or zapret2 directly.
 
-## 5. Windows process safety
+## 6. Windows process safety
 
 RuntimeProcessHost must use **Windows Job Objects**.
 
@@ -83,7 +101,7 @@ Required behavior:
 
 Runtime lock metadata is recovery. Job Objects are prevention.
 
-## 6. Runtime ownership
+## 7. Runtime ownership
 
 Runtime ownership uses two mechanisms:
 
@@ -115,7 +133,7 @@ Process ownership must verify:
 - plan hash matches;
 - process creation time is compatible with lock metadata.
 
-## 7. Internal hosting model
+## 8. Internal hosting model
 
 Zapret2Pilot uses `Microsoft.Extensions.Hosting` inside the Avalonia app.
 
@@ -130,7 +148,7 @@ Generic Host is used for:
 - lifecycle;
 - graceful startup/shutdown.
 
-## 8. UI framework decision
+## 9. UI framework decision
 
 Presentation Layer uses:
 
@@ -142,7 +160,7 @@ Do not mix ReactiveUI ViewModels with CommunityToolkit.Mvvm ViewModels.
 
 All UI updates must be marshalled to Avalonia UI thread through a central scheduler/dispatcher abstraction.
 
-## 9. UI design canon
+## 10. UI design canon
 
 Final dashboard direction:
 
@@ -160,7 +178,7 @@ Final dashboard direction:
 
 Tray icon must show runtime state separately.
 
-## 10. Application routing
+## 11. Application routing
 
 Allowed routing:
 
@@ -178,7 +196,7 @@ Forbidden routing:
 - ProxyRouter;
 - VPN-like route engine.
 
-## 11. Profiles and runtime plans
+## 12. Profiles and runtime plans
 
 Raw winws2 arguments are not the source of truth.
 
@@ -196,7 +214,7 @@ winws2 arguments
 
 Generated args are artifacts only.
 
-## 12. RuntimePlanCache
+## 13. RuntimePlanCache
 
 RuntimePlanCache is allowed only with deterministic content-based keys.
 
@@ -211,7 +229,7 @@ Cache key must include hashes of:
 
 Do not cache by ProfileId only.
 
-## 13. File safety
+## 14. File safety
 
 All generated runtime files must be written through AtomicFileWriter.
 
@@ -226,7 +244,7 @@ verify final file readable
 
 All user/import paths must pass through SafePathResolver.
 
-## 14. SQLite
+## 15. SQLite
 
 SQLite must be initialized with:
 
@@ -239,7 +257,7 @@ PRAGMA foreign_keys=ON;
 
 UI must not access SQLite directly. Event and diagnostic tables require retention.
 
-## 15. Auto Doctor
+## 16. Auto Doctor
 
 Auto Doctor is bounded.
 
@@ -256,7 +274,7 @@ It must not:
 
 ProbeClassifier must distinguish DPI/network artifacts from HTTP/application errors.
 
-## 16. Diagnostics and privacy
+## 17. Diagnostics and privacy
 
 Privacy-first defaults:
 
@@ -267,40 +285,20 @@ Privacy-first defaults:
 - no raw packet dumps by default;
 - diagnostics export redacted by default.
 
-DiagnosticsRedactor must use deterministic and tested redaction rules.
+## 18. First implementation boundary
 
-## 17. Network changes
+First implementation version is `0.0.1`.
 
-Network changes must be detected.
+`0.0.1` may create repo/bootstrap skeleton, Avalonia shell, ReactiveUI baseline, Generic Host baseline, Core/Application skeleton and tests.
 
-Minimum:
+`0.0.1` must not:
 
-- NetworkAddressChanged;
-- NetworkAvailabilityChanged;
-- adapter snapshot comparison.
-
-P0 reaction: publish event, warn user if runtime is active, run lightweight check, suggest Auto Doctor if check fails.
-
-## 18. Testing canon
-
-Required test areas:
-
-- CommandBus;
-- OperationGate;
-- ProfileDocument -> ProfileDefinition;
-- profile compiler golden tests;
-- RuntimePlanCacheKey invalidation;
-- AtomicFileWriter;
-- SafePathResolver;
-- SQLite WAL initializer;
-- RuntimeOwnershipMutex;
-- lock metadata recovery;
-- process ownership detection;
-- Job Object kill-on-close;
-- CrashLoopGuard;
-- DiagnosticsRedactor;
-- Auto Doctor scoring;
-- ProbeClassifier;
-- ReactiveUI scheduler behavior.
-
-Fake runtime must live in test-only project/tool, not in production Runtime project.
+- start `winws2`;
+- implement RuntimeProcessHost;
+- implement Windows Job Objects;
+- implement SQLite storage;
+- implement Auto Doctor;
+- implement profile compiler;
+- add Windows Service;
+- add IPC service layer;
+- add `.bat` / `.cmd` wrapper architecture.
