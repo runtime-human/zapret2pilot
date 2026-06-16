@@ -59,6 +59,24 @@ Non-goals:
 
 ### 0.0.1-b — Avalonia + ReactiveUI shell
 
+Status: Implemented.
+
+Implemented in:
+
+- `src/Zapret2Pilot.App`;
+- Avalonia desktop app project;
+- ReactiveUI baseline;
+- System.Reactive baseline;
+- `Microsoft.Extensions.Hosting` inside app;
+- light theme placeholder;
+- `MainWindow`;
+- sidebar skeleton;
+- dashboard skeleton with mock/design-time data;
+- `MainWindowViewModel` based on ReactiveUI;
+- ViewModel tests;
+- solution update;
+- README status update.
+
 Scope:
 
 - Avalonia desktop app project;
