@@ -2,7 +2,7 @@
 
 Zapret2Pilot is a Windows desktop manager and control plane for zapret2/winws2.
 
-Current version: `0.0.1`.
+Current version: `0.0.2`.
 
 ## Project status
 
@@ -11,13 +11,13 @@ This repository is in early bootstrap stage.
 Current milestone:
 
 ```text
-0.0.1 — Repo bootstrap and initial app skeleton
+0.0.2 — Core primitives
 ```
 
 Current patch:
 
 ```text
-0.0.1-b — Avalonia + ReactiveUI shell
+0.0.2 — Core primitives
 ```
 
 ## Architecture baseline
@@ -30,10 +30,11 @@ Zapret2Pilot is planned as:
 - ReactiveUI + System.Reactive presentation baseline;
 - Microsoft.Extensions.Hosting inside the Avalonia app;
 - elevated single-process app;
+- Core domain primitives for Result/Error and typed IDs;
 - no Windows Service in MVP;
 - no IPC service layer in MVP;
 - no VPN/proxy/MITM/traffic-router functionality;
-- no real winws2 launch in the first implementation milestone.
+- no real winws2 launch before Runtime Kernel safety primitives exist.
 
 ## Repository layout
 
