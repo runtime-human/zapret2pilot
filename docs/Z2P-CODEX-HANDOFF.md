@@ -1,122 +1,153 @@
 # Zapret2Pilot / Z2P — Codex Handoff
 
-Use this file when preparing Codex implementation tasks.
+This document is the baseline prompt and task contract for Codex implementation work.
 
-## Global rules
+## 1. Project baseline
 
-Codex must follow these decisions:
+You are working on **Zapret2Pilot / Z2P**.
 
-- product name: Zapret2Pilot;
-- short name: Z2P;
-- main executable: z2p.exe;
-- Windows desktop app;
-- C# / .NET 10 / Avalonia;
-- elevated single-process app;
-- no Windows Service;
-- no IPC service layer;
-- no VPN/proxy/MITM/per-URL traffic router;
-- no `.bat` / `.cmd` wrapper architecture;
-- UI never starts/kills processes directly;
-- Runtime Kernel inside app;
-- Generic Host inside Avalonia;
-- ReactiveUI + System.Reactive for UI;
-- no CommunityToolkit.Mvvm ViewModels;
-- SQLite WAL;
-- Job Objects for winws2;
+- Product name: Zapret2Pilot.
+- Short name: Z2P.
+- Main executable: z2p.exe.
+- Stack: C# / .NET 10 / Avalonia UI.
+- UI: Russian-first.
+- Architecture: elevated single-process desktop app without Windows Service.
+- Runtime: zapret2 / winws2 / WinDivert.
+
+## 2. Non-negotiable architecture rules
+
+Do not add:
+
+- Windows Service;
+- IPC service layer;
+- VPN/proxy/MITM;
+- traffic router;
+- per-URL router;
+- raw `.bat` / `.cmd` wrapper architecture;
+- arbitrary command execution from UI;
+- real winws2 launch before the roadmap step that explicitly asks for it.
+
+Do use:
+
+- Microsoft.Extensions.Hosting inside Avalonia app;
+- ReactiveUI for Presentation Layer;
+- Runtime Kernel inside `z2p.exe`;
+- typed commands and use cases;
+- typed profiles and compiled runtime plans;
 - Global Mutex + lock metadata;
-- AtomicFileWriter and SafePathResolver;
-- deterministic RuntimePlanCacheKey;
-- bounded Auto Doctor.
+- Windows Job Objects for runtime process containment;
+- SQLite WAL;
+- AtomicFileWriter;
+- SafePathResolver;
+- deterministic RuntimePlanCacheKey.
 
-## Standard task format
+## 3. Required task format
 
 Every Codex task must include:
 
-1. Goal
-2. Scope
-3. Non-goals
-4. Files to create/change
-5. Public interfaces
-6. Implementation notes
-7. Tests
-8. Acceptance criteria
-9. Commands to run
-10. Commit message
+1. Goal.
+2. Scope.
+3. Non-goals.
+4. Files to create/change.
+5. Public interfaces.
+6. Implementation notes.
+7. Tests.
+8. Acceptance criteria.
+9. Commands to run.
+10. Commit message.
 
-## First implementation task: 0.0.2 repository skeleton
+## 4. Task sizing rules
 
+- One task = one architectural step.
+- Prefer 5–15 files per task.
+- Do not combine UI, runtime and storage in the same task unless the task is explicitly integration work.
+- If the task changes public contracts, update docs.
+- If the task touches runtime process handling, add tests or a Windows-only test plan.
+
+## 5. First implementation task template
+
+```text
 Goal:
-
-Create the initial repository skeleton without runtime implementation.
+Create the initial Zapret2Pilot solution skeleton.
 
 Scope:
-
-- solution file;
-- `src/` and `tests/` layout;
-- Directory.Build.props;
-- Directory.Packages.props;
-- global.json;
-- VERSION = 0.0.1 or 0.0.2 depending on release decision;
-- .gitignore;
-- initial README.
+- .NET 10 solution.
+- Avalonia app project.
+- ReactiveUI baseline.
+- Generic Host inside the app.
+- Core primitives project.
+- Test projects.
+- VERSION = 0.0.1.
 
 Non-goals:
+- Do not launch winws2.
+- Do not add Windows Service.
+- Do not add IPC.
+- Do not implement Auto Doctor.
+- Do not add updater.
 
-- no real winws2;
-- no RuntimeSupervisor implementation;
-- no Auto Doctor;
-- no SQLite implementation;
-- no updater;
-- no Windows Service.
+Files/projects:
+- Zapret2Pilot.slnx or Zapret2Pilot.sln
+- Directory.Build.props
+- Directory.Packages.props
+- global.json
+- VERSION
+- src/Zapret2Pilot.App
+- src/Zapret2Pilot.Application
+- src/Zapret2Pilot.Core
+- tests/Zapret2Pilot.Core.Tests
+- tests/Zapret2Pilot.App.ViewModelTests
 
-Acceptance criteria:
-
-- `dotnet restore` passes;
-- `dotnet build -c Release` passes;
-- test projects exist even if tests are minimal;
-- no production project contains fake runtime helpers;
-- documentation remains consistent with `/docs` canon.
-
-## Second implementation task: Avalonia + ReactiveUI + Generic Host shell
-
-Goal:
-
-Create the first UI shell with mock dashboard data.
-
-Scope:
-
-- Avalonia app;
-- ReactiveUI setup;
-- `.UseReactiveUI()` integration if applicable;
-- Generic Host inside app;
-- basic DI;
-- main window;
-- sidebar;
-- dashboard skeleton;
-- light theme;
-- no duplicate runtime status.
-
-Non-goals:
-
-- no real runtime;
-- no storage;
-- no process launch.
+Implementation notes:
+- App must use Avalonia.
+- Presentation must use ReactiveUI.
+- App must build a Generic Host during startup.
+- Dashboard may use mock data.
+- No runtime process launch.
 
 Acceptance criteria:
+- dotnet restore passes.
+- dotnet build -c Release passes.
+- dotnet test -c Release passes.
+- App launches and shows shell/dashboard skeleton.
+- No Windows Service is created.
+```
 
-- app opens;
-- dashboard visible;
-- sidebar matches UI canon;
-- top-right has only language/settings/window controls;
-- no status widget in lower-left sidebar.
+## 6. Commit message style
 
-## Review rule
+Use clear messages:
 
-After every Codex change, run Red Team review for:
+```text
+docs: add Z2P architecture canon
+chore: initialize .NET solution
+feat(app): add Avalonia shell skeleton
+feat(core): add result and typed ID primitives
+feat(runtime): add runtime ownership abstractions
+```
 
-- architecture drift;
-- direct runtime calls from UI;
-- accidental Windows Service introduction;
-- CommunityToolkit/ReactiveUI mixing;
-- missing tests;
-- unsafe file/path access.
+Russian commit messages are acceptable if they are clear and specific.
+
+## 7. Required checks before marking task done
+
+```powershell
+dotnet restore
+dotnet build -c Release
+dotnet test -c Release
+```
+
+If a command cannot be run, Codex must say so explicitly and explain why.
+
+## 8. Red flags
+
+Reject implementation if it:
+
+- starts winws2 from ViewModel;
+- adds `.bat`/`.cmd` as primary flow;
+- stores raw args as profile source of truth;
+- adds Windows Service in MVP;
+- writes generated files without atomic write;
+- reads/writes arbitrary user paths from imported profiles;
+- updates ViewModel from background thread;
+- uses SQLite without WAL;
+- keeps fake runtime inside production project;
+- ignores cancellation tokens in long operations.
