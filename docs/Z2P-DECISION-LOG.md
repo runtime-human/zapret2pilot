@@ -285,3 +285,30 @@ Scope:
 - `Zapret2Pilot.Core` only;
 - unit tests under `Zapret2Pilot.Core.Tests`;
 - no UI, Application, runtime, SQLite, Windows Service, WinDivert or real `winws2` integration.
+
+## DEC-0024 — Application command bus foundation
+
+Date: 2026-06
+
+Decision:
+
+- Add Application command contracts: `IAppCommand<TResponse>`, `ICommandBus` and `ICommandHandler<TCommand,TResponse>`.
+- Use single generic response inference at the command bus call site.
+- Resolve handlers through `IServiceProvider.GetService(Type)`.
+- Resolve handlers by exact runtime command type and response type.
+- Return a failure `Result<TResponse>` when a handler is missing.
+- Propagate handler failure results unchanged.
+- Defer DI registration extensions until a composition-root-focused patch.
+
+Rationale:
+
+- Application command dispatch is an application-level routing mechanism, not network routing.
+- The call site must remain concise: `commandBus.SendAsync(new Command(...), cancellationToken)`.
+- The Application layer should not depend on Avalonia, ReactiveUI, `Microsoft.Extensions.Hosting`, SQLite or runtime process APIs.
+- `IServiceProvider.GetService(Type)` is enough for this foundation and avoids introducing a DI extension dependency prematurely.
+
+Scope:
+
+- `Zapret2Pilot.Application` command contracts and `CommandBus` only;
+- command bus unit tests under `Zapret2Pilot.Application.Tests`;
+- no runtime commands, profile commands, UI navigation, storage, Windows Service, IPC, WinDivert or real `winws2` integration.
