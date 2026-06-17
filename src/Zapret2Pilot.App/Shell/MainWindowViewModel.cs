@@ -1,26 +1,48 @@
+using System;
 using System.Collections.Generic;
 using System.Reactive;
 using ReactiveUI;
+using Zapret2Pilot.App.Navigation;
+using Zapret2Pilot.App.Threading;
 
 namespace Zapret2Pilot.App.Shell;
 
 public sealed class MainWindowViewModel : ReactiveObject
 {
+    private readonly NavigationRouter navigationRouter;
+    private readonly IUiScheduler uiScheduler;
+    private NavigationPageViewModel currentPage;
     private string lastAction = "Демо-режим: runtime ещё не подключён.";
 
     public MainWindowViewModel()
+        : this(CreateDefaultNavigationRouter(), new ImmediateUiScheduler())
     {
+    }
+
+    public MainWindowViewModel(NavigationRouter navigationRouter)
+        : this(navigationRouter, new ImmediateUiScheduler())
+    {
+    }
+
+    public MainWindowViewModel(
+        NavigationRouter navigationRouter,
+        IUiScheduler uiScheduler)
+    {
+        ArgumentNullException.ThrowIfNull(navigationRouter);
+        ArgumentNullException.ThrowIfNull(uiScheduler);
+
+        this.navigationRouter = navigationRouter;
+        this.uiScheduler = uiScheduler;
+        currentPage = navigationRouter.CurrentPage;
+
         SidebarItems =
         [
-            new SidebarItemViewModel("Главная", IsSelected: true),
-            new SidebarItemViewModel("Профили"),
-            new SidebarItemViewModel("Правила"),
-            new SidebarItemViewModel("Auto Doctor"),
-            new SidebarItemViewModel("Диагностика"),
-            new SidebarItemViewModel("Логи"),
-            new SidebarItemViewModel("Модуль zapret2"),
-            new SidebarItemViewModel("Настройки"),
+            CreateNavigationItem(RouteId.Dashboard, "Главная"),
+            CreateNavigationItem(RouteId.Profiles, "Профили"),
+            CreateNavigationItem(RouteId.Settings, "Настройки"),
         ];
+
+        UpdateSidebarSelection();
 
         KeyServices =
         [
@@ -66,11 +88,11 @@ public sealed class MainWindowViewModel : ReactiveObject
 
     public string AppName { get; } = "Zapret2Pilot";
 
-    public string AppVersion { get; } = "v0.0.1";
+    public string AppVersion { get; } = "v0.0.4";
 
     public string WindowTitle { get; } = "Zapret2Pilot";
 
-    public string PageTitle { get; } = "Главная";
+    public string PageTitle => CurrentPage.Title;
 
     public string StatusTitle { get; } = "Обход активен";
 
@@ -99,7 +121,22 @@ public sealed class MainWindowViewModel : ReactiveObject
 
     public string ServicesUpdatedText { get; } = "Обновлено: 12:43";
 
-    public IReadOnlyList<SidebarItemViewModel> SidebarItems { get; }
+    public NavigationPageViewModel CurrentPage
+    {
+        get => currentPage;
+        private set
+        {
+            if (ReferenceEquals(currentPage, value))
+            {
+                return;
+            }
+
+            this.RaiseAndSetIfChanged(ref currentPage, value);
+            this.RaisePropertyChanged(nameof(PageTitle));
+        }
+    }
+
+    public IReadOnlyList<NavigationItemViewModel> SidebarItems { get; }
 
     public IReadOnlyList<DashboardServiceStatusViewModel> KeyServices { get; }
 
@@ -120,11 +157,58 @@ public sealed class MainWindowViewModel : ReactiveObject
         get => lastAction;
         private set => this.RaiseAndSetIfChanged(ref lastAction, value);
     }
-}
 
-public sealed record SidebarItemViewModel(string Title, bool IsSelected = false)
-{
-    public string Marker => IsSelected ? "●" : string.Empty;
+    public bool NavigateTo(RouteId routeId)
+    {
+        ArgumentNullException.ThrowIfNull(routeId);
+
+        bool navigated = false;
+
+        uiScheduler.Schedule(() =>
+        {
+            navigated = navigationRouter.NavigateTo(routeId);
+
+            if (!navigated)
+            {
+                LastAction = $"Демо: неизвестный маршрут '{routeId.Value}' не открыт.";
+
+                return;
+            }
+
+            CurrentPage = navigationRouter.CurrentPage;
+            UpdateSidebarSelection();
+            LastAction = $"Демо: открыт раздел “{CurrentPage.Title}”.";
+        });
+
+        return navigated;
+    }
+
+    private static NavigationRouter CreateDefaultNavigationRouter()
+    {
+        return new NavigationRouter(
+            new NavigationPageFactory(),
+            RouteId.Dashboard);
+    }
+
+    private NavigationItemViewModel CreateNavigationItem(RouteId routeId, string title)
+    {
+        return new NavigationItemViewModel(
+            routeId,
+            title,
+            routeId.Equals(CurrentPage.RouteId),
+            ReactiveCommand.Create(() =>
+            {
+                _ = NavigateTo(routeId);
+            }));
+    }
+
+    private void UpdateSidebarSelection()
+    {
+        foreach (NavigationItemViewModel item in SidebarItems)
+        {
+            item.SetSelected(item.RouteId.Equals(CurrentPage.RouteId));
+        }
+    }
 }
 
 public sealed record DashboardServiceStatusViewModel(
