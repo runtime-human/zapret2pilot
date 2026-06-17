@@ -312,3 +312,35 @@ Scope:
 - `Zapret2Pilot.Application` command contracts and `CommandBus` only;
 - command bus unit tests under `Zapret2Pilot.Application.Tests`;
 - no runtime commands, profile commands, UI navigation, storage, Windows Service, IPC, WinDivert or real `winws2` integration.
+
+## DEC-0025 — UI navigation foundation
+
+Date: 2026-06
+
+Decision:
+
+- Add shell UI navigation primitives under `Zapret2Pilot.App`.
+- Use `RouteId` as a strongly typed shell route identifier.
+- Add `NavigationRouter` and `INavigationRouter` for shell-level route state.
+- Add `NavigationPageFactory` and `INavigationPageFactory` for placeholder page creation.
+- Represent placeholder pages with `NavigationPageViewModel`.
+- Represent sidebar items with ReactiveUI-based `NavigationItemViewModel`.
+- Add placeholder routes for Dashboard, Profiles and Settings only.
+- Add `IUiScheduler` and `ImmediateUiScheduler` as the initial UI scheduler seam.
+- Keep navigation synchronous until a future background/event subscription patch needs real dispatching.
+
+Rationale:
+
+- UI navigation is application/shell routing, not network routing.
+- The shell needs a minimal navigation seam before real profile, diagnostics, settings or storage pages are implemented.
+- A scheduler seam is required by roadmap, but direct Avalonia Dispatcher usage is premature before background event streams exist.
+- ReactiveUI remains the Presentation ViewModel framework.
+
+Scope:
+
+- `Zapret2Pilot.App` navigation, shell ViewModel, XAML and ViewModel tests only;
+- no `Zapret2Pilot.Core` changes;
+- no `Zapret2Pilot.Application` changes;
+- no runtime/profile/storage/process logic;
+- no SQLite;
+- no Windows Service, IPC, WinDivert or real `winws2` integration.
