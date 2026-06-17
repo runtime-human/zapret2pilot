@@ -1,6 +1,7 @@
 using System;
 using System.Reactive.Linq;
 using Xunit;
+using Zapret2Pilot.App.Navigation;
 using Zapret2Pilot.App.Shell;
 
 namespace Zapret2Pilot.App.ViewModelTests;
@@ -8,18 +9,18 @@ namespace Zapret2Pilot.App.ViewModelTests;
 public sealed class MainWindowViewModelTests
 {
     [Fact]
-    public void InitialShellIdentityMatchesProjectCanon()
+    public static void InitialShellIdentityMatchesProjectCanon()
     {
         MainWindowViewModel viewModel = new();
 
         Assert.Equal("Zapret2Pilot", viewModel.AppName);
-        Assert.Equal("v0.0.1", viewModel.AppVersion);
+        Assert.Equal("v0.0.4", viewModel.AppVersion);
         Assert.Equal("Zapret2Pilot", viewModel.WindowTitle);
         Assert.Equal("Главная", viewModel.PageTitle);
     }
 
     [Fact]
-    public void SidebarContainsDesignCanonItemsWithoutRuntimeStatusBlock()
+    public static void SidebarContainsNavigationPlaceholdersWithoutRuntimeStatusBlock()
     {
         MainWindowViewModel viewModel = new();
 
@@ -27,11 +28,6 @@ public sealed class MainWindowViewModelTests
             viewModel.SidebarItems,
             item => Assert.Equal("Главная", item.Title),
             item => Assert.Equal("Профили", item.Title),
-            item => Assert.Equal("Правила", item.Title),
-            item => Assert.Equal("Auto Doctor", item.Title),
-            item => Assert.Equal("Диагностика", item.Title),
-            item => Assert.Equal("Логи", item.Title),
-            item => Assert.Equal("Модуль zapret2", item.Title),
             item => Assert.Equal("Настройки", item.Title));
 
         Assert.DoesNotContain(viewModel.SidebarItems, item => item.Title.Contains("Service", StringComparison.Ordinal));
@@ -40,7 +36,7 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
-    public void DashboardUsesMockDesignTimeStatus()
+    public static void DashboardUsesMockDesignTimeStatus()
     {
         MainWindowViewModel viewModel = new();
 
@@ -52,7 +48,7 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
-    public void KeyServicesUseLatencyInsteadOfExcellentCopy()
+    public static void KeyServicesUseLatencyInsteadOfExcellentCopy()
     {
         MainWindowViewModel viewModel = new();
 
@@ -81,7 +77,35 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
-    public void MockCommandsOnlyUpdateUiState()
+    public static void NavigateToProfilesUpdatesCurrentPageAndSelection()
+    {
+        MainWindowViewModel viewModel = new();
+
+        bool navigated = viewModel.NavigateTo(RouteId.Profiles);
+
+        Assert.True(navigated);
+        Assert.Equal("Профили", viewModel.PageTitle);
+        Assert.Equal(RouteId.Profiles, viewModel.CurrentPage.RouteId);
+        Assert.True(viewModel.CurrentPage.IsPlaceholder);
+        Assert.False(viewModel.SidebarItems[0].IsSelected);
+        Assert.True(viewModel.SidebarItems[1].IsSelected);
+        Assert.False(viewModel.SidebarItems[2].IsSelected);
+    }
+
+    [Fact]
+    public static void UnknownRouteDoesNotChangeCurrentPage()
+    {
+        MainWindowViewModel viewModel = new();
+
+        bool navigated = viewModel.NavigateTo(new RouteId("unknown"));
+
+        Assert.False(navigated);
+        Assert.Equal(RouteId.Dashboard, viewModel.CurrentPage.RouteId);
+        Assert.Equal("Главная", viewModel.PageTitle);
+    }
+
+    [Fact]
+    public static void MockCommandsOnlyUpdateUiState()
     {
         MainWindowViewModel viewModel = new();
 

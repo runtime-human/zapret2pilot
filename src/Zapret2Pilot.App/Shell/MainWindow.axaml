@@ -2,6 +2,7 @@
     x:Class="Zapret2Pilot.App.Shell.MainWindow"
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:nav="using:Zapret2Pilot.App.Navigation"
     xmlns:vm="using:Zapret2Pilot.App.Shell"
     x:DataType="vm:MainWindowViewModel"
     x:CompileBindings="True"
@@ -43,21 +44,29 @@
             Margin="0,72,0,0"
             ItemsSource="{Binding SidebarItems}">
           <ItemsControl.ItemTemplate>
-            <DataTemplate x:DataType="vm:SidebarItemViewModel">
-              <Border Classes="NavItem">
-                <Grid ColumnDefinitions="24,*">
-                  <TextBlock
-                      Grid.Column="0"
-                      Text="{Binding Marker}"
-                      Foreground="{StaticResource Z2P.Brush.Primary}" />
+            <DataTemplate x:DataType="nav:NavigationItemViewModel">
+              <Button
+                  Command="{Binding NavigateCommand}"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Stretch"
+                  Background="Transparent"
+                  BorderThickness="0"
+                  Padding="0">
+                <Border Classes="NavItem">
+                  <Grid ColumnDefinitions="24,*">
+                    <TextBlock
+                        Grid.Column="0"
+                        Text="{Binding Marker}"
+                        Foreground="{StaticResource Z2P.Brush.Primary}" />
 
-                  <TextBlock
-                      Grid.Column="1"
-                      Text="{Binding Title}"
-                      FontSize="14"
-                      Foreground="{StaticResource Z2P.Brush.TextPrimary}" />
-                </Grid>
-              </Border>
+                    <TextBlock
+                        Grid.Column="1"
+                        Text="{Binding Title}"
+                        FontSize="14"
+                        Foreground="{StaticResource Z2P.Brush.TextPrimary}" />
+                  </Grid>
+                </Border>
+              </Button>
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
@@ -89,7 +98,29 @@
       <ScrollViewer Grid.Row="1">
         <StackPanel Margin="28,0,28,28" Spacing="18">
 
-          <Border Classes="Card">
+          <Border
+              Classes="Card"
+              IsVisible="{Binding CurrentPage.IsPlaceholder}">
+            <StackPanel Spacing="12">
+              <TextBlock
+                  Text="{Binding CurrentPage.Title}"
+                  Classes="CardTitle" />
+
+              <TextBlock
+                  Text="{Binding CurrentPage.Description}"
+                  TextWrapping="Wrap"
+                  Classes="Body" />
+
+              <TextBlock
+                  Text="Функциональность будет добавлена отдельным patch без runtime/process logic."
+                  TextWrapping="Wrap"
+                  Classes="Muted" />
+            </StackPanel>
+          </Border>
+
+          <Border
+              Classes="Card"
+              IsVisible="{Binding CurrentPage.IsDashboard}">
             <Grid ColumnDefinitions="Auto,*,260" ColumnSpacing="20">
 
               <Border
@@ -157,7 +188,12 @@
             </Grid>
           </Border>
 
-          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="18" RowSpacing="18">
+          <Grid
+              ColumnDefinitions="*,*"
+              RowDefinitions="Auto,Auto"
+              ColumnSpacing="18"
+              RowSpacing="18"
+              IsVisible="{Binding CurrentPage.IsDashboard}">
 
             <Border Grid.Row="0" Grid.Column="0" Classes="Card">
               <StackPanel Spacing="12">
