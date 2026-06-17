@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Storage</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Storage</RootNamespace>
+    <Description>SQLite storage foundation for Zapret2Pilot.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
+</Project>

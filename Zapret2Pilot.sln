@@ -10,6 +10,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.Core", "src\Za
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.Application", "src\Zapret2Pilot.Application\Zapret2Pilot.Application.csproj", "{B59160C7-8ECF-42B3-B4D0-D15213952011}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.Storage", "src\Zapret2Pilot.Storage\Zapret2Pilot.Storage.csproj", "{9A29A6E5-9192-4E96-BE83-0EC7E7E4D5F2}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.App", "src\Zapret2Pilot.App\Zapret2Pilot.App.csproj", "{71A550D7-7F2E-4F0E-9D58-E8D5A2FE1E77}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.Core.Tests", "tests\Zapret2Pilot.Core.Tests\Zapret2Pilot.Core.Tests.csproj", "{C644767E-1F0D-469C-91B1-888A0DD9D8E7}"
@@ -17,6 +19,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.Application.Tests", "tests\Zapret2Pilot.Application.Tests\Zapret2Pilot.Application.Tests.csproj", "{F42A7921-6A7C-423B-BB27-915ED7A9C176}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.App.ViewModelTests", "tests\Zapret2Pilot.App.ViewModelTests\Zapret2Pilot.App.ViewModelTests.csproj", "{A6C88A0A-6255-4E99-BDA4-A389F6F0DD7E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zapret2Pilot.Storage.Tests", "tests\Zapret2Pilot.Storage.Tests\Zapret2Pilot.Storage.Tests.csproj", "{ED09977B-9A4E-49EB-8946-F4F42FC0A7D6}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -32,6 +36,10 @@ Global
 		{B59160C7-8ECF-42B3-B4D0-D15213952011}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B59160C7-8ECF-42B3-B4D0-D15213952011}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B59160C7-8ECF-42B3-B4D0-D15213952011}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9A29A6E5-9192-4E96-BE83-0EC7E7E4D5F2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9A29A6E5-9192-4E96-BE83-0EC7E7E4D5F2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9A29A6E5-9192-4E96-BE83-0EC7E7E4D5F2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9A29A6E5-9192-4E96-BE83-0EC7E7E4D5F2}.Release|Any CPU.Build.0 = Release|Any CPU
 		{71A550D7-7F2E-4F0E-9D58-E8D5A2FE1E77}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{71A550D7-7F2E-4F0E-9D58-E8D5A2FE1E77}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{71A550D7-7F2E-4F0E-9D58-E8D5A2FE1E77}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -48,6 +56,10 @@ Global
 		{A6C88A0A-6255-4E99-BDA4-A389F6F0DD7E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A6C88A0A-6255-4E99-BDA4-A389F6F0DD7E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A6C88A0A-6255-4E99-BDA4-A389F6F0DD7E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ED09977B-9A4E-49EB-8946-F4F42FC0A7D6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ED09977B-9A4E-49EB-8946-F4F42FC0A7D6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ED09977B-9A4E-49EB-8946-F4F42FC0A7D6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ED09977B-9A4E-49EB-8946-F4F42FC0A7D6}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -55,10 +67,12 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{0D22B18B-0520-4E47-9E61-5D52D6B2515A} = {8DE9C72F-D06D-4E17-8B33-694924D2D1E0}
 		{B59160C7-8ECF-42B3-B4D0-D15213952011} = {8DE9C72F-D06D-4E17-8B33-694924D2D1E0}
+		{9A29A6E5-9192-4E96-BE83-0EC7E7E4D5F2} = {8DE9C72F-D06D-4E17-8B33-694924D2D1E0}
 		{71A550D7-7F2E-4F0E-9D58-E8D5A2FE1E77} = {8DE9C72F-D06D-4E17-8B33-694924D2D1E0}
 		{C644767E-1F0D-469C-91B1-888A0DD9D8E7} = {D44B4B07-0DB7-4ED6-9F92-5B0608912930}
 		{F42A7921-6A7C-423B-BB27-915ED7A9C176} = {D44B4B07-0DB7-4ED6-9F92-5B0608912930}
 		{A6C88A0A-6255-4E99-BDA4-A389F6F0DD7E} = {D44B4B07-0DB7-4ED6-9F92-5B0608912930}
+		{ED09977B-9A4E-49EB-8946-F4F42FC0A7D6} = {D44B4B07-0DB7-4ED6-9F92-5B0608912930}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {A7ED3E4B-A73F-40B2-9C16-5E68183B45F0}
