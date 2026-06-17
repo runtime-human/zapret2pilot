@@ -89,4 +89,15 @@ public sealed class SqliteEventJournalTests
 
         Assert.Throws<ArgumentException>(() => journal.Append("diagnostics", "Message.", string.Empty));
     }
+
+    [Fact]
+    public static void EntryRejectsEmptyId()
+    {
+        Assert.Throws<ArgumentException>(() => new SqliteEventJournalEntry(
+            string.Empty,
+            DateTimeOffset.UtcNow,
+            "category",
+            "message",
+            "severity"));
+    }
 }
