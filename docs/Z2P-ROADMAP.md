@@ -222,6 +222,29 @@ Acceptance:
 
 ## 0.0.5 — Storage foundation
 
+Status: Implemented.
+
+Implemented in:
+
+- `Zapret2Pilot.Storage` project;
+- `Zapret2Pilot.Storage.Tests` project;
+- `Microsoft.Data.Sqlite` storage provider;
+- SQLite connection factory;
+- DB initializer;
+- migrations foundation;
+- `app_settings` table;
+- `event_journal` table;
+- settings repository skeleton;
+- event journal skeleton;
+- file-backed SQLite tests;
+- required SQLite PRAGMA:
+  - `journal_mode=WAL`;
+  - `busy_timeout=5000`;
+  - `synchronous=NORMAL`;
+  - `foreign_keys=ON`;
+- `VERSION = 0.0.5`;
+- README status update.
+
 Scope:
 
 - SQLite connection factory;

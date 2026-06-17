@@ -344,3 +344,45 @@ Scope:
 - no runtime/profile/storage/process logic;
 - no SQLite;
 - no Windows Service, IPC, WinDivert or real `winws2` integration.
+
+## DEC-0026 — SQLite storage foundation
+
+Date: 2026-06
+
+Decision:
+
+- Put the SQLite provider and storage implementation in `Zapret2Pilot.Storage`.
+- Do not let UI/App talk to SQLite directly.
+- Keep `Zapret2Pilot.Core` pure and free from SQLite, file system, Windows APIs and Process dependencies.
+- Keep `Zapret2Pilot.Application` free from concrete SQLite provider dependency at this foundation stage.
+- Use `Microsoft.Data.Sqlite`, not `System.Data.SQLite`.
+- Use file-backed SQLite databases in tests where WAL behavior must be verified.
+- Use `SqliteConnectionStringBuilder` for SQLite connection strings.
+- Do not use `Cache=Shared` with WAL.
+- Do not add EF Core in this patch.
+- Do not add ProgramData resolver, SafePathResolver or AtomicFileWriter in this patch.
+- Keep settings repository and event journal as skeletons only.
+
+Rationale:
+
+- Storage needs provider-specific SQLite behavior, but Core and UI boundaries must remain clean.
+- WAL and related PRAGMA behavior must be tested against a real file-backed database, not an in-memory database.
+- `SqliteConnectionStringBuilder` keeps connection string construction explicit and avoids premature custom parsing.
+- ProgramData layout, path safety and atomic file writes belong to `0.0.6 — File safety foundation`.
+- Repository skeletons establish persistence seams without introducing feature-specific settings models, retention services or UI/log-viewer integration.
+
+Scope:
+
+- `Zapret2Pilot.Storage` project;
+- `Zapret2Pilot.Storage.Tests` project;
+- SQLite connection factory;
+- DB initializer;
+- migrations foundation;
+- `app_settings` table;
+- `event_journal` table;
+- settings repository skeleton;
+- event journal skeleton;
+- file-backed SQLite tests;
+- no UI direct SQLite access;
+- no Core SQLite/file-system dependency;
+- no EF Core, ProgramData resolver, SafePathResolver, AtomicFileWriter, runtime process logic, Windows Service, IPC, WinDivert or real `winws2` integration.
