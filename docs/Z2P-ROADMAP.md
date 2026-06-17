@@ -187,6 +187,25 @@ Acceptance:
 
 ## 0.0.4 — UI navigation foundation
 
+Status: Implemented.
+
+Implemented in:
+
+- `RouteId` strongly typed shell route identifier;
+- `INavigationRouter`;
+- `NavigationRouter`;
+- `INavigationPageFactory`;
+- `NavigationPageFactory`;
+- `NavigationPageViewModel` placeholder page representation;
+- `NavigationItemViewModel` ReactiveUI sidebar item model;
+- dashboard/profile/settings placeholder routes;
+- `IUiScheduler` abstraction;
+- `ImmediateUiScheduler` synchronous initial scheduler;
+- shell XAML bindings for route switching;
+- ViewModel tests for route selection, unknown route behavior and scheduler behavior;
+- `VERSION = 0.0.4`;
+- README status update.
+
 Scope:
 
 - `NavigationRouter`;
