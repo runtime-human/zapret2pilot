@@ -158,6 +158,20 @@ Acceptance:
 
 ## 0.0.3 — Application command foundation
 
+Status: Implemented.
+
+Implemented in:
+
+- `IAppCommand<TResponse>`;
+- `ICommandBus` with single generic response inference;
+- `ICommandHandler<TCommand,TResponse>`;
+- `CommandBus` backed by `IServiceProvider.GetService(Type)`;
+- exact runtime command type handler resolution;
+- missing handler failure result;
+- command bus tests for successful dispatch, missing handler, null command and handler failure propagation;
+- `VERSION = 0.0.3`;
+- README status update.
+
 Scope:
 
 - `IAppCommand<TResponse>`;
