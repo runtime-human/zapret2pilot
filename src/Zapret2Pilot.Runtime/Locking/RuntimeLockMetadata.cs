@@ -12,58 +12,29 @@ public sealed record class RuntimeLockMetadata
     public RuntimeLockMetadata(
         int schemaVersion,
         string ownerInstanceId,
-        int processId,
-        string processName,
-        string executablePath,
-        string commandLineHash,
-        string planHash,
-        DateTimeOffset acquiredAtUtc,
-        DateTimeOffset processStartedAtUtc)
+        RuntimeLockProcessMetadata process,
+        DateTimeOffset acquiredAtUtc)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(schemaVersion);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerInstanceId);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(processName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(commandLineHash);
-        ArgumentException.ThrowIfNullOrWhiteSpace(planHash);
+        ArgumentNullException.ThrowIfNull(process);
 
         if (acquiredAtUtc == default)
         {
             throw new ArgumentException("Acquired timestamp must be specified.", nameof(acquiredAtUtc));
         }
 
-        if (processStartedAtUtc == default)
-        {
-            throw new ArgumentException("Process started timestamp must be specified.", nameof(processStartedAtUtc));
-        }
-
         SchemaVersion = schemaVersion;
         OwnerInstanceId = ownerInstanceId;
-        ProcessId = processId;
-        ProcessName = processName;
-        ExecutablePath = executablePath;
-        CommandLineHash = commandLineHash;
-        PlanHash = planHash;
+        Process = process;
         AcquiredAtUtc = acquiredAtUtc;
-        ProcessStartedAtUtc = processStartedAtUtc;
     }
 
     public int SchemaVersion { get; }
 
     public string OwnerInstanceId { get; }
 
-    public int ProcessId { get; }
-
-    public string ProcessName { get; }
-
-    public string ExecutablePath { get; }
-
-    public string CommandLineHash { get; }
-
-    public string PlanHash { get; }
+    public RuntimeLockProcessMetadata Process { get; }
 
     public DateTimeOffset AcquiredAtUtc { get; }
-
-    public DateTimeOffset ProcessStartedAtUtc { get; }
 }
