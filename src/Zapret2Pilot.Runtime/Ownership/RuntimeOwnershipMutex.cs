@@ -22,14 +22,29 @@ public sealed class RuntimeOwnershipMutex
         }
 
         Mutex mutex = new(initiallyOwned: false, name: mutexName);
+        bool handleTransferred = false;
 
         try
         {
-            if (!mutex.WaitOne(timeout))
+            try
             {
-                mutex.Dispose();
+                if (!mutex.WaitOne(timeout))
+                {
+                    return RuntimeOwnershipAcquireResult.NotAcquired();
+                }
+            }
+            catch (AbandonedMutexException)
+            {
+                RuntimeOwnershipLease abandonedLease = new(
+                    mutexName,
+                    mutex,
+                    wasAbandoned: true);
 
-                return RuntimeOwnershipAcquireResult.NotAcquired();
+                handleTransferred = true;
+
+                return RuntimeOwnershipAcquireResult.CreateAcquired(
+                    abandonedLease,
+                    wasAbandoned: true);
             }
 
             RuntimeOwnershipLease lease = new(
@@ -37,25 +52,18 @@ public sealed class RuntimeOwnershipMutex
                 mutex,
                 wasAbandoned: false);
 
+            handleTransferred = true;
+
             return RuntimeOwnershipAcquireResult.CreateAcquired(
                 lease,
                 wasAbandoned: false);
         }
-        catch (AbandonedMutexException)
+        finally
         {
-            RuntimeOwnershipLease lease = new(
-                mutexName,
-                mutex,
-                wasAbandoned: true);
-
-            return RuntimeOwnershipAcquireResult.CreateAcquired(
-                lease,
-                wasAbandoned: true);
-        }
-        catch
-        {
-            mutex.Dispose();
-            throw;
+            if (!handleTransferred)
+            {
+                mutex.Dispose();
+            }
         }
     }
 }
