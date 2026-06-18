@@ -4,9 +4,9 @@ using System.Text;
 
 namespace Zapret2Pilot.Infrastructure.FileSystem;
 
-public sealed class AtomicFileWriter
+public static class AtomicFileWriter
 {
-    public void WriteAllText(string destinationPath, string content)
+    public static void WriteAllText(string destinationPath, string content)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
         ArgumentNullException.ThrowIfNull(content);
