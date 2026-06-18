@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Infrastructure</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Infrastructure</RootNamespace>
+    <Description>File safety and diagnostics infrastructure foundation for Zapret2Pilot.</Description>
+  </PropertyGroup>
+
+</Project>
