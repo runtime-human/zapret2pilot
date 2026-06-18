@@ -269,6 +269,24 @@ Acceptance:
 
 ## 0.0.6 — File safety foundation
 
+Status: Implemented.
+
+Implemented in:
+
+- `Zapret2Pilot.Infrastructure` project;
+- `Zapret2Pilot.Infrastructure.Tests` project;
+- `AppDataLayout`;
+- `AppDataPathProvider`;
+- `SafePathResolver`;
+- `AtomicFileWriter`;
+- `DiagnosticsRedactor`;
+- tests for app data layout creation;
+- tests for path traversal prevention;
+- tests for atomic text writes;
+- tests for diagnostics redaction;
+- `VERSION = 0.0.6`;
+- README status update.
+
 Scope:
 
 - ProgramData layout;

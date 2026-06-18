@@ -386,3 +386,44 @@ Scope:
 - no UI direct SQLite access;
 - no Core SQLite/file-system dependency;
 - no EF Core, ProgramData resolver, SafePathResolver, AtomicFileWriter, runtime process logic, Windows Service, IPC, WinDivert or real `winws2` integration.
+
+## DEC-0027 — File safety foundation
+
+Date: 2026-06
+
+Decision:
+
+- Add `Zapret2Pilot.Infrastructure` as the owner of initial file safety infrastructure.
+- Keep `Zapret2Pilot.Core` free from file system, Windows APIs, SQLite and Process dependencies.
+- Keep `Zapret2Pilot.App` free from direct path safety and atomic write ownership.
+- Keep `Zapret2Pilot.Storage` SQLite-specific and do not turn it into a general infrastructure bucket.
+- Add `AppDataLayout` and `AppDataPathProvider` for the initial app data layout rooted under common application data.
+- Add `SafePathResolver` for user/import/generated relative path resolution inside allowed roots.
+- Add `AtomicFileWriter` for same-directory temp file writes, flush, atomic replace/move and final readable verification.
+- Add `DiagnosticsRedactor` v1 for deterministic package-free diagnostics redaction.
+- Redact common key-value secrets: `token`, `api_key` and `password`.
+- Redact `Authorization: Bearer ...` values.
+- Redact Windows user profile names in `C:\Users\<name>\...` paths.
+- Redact URL query and fragment data in diagnostics text.
+- Do not add runtime process ownership, profile compiler, Auto Doctor, WinDivert, real `winws2`, Windows Service or IPC logic in this patch.
+
+Rationale:
+
+- File safety primitives are shared by future generated runtime files, diagnostics exports, hostlists, generated configs and lock metadata.
+- Core must remain domain-only and dependency-free.
+- UI must call application/infrastructure seams rather than own path validation or atomic writes directly.
+- Storage remains focused on SQLite provider behavior and persistence primitives.
+- Atomic writes need temp files in the same directory as the destination, flushed content and readable verification before higher-risk runtime artifacts are introduced.
+- Safe path resolution must reject absolute paths, rooted paths, parent traversal segments, Windows drive-relative paths and NTFS ADS-style colon paths.
+- Diagnostics redaction must remove URL query/fragment data and common secrets by default before diagnostics export exists.
+
+Scope:
+
+- `Zapret2Pilot.Infrastructure` project;
+- `Zapret2Pilot.Infrastructure.Tests` project;
+- app data layout abstraction;
+- safe path resolver;
+- atomic text writer;
+- diagnostics redactor v1;
+- unit tests for layout creation, path traversal prevention, atomic writes and diagnostics redaction;
+- no Core, Application, App, Storage, runtime, profile compiler, Auto Doctor, Windows Service, IPC, WinDivert or real `winws2` integration.
