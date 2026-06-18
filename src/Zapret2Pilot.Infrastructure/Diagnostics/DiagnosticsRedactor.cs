@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace Zapret2Pilot.Infrastructure.Diagnostics;
 
-public sealed class DiagnosticsRedactor
+public static class DiagnosticsRedactor
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
@@ -27,7 +27,7 @@ public sealed class DiagnosticsRedactor
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
         RegexTimeout);
 
-    public string Redact(string text)
+    public static string Redact(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
 
