@@ -20,18 +20,9 @@ public sealed record class RuntimeLockMetadata
         DateTimeOffset acquiredAtUtc,
         DateTimeOffset processStartedAtUtc)
     {
-        if (schemaVersion <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(schemaVersion));
-        }
-
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(schemaVersion);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerInstanceId);
-
-        if (processId <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(processId));
-        }
-
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         ArgumentException.ThrowIfNullOrWhiteSpace(processName);
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(commandLineHash);
