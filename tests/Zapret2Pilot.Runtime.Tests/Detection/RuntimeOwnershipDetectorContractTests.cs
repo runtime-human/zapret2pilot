@@ -32,22 +32,22 @@ public sealed class RuntimeOwnershipDetectorContractTests
     [Fact]
     public static void ProcessIdentityCarriesExpectedFields()
     {
-        DateTimeOffset processStartedAtUtc = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
 
         RuntimeProcessIdentity identity = new(
             processId: 1234,
             processName: "runtime-engine",
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
+            executablePath: "runtime-engine.exe",
             commandLineHash: "command-line-hash",
             planHash: "plan-hash",
-            processStartedAtUtc: processStartedAtUtc);
+            processStartedAtUtc: startedAt);
 
         Assert.Equal(1234, identity.ProcessId);
         Assert.Equal("runtime-engine", identity.ProcessName);
-        Assert.Equal(@"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe", identity.ExecutablePath);
+        Assert.Equal("runtime-engine.exe", identity.ExecutablePath);
         Assert.Equal("command-line-hash", identity.CommandLineHash);
         Assert.Equal("plan-hash", identity.PlanHash);
-        Assert.Equal(processStartedAtUtc, identity.ProcessStartedAtUtc);
+        Assert.Equal(startedAt, identity.ProcessStartedAtUtc);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public sealed class RuntimeOwnershipDetectorContractTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new RuntimeProcessIdentity(
             processId: 0,
             processName: "runtime-engine",
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
+            executablePath: "runtime-engine.exe",
             commandLineHash: "command-line-hash",
             planHash: "plan-hash",
             processStartedAtUtc: DateTimeOffset.UtcNow));
@@ -68,7 +68,7 @@ public sealed class RuntimeOwnershipDetectorContractTests
         Assert.Throws<ArgumentException>(() => new RuntimeProcessIdentity(
             processId: 1234,
             processName: string.Empty,
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
+            executablePath: "runtime-engine.exe",
             commandLineHash: "command-line-hash",
             planHash: "plan-hash",
             processStartedAtUtc: DateTimeOffset.UtcNow));
@@ -76,18 +76,19 @@ public sealed class RuntimeOwnershipDetectorContractTests
 
     private static RuntimeLockMetadata CreateMetadata()
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        RuntimeLockProcessMetadata process = new(
+            processId: 1234,
+            processName: "runtime-engine",
+            executablePath: "runtime-engine.exe",
+            commandLineHash: "command-line-hash",
+            planHash: "plan-hash",
+            processStartedAtUtc: DateTimeOffset.UtcNow.AddSeconds(-5));
 
         return new RuntimeLockMetadata(
             schemaVersion: 1,
             ownerInstanceId: "test-owner",
-            processId: 1234,
-            processName: "runtime-engine",
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
-            commandLineHash: "command-line-hash",
-            planHash: "plan-hash",
-            acquiredAtUtc: now,
-            processStartedAtUtc: now.AddSeconds(-5));
+            process: process,
+            acquiredAtUtc: DateTimeOffset.UtcNow);
     }
 
     private sealed class StaticRuntimeOwnershipDetector : IRuntimeOwnershipDetector
