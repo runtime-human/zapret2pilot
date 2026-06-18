@@ -73,13 +73,15 @@ public sealed class RuntimeLockFileStoreTests
             {
               "SchemaVersion": 1,
               "OwnerInstanceId": "owner",
-              "ProcessId": 0,
-              "ProcessName": "runtime-engine",
-              "ExecutablePath": "C:\\ProgramData\\Zapret2Pilot\\runtime\\runtime-engine.exe",
-              "CommandLineHash": "command-line-hash",
-              "PlanHash": "plan-hash",
-              "AcquiredAtUtc": "2026-06-18T10:00:00.0000000+00:00",
-              "ProcessStartedAtUtc": "2026-06-18T09:59:55.0000000+00:00"
+              "Process": {
+                "ProcessId": 0,
+                "ProcessName": "runtime-engine",
+                "ExecutablePath": "runtime-engine.exe",
+                "CommandLineHash": "command-line-hash",
+                "PlanHash": "plan-hash",
+                "ProcessStartedAtUtc": "2026-06-18T09:59:55.0000000+00:00"
+              },
+              "AcquiredAtUtc": "2026-06-18T10:00:00.0000000+00:00"
             }
             """);
 
@@ -101,13 +103,15 @@ public sealed class RuntimeLockFileStoreTests
             {
               "SchemaVersion": 1,
               "OwnerInstanceId": "",
-              "ProcessId": 1234,
-              "ProcessName": "runtime-engine",
-              "ExecutablePath": "C:\\ProgramData\\Zapret2Pilot\\runtime\\runtime-engine.exe",
-              "CommandLineHash": "command-line-hash",
-              "PlanHash": "plan-hash",
-              "AcquiredAtUtc": "2026-06-18T10:00:00.0000000+00:00",
-              "ProcessStartedAtUtc": "2026-06-18T09:59:55.0000000+00:00"
+              "Process": {
+                "ProcessId": 1234,
+                "ProcessName": "runtime-engine",
+                "ExecutablePath": "runtime-engine.exe",
+                "CommandLineHash": "command-line-hash",
+                "PlanHash": "plan-hash",
+                "ProcessStartedAtUtc": "2026-06-18T09:59:55.0000000+00:00"
+              },
+              "AcquiredAtUtc": "2026-06-18T10:00:00.0000000+00:00"
             }
             """);
 
@@ -118,37 +122,25 @@ public sealed class RuntimeLockFileStoreTests
     }
 
     [Fact]
-    public static void MetadataRejectsInvalidProcessId()
+    public static void ProcessMetadataRejectsInvalidProcessId()
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        Assert.Throws<ArgumentOutOfRangeException>(() => new RuntimeLockMetadata(
-            schemaVersion: 1,
-            ownerInstanceId: "owner",
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RuntimeLockProcessMetadata(
             processId: 0,
             processName: "runtime-engine",
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
+            executablePath: "runtime-engine.exe",
             commandLineHash: "command-line-hash",
             planHash: "plan-hash",
-            acquiredAtUtc: now,
-            processStartedAtUtc: now.AddSeconds(-5)));
+            processStartedAtUtc: DateTimeOffset.UtcNow));
     }
 
     [Fact]
     public static void MetadataRejectsEmptyOwnerInstanceId()
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
         Assert.Throws<ArgumentException>(() => new RuntimeLockMetadata(
             schemaVersion: 1,
             ownerInstanceId: string.Empty,
-            processId: 1234,
-            processName: "runtime-engine",
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
-            commandLineHash: "command-line-hash",
-            planHash: "plan-hash",
-            acquiredAtUtc: now,
-            processStartedAtUtc: now.AddSeconds(-5)));
+            process: CreateProcessMetadata(),
+            acquiredAtUtc: DateTimeOffset.UtcNow));
     }
 
     [Fact]
@@ -176,17 +168,21 @@ public sealed class RuntimeLockFileStoreTests
 
     private static RuntimeLockMetadata CreateMetadata()
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
         return new RuntimeLockMetadata(
             schemaVersion: 1,
             ownerInstanceId: Guid.NewGuid().ToString("N"),
+            process: CreateProcessMetadata(),
+            acquiredAtUtc: DateTimeOffset.UtcNow);
+    }
+
+    private static RuntimeLockProcessMetadata CreateProcessMetadata()
+    {
+        return new RuntimeLockProcessMetadata(
             processId: 1234,
             processName: "runtime-engine",
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
+            executablePath: "runtime-engine.exe",
             commandLineHash: "command-line-hash",
             planHash: "plan-hash",
-            acquiredAtUtc: now,
-            processStartedAtUtc: now.AddSeconds(-5));
+            processStartedAtUtc: DateTimeOffset.UtcNow.AddSeconds(-5));
     }
 }
