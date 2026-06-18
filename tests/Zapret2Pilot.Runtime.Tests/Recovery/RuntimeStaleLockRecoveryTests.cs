@@ -123,18 +123,17 @@ public sealed class RuntimeStaleLockRecoveryTests
 
     private static RuntimeLockMetadata CreateMetadata()
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
         return new RuntimeLockMetadata(
             schemaVersion: 1,
             ownerInstanceId: "test-owner",
-            processId: 1234,
-            processName: "runtime-engine",
-            executablePath: @"C:\ProgramData\Zapret2Pilot\runtime\runtime-engine.exe",
-            commandLineHash: "command-line-hash",
-            planHash: "plan-hash",
-            acquiredAtUtc: now,
-            processStartedAtUtc: now.AddSeconds(-5));
+            process: new RuntimeLockProcessMetadata(
+                processId: 1234,
+                processName: "runtime-engine",
+                executablePath: "runtime-engine.exe",
+                commandLineHash: "command-line-hash",
+                planHash: "plan-hash",
+                processStartedAtUtc: DateTimeOffset.UtcNow.AddSeconds(-5)),
+            acquiredAtUtc: DateTimeOffset.UtcNow);
     }
 
     private static string CreateUniqueMutexName()
