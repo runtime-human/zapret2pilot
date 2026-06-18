@@ -33,10 +33,7 @@ public sealed class RuntimeOwnershipLease : IDisposable
 
     internal void EnsureActiveOwnershipOnCurrentThread()
     {
-        if (disposed)
-        {
-            throw new ObjectDisposedException(nameof(RuntimeOwnershipLease));
-        }
+        ObjectDisposedException.ThrowIf(disposed, this);
 
         if (Environment.CurrentManagedThreadId != ownerManagedThreadId)
         {
