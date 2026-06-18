@@ -2,7 +2,7 @@
 
 Zapret2Pilot is a Windows desktop manager and control plane for zapret2/winws2.
 
-Current version: `0.0.5`.
+Current version: `0.0.6`.
 
 ## Project status
 
@@ -11,13 +11,13 @@ This repository is in early bootstrap stage.
 Current milestone:
 
 ```text
-0.0.5 — Storage foundation
+0.0.6 — File safety foundation
 ```
 
 Current patch:
 
 ```text
-0.0.5 — Storage foundation
+0.0.6 — File safety foundation
 ```
 
 ## Architecture baseline
@@ -34,6 +34,7 @@ Zapret2Pilot is planned as:
 - Application command dispatch foundation;
 - UI navigation foundation with dashboard/profile/settings placeholders;
 - SQLite storage foundation with WAL initialization;
+- infrastructure foundation for safe paths, atomic writes and diagnostics redaction;
 - no Windows Service in MVP;
 - no IPC service layer in MVP;
 - no VPN/proxy/MITM/traffic-router functionality;
@@ -46,12 +47,14 @@ src/
   Zapret2Pilot.Core/
   Zapret2Pilot.Application/
   Zapret2Pilot.Storage/
+  Zapret2Pilot.Infrastructure/
   Zapret2Pilot.App/
 
 tests/
   Zapret2Pilot.Core.Tests/
   Zapret2Pilot.Application.Tests/
   Zapret2Pilot.Storage.Tests/
+  Zapret2Pilot.Infrastructure.Tests/
   Zapret2Pilot.App.ViewModelTests/
 ```
 
