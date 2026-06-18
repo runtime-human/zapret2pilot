@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Runtime</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Runtime</RootNamespace>
+    <Description>Runtime ownership foundation for Zapret2Pilot.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Zapret2Pilot.Infrastructure\Zapret2Pilot.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
