@@ -12,11 +12,7 @@ public sealed record class RuntimeProcessIdentity
         string planHash,
         DateTimeOffset processStartedAtUtc)
     {
-        if (processId <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(processId));
-        }
-
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         ArgumentException.ThrowIfNullOrWhiteSpace(processName);
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(commandLineHash);
