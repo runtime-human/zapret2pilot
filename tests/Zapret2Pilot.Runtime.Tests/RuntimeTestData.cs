@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Text.Json;
 using Xunit;
 using Zapret2Pilot.Runtime.Locking;
@@ -66,6 +67,13 @@ internal static class RuntimeTestData
         string ownerInstanceId,
         int processId)
     {
+        DateTimeOffset processStartedAtUtc = DateTimeOffset.Parse(
+            "2026-06-18T09:59:55.0000000+00:00",
+            CultureInfo.InvariantCulture);
+        DateTimeOffset acquiredAtUtc = DateTimeOffset.Parse(
+            "2026-06-18T10:00:00.0000000+00:00",
+            CultureInfo.InvariantCulture);
+
         var payload = new
         {
             SchemaVersion = 1,
@@ -77,9 +85,9 @@ internal static class RuntimeTestData
                 ExecutablePath,
                 CommandLineHash,
                 PlanHash,
-                ProcessStartedAtUtc = DateTimeOffset.Parse("2026-06-18T09:59:55.0000000+00:00")
+                ProcessStartedAtUtc = processStartedAtUtc
             },
-            AcquiredAtUtc = DateTimeOffset.Parse("2026-06-18T10:00:00.0000000+00:00")
+            AcquiredAtUtc = acquiredAtUtc
         };
 
         return JsonSerializer.Serialize(payload);
