@@ -19,4 +19,13 @@
     <Product>Zapret2Pilot</Product>
     <Copyright>Copyright © Zapret2Pilot contributors</Copyright>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Microsoft.Data.Sqlite 10.0.9 currently restores SQLitePCLRaw.lib.e_sqlite3 2.1.11 transitively.
+      The package is deprecated and renamed upstream, but there is no patched SQLitePCLRaw.lib.e_sqlite3 version to upgrade to.
+      Keep this exact advisory suppression narrow and remove it once Microsoft.Data.Sqlite moves off the deprecated package.
+    -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-2m69-gcr7-jv3q" />
+  </ItemGroup>
 </Project>
