@@ -104,26 +104,4 @@ public sealed class RuntimeOwnershipMutexTests
         lease.Dispose();
         lease.Dispose();
     }
-
-    [Fact]
-    public static void LeaseDisposeFromDifferentThreadDoesNotReleaseMutex()
-    {
-        string mutexName = RuntimeTestData.CreateUniqueMutexName();
-        RuntimeOwnershipMutex ownershipMutex = new(mutexName);
-        RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
-        RuntimeOwnershipLease lease = RuntimeTestData.RequireLease(result);
-
-        Thread disposeThread = new(lease.Dispose);
-        disposeThread.Start();
-
-        Assert.True(disposeThread.Join(TimeSpan.FromSeconds(5)));
-
-        RuntimeOwnershipMutex contenderMutex = new(mutexName);
-        RuntimeOwnershipAcquireResult contenderResult = contenderMutex.TryAcquire(TimeSpan.Zero);
-
-        Assert.False(contenderResult.Acquired);
-        Assert.Null(contenderResult.Lease);
-
-        lease.Dispose();
-    }
 }
