@@ -54,7 +54,7 @@ public sealed class RuntimeOwnershipMutexTests
 
         ownerThread.Start();
 
-        Assert.True(ownerAcquired.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(ownerAcquired.Wait(TimeSpan.FromSeconds(5), cancellationToken));
 
         if (ownerThreadException is not null)
         {
