@@ -19,7 +19,10 @@ public sealed class RuntimeJobObjectTests
             return;
         }
 
-        using IRuntimeJobObject jobObject = Assert.NotNull(result.JobObject);
+        IRuntimeJobObject? createdJobObject = result.JobObject;
+        Assert.NotNull(createdJobObject);
+
+        using IRuntimeJobObject jobObject = createdJobObject;
 
         Assert.True(result.Created);
         Assert.False(result.UnsupportedPlatform);
@@ -38,7 +41,10 @@ public sealed class RuntimeJobObjectTests
             return;
         }
 
-        IRuntimeJobObject jobObject = Assert.NotNull(result.JobObject);
+        IRuntimeJobObject? createdJobObject = result.JobObject;
+        Assert.NotNull(createdJobObject);
+
+        IRuntimeJobObject jobObject = createdJobObject;
 
         jobObject.Dispose();
         jobObject.Dispose();
@@ -57,7 +63,10 @@ public sealed class RuntimeJobObjectTests
             return;
         }
 
-        using IRuntimeJobObject jobObject = Assert.NotNull(result.JobObject);
+        IRuntimeJobObject? createdJobObject = result.JobObject;
+        Assert.NotNull(createdJobObject);
+
+        using IRuntimeJobObject jobObject = createdJobObject;
 
         Assert.True(jobObject.KillOnCloseConfigured);
     }
@@ -69,7 +78,10 @@ public sealed class RuntimeJobObjectTests
 
         if (OperatingSystem.IsWindows())
         {
-            using IRuntimeJobObject jobObject = Assert.NotNull(result.JobObject);
+            IRuntimeJobObject? createdJobObject = result.JobObject;
+            Assert.NotNull(createdJobObject);
+
+            using IRuntimeJobObject jobObject = createdJobObject;
             Assert.True(result.Created);
             return;
         }
