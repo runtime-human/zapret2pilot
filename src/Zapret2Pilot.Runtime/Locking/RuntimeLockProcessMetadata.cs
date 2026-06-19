@@ -12,21 +12,14 @@ public sealed record class RuntimeLockProcessMetadata
         string commandLineHash,
         string planHash,
         DateTimeOffset processStartedAtUtc)
-        : this(new RuntimeProcessIdentity(
+    {
+        Identity = new RuntimeProcessIdentity(
             processId,
             processName,
             executablePath,
             commandLineHash,
             planHash,
-            processStartedAtUtc))
-    {
-    }
-
-    public RuntimeLockProcessMetadata(RuntimeProcessIdentity identity)
-    {
-        ArgumentNullException.ThrowIfNull(identity);
-
-        Identity = identity;
+            processStartedAtUtc);
     }
 
     public RuntimeProcessIdentity Identity { get; }
