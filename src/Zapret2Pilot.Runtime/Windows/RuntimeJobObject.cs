@@ -9,9 +9,7 @@ public sealed class RuntimeJobObject : IRuntimeJobObject
     private readonly SafeJobObjectHandle handle;
     private bool disposed;
 
-    private RuntimeJobObject(
-        SafeJobObjectHandle handle,
-        bool killOnCloseConfigured)
+    private RuntimeJobObject(SafeJobObjectHandle handle, bool killOnCloseConfigured)
     {
         ArgumentNullException.ThrowIfNull(handle);
 
@@ -35,26 +33,21 @@ public sealed class RuntimeJobObject : IRuntimeJobObject
             return RuntimeJobObjectCreateResult.UnsupportedPlatformResult();
         }
 
-        SafeJobObjectHandle jobHandle = CreateJobObject(
-            IntPtr.Zero,
-            name);
+        IntPtr nativeHandle = CreateJobObject(IntPtr.Zero, name);
 
-        if (jobHandle.IsInvalid)
+        if (nativeHandle == IntPtr.Zero)
         {
             int errorCode = Marshal.GetLastPInvokeError();
-            jobHandle.Dispose();
-
-            throw new RuntimeJobObjectException("CreateJobObjectW", errorCode);
+            throw new RuntimeJobObjectException("CreateJobObject", errorCode);
         }
+
+        SafeJobObjectHandle jobHandle = new(nativeHandle);
 
         try
         {
             ConfigureKillOnJobClose(jobHandle);
 
-            RuntimeJobObject jobObject = new(
-                jobHandle,
-                killOnCloseConfigured: true);
-
+            RuntimeJobObject jobObject = new(jobHandle, killOnCloseConfigured: true);
             return RuntimeJobObjectCreateResult.CreatedJobObject(jobObject);
         }
         catch
@@ -92,7 +85,6 @@ public sealed class RuntimeJobObject : IRuntimeJobObject
         if (!configured)
         {
             int errorCode = Marshal.GetLastPInvokeError();
-
             throw new RuntimeJobObjectException("SetInformationJobObject", errorCode);
         }
     }
