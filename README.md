@@ -2,7 +2,7 @@
 
 Zapret2Pilot is a Windows desktop manager and control plane for zapret2/winws2.
 
-Current version: `0.0.7`.
+Current version: `0.0.8`.
 
 ## Project status
 
@@ -11,13 +11,13 @@ This repository is in early bootstrap stage.
 Current milestone:
 
 ```text
-0.0.7 — Runtime ownership foundation
+0.0.8 — Job Objects foundation
 ```
 
 Current patch:
 
 ```text
-0.0.7 — Runtime ownership foundation
+0.0.8 — Job Objects foundation
 ```
 
 ## Architecture baseline
@@ -36,6 +36,7 @@ Zapret2Pilot is planned as:
 - SQLite storage foundation with WAL initialization;
 - infrastructure foundation for safe paths, atomic writes and diagnostics redaction;
 - runtime ownership foundation with Global Mutex and recovery metadata lock file;
+- Windows Job Object foundation with kill-on-close containment primitive;
 - no Windows Service in MVP;
 - no IPC service layer in MVP;
 - no VPN/proxy/MITM/traffic-router functionality;
