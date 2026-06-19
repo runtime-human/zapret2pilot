@@ -10,14 +10,13 @@ public sealed class RuntimeOwnershipMutexTests
     [Fact]
     public static void TryAcquireReturnsLeaseWhenMutexIsAvailable()
     {
-        string mutexName = CreateUniqueMutexName();
+        string mutexName = RuntimeTestData.CreateUniqueMutexName();
         RuntimeOwnershipMutex ownershipMutex = new(mutexName);
 
         RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
 
-        using RuntimeOwnershipLease lease = Assert.NotNull(result.Lease);
+        using RuntimeOwnershipLease lease = RuntimeTestData.RequireLease(result);
 
-        Assert.True(result.Acquired);
         Assert.False(result.WasAbandoned);
         Assert.Equal(mutexName, lease.MutexName);
         Assert.False(lease.WasAbandoned);
@@ -26,7 +25,8 @@ public sealed class RuntimeOwnershipMutexTests
     [Fact]
     public static void TryAcquireReturnsNotAcquiredWhenMutexIsOwnedByAnotherThread()
     {
-        string mutexName = CreateUniqueMutexName();
+        string mutexName = RuntimeTestData.CreateUniqueMutexName();
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
         using ManualResetEventSlim ownerAcquired = new(initialState: false);
         using ManualResetEventSlim releaseOwner = new(initialState: false);
@@ -40,15 +40,10 @@ public sealed class RuntimeOwnershipMutexTests
                 RuntimeOwnershipMutex ownershipMutex = new(mutexName);
                 RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.FromSeconds(5));
 
-                if (!result.Acquired || result.Lease is null)
-                {
-                    throw new InvalidOperationException("Owner thread failed to acquire runtime ownership mutex.");
-                }
-
-                using RuntimeOwnershipLease lease = result.Lease;
+                using RuntimeOwnershipLease lease = RuntimeTestData.RequireLease(result);
 
                 ownerAcquired.Set();
-                releaseOwner.Wait();
+                releaseOwner.Wait(cancellationToken);
             }
             catch (Exception exception)
             {
@@ -86,74 +81,49 @@ public sealed class RuntimeOwnershipMutexTests
     [Fact]
     public static void DisposeReleasesOwnedMutex()
     {
-        string mutexName = CreateUniqueMutexName();
-
+        string mutexName = RuntimeTestData.CreateUniqueMutexName();
         RuntimeOwnershipMutex firstMutex = new(mutexName);
         RuntimeOwnershipAcquireResult firstResult = firstMutex.TryAcquire(TimeSpan.Zero);
 
-        RuntimeOwnershipLease firstLease = Assert.NotNull(firstResult.Lease);
+        RuntimeOwnershipLease firstLease = RuntimeTestData.RequireLease(firstResult);
         firstLease.Dispose();
 
         RuntimeOwnershipMutex secondMutex = new(mutexName);
         RuntimeOwnershipAcquireResult secondResult = secondMutex.TryAcquire(TimeSpan.Zero);
 
-        using RuntimeOwnershipLease secondLease = Assert.NotNull(secondResult.Lease);
+        using RuntimeOwnershipLease secondLease = RuntimeTestData.RequireLease(secondResult);
 
-        Assert.True(secondResult.Acquired);
         Assert.Equal(mutexName, secondLease.MutexName);
     }
 
     [Fact]
     public static void DisposeIsIdempotent()
     {
-        string mutexName = CreateUniqueMutexName();
-        RuntimeOwnershipMutex ownershipMutex = new(mutexName);
-
-        RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
-
-        RuntimeOwnershipLease lease = Assert.NotNull(result.Lease);
+        RuntimeOwnershipLease lease = RuntimeTestData.AcquireOwnershipLease();
 
         lease.Dispose();
         lease.Dispose();
-
-        Assert.True(result.Acquired);
     }
 
     [Fact]
-    public static void LeaseDisposeRejectsDifferentThread()
+    public static void LeaseDisposeFromDifferentThreadDoesNotReleaseMutex()
     {
-        string mutexName = CreateUniqueMutexName();
+        string mutexName = RuntimeTestData.CreateUniqueMutexName();
         RuntimeOwnershipMutex ownershipMutex = new(mutexName);
-
         RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
-        RuntimeOwnershipLease lease = Assert.NotNull(result.Lease);
+        RuntimeOwnershipLease lease = RuntimeTestData.RequireLease(result);
 
-        Exception? disposeException = null;
-
-        Thread disposeThread = new(() =>
-        {
-            try
-            {
-                lease.Dispose();
-            }
-            catch (Exception exception)
-            {
-                disposeException = exception;
-            }
-        });
-
+        Thread disposeThread = new(lease.Dispose);
         disposeThread.Start();
 
         Assert.True(disposeThread.Join(TimeSpan.FromSeconds(5)));
-        Assert.IsType<InvalidOperationException>(disposeException);
+
+        RuntimeOwnershipMutex contenderMutex = new(mutexName);
+        RuntimeOwnershipAcquireResult contenderResult = contenderMutex.TryAcquire(TimeSpan.Zero);
+
+        Assert.False(contenderResult.Acquired);
+        Assert.Null(contenderResult.Lease);
 
         lease.Dispose();
-    }
-
-    private static string CreateUniqueMutexName()
-    {
-        return OperatingSystem.IsWindows()
-            ? $@"Local\Z2P_TEST_{Guid.NewGuid():N}"
-            : $"Z2P_TEST_{Guid.NewGuid():N}";
     }
 }
