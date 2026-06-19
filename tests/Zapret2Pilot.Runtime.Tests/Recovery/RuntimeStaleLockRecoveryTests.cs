@@ -14,12 +14,9 @@ public sealed class RuntimeStaleLockRecoveryTests
     public static void RecoverAfterOwnershipAcquiredReturnsNoLockFileWhenMissing()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
-        RuntimeStaleLockRecovery recovery = new(store);
-        RuntimeOwnershipMutex ownershipMutex = new(CreateUniqueMutexName());
-        RuntimeOwnershipAcquireResult ownershipResult = ownershipMutex.TryAcquire(TimeSpan.Zero);
+        RuntimeStaleLockRecovery recovery = CreateRecovery(temporaryDirectory, out _);
 
-        using RuntimeOwnershipLease ownershipLease = Assert.NotNull(ownershipResult.Lease);
+        using RuntimeOwnershipLease ownershipLease = RuntimeTestData.AcquireOwnershipLease();
 
         RuntimeStaleLockRecoveryResult result = recovery.RecoverAfterOwnershipAcquired(ownershipLease);
 
@@ -30,12 +27,8 @@ public sealed class RuntimeStaleLockRecoveryTests
     public static void RecoverAfterOwnershipAcquiredRemovesInvalidLockFile()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
-        RuntimeStaleLockRecovery recovery = new(store);
-        RuntimeOwnershipMutex ownershipMutex = new(CreateUniqueMutexName());
-        RuntimeOwnershipAcquireResult ownershipResult = ownershipMutex.TryAcquire(TimeSpan.Zero);
-
-        using RuntimeOwnershipLease ownershipLease = Assert.NotNull(ownershipResult.Lease);
+        RuntimeStaleLockRecovery recovery = CreateRecovery(temporaryDirectory, out RuntimeLockFileStore store);
+        using RuntimeOwnershipLease ownershipLease = RuntimeTestData.AcquireOwnershipLease();
 
         File.WriteAllText(store.LockFilePath, "{ invalid json");
 
@@ -49,14 +42,10 @@ public sealed class RuntimeStaleLockRecoveryTests
     public static void RecoverAfterOwnershipAcquiredRemovesStaleLockFile()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
-        RuntimeStaleLockRecovery recovery = new(store);
-        RuntimeOwnershipMutex ownershipMutex = new(CreateUniqueMutexName());
-        RuntimeOwnershipAcquireResult ownershipResult = ownershipMutex.TryAcquire(TimeSpan.Zero);
+        RuntimeStaleLockRecovery recovery = CreateRecovery(temporaryDirectory, out RuntimeLockFileStore store);
+        using RuntimeOwnershipLease ownershipLease = RuntimeTestData.AcquireOwnershipLease();
 
-        using RuntimeOwnershipLease ownershipLease = Assert.NotNull(ownershipResult.Lease);
-
-        store.Write(CreateMetadata());
+        store.Write(RuntimeTestData.CreateLockMetadata());
 
         RuntimeStaleLockRecoveryResult result = recovery.RecoverAfterOwnershipAcquired(ownershipLease);
 
@@ -68,12 +57,9 @@ public sealed class RuntimeStaleLockRecoveryTests
     public static void RecoverAfterOwnershipAcquiredRejectsDisposedLease()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
-        RuntimeStaleLockRecovery recovery = new(store);
-        RuntimeOwnershipMutex ownershipMutex = new(CreateUniqueMutexName());
-        RuntimeOwnershipAcquireResult ownershipResult = ownershipMutex.TryAcquire(TimeSpan.Zero);
+        RuntimeStaleLockRecovery recovery = CreateRecovery(temporaryDirectory, out _);
+        RuntimeOwnershipLease ownershipLease = RuntimeTestData.AcquireOwnershipLease();
 
-        RuntimeOwnershipLease ownershipLease = Assert.NotNull(ownershipResult.Lease);
         ownershipLease.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() =>
@@ -84,12 +70,8 @@ public sealed class RuntimeStaleLockRecoveryTests
     public static void RecoverAfterOwnershipAcquiredRejectsLeaseFromDifferentThread()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
-        RuntimeStaleLockRecovery recovery = new(store);
-        RuntimeOwnershipMutex ownershipMutex = new(CreateUniqueMutexName());
-        RuntimeOwnershipAcquireResult ownershipResult = ownershipMutex.TryAcquire(TimeSpan.Zero);
-
-        RuntimeOwnershipLease ownershipLease = Assert.NotNull(ownershipResult.Lease);
+        RuntimeStaleLockRecovery recovery = CreateRecovery(temporaryDirectory, out _);
+        RuntimeOwnershipLease ownershipLease = RuntimeTestData.AcquireOwnershipLease();
         Exception? recoveryException = null;
 
         Thread recoveryThread = new(() =>
@@ -110,7 +92,7 @@ public sealed class RuntimeStaleLockRecoveryTests
 
             if (!recoveryThread.Join(TimeSpan.FromSeconds(5)))
             {
-                throw new InvalidOperationException("Recovery thread did not finish.");
+                throw new TimeoutException("Recovery thread did not finish.");
             }
 
             Assert.IsType<InvalidOperationException>(recoveryException);
@@ -121,25 +103,12 @@ public sealed class RuntimeStaleLockRecoveryTests
         }
     }
 
-    private static RuntimeLockMetadata CreateMetadata()
+    private static RuntimeStaleLockRecovery CreateRecovery(
+        TemporaryDirectory temporaryDirectory,
+        out RuntimeLockFileStore store)
     {
-        return new RuntimeLockMetadata(
-            schemaVersion: 1,
-            ownerInstanceId: "test-owner",
-            process: new RuntimeLockProcessMetadata(
-                processId: 1234,
-                processName: "runtime-engine",
-                executablePath: "runtime-engine.exe",
-                commandLineHash: "command-line-hash",
-                planHash: "plan-hash",
-                processStartedAtUtc: DateTimeOffset.UtcNow.AddSeconds(-5)),
-            acquiredAtUtc: DateTimeOffset.UtcNow);
-    }
+        store = new RuntimeLockFileStore(temporaryDirectory.DirectoryPath);
 
-    private static string CreateUniqueMutexName()
-    {
-        return OperatingSystem.IsWindows()
-            ? $@"Local\Z2P_TEST_{Guid.NewGuid():N}"
-            : $"Z2P_TEST_{Guid.NewGuid():N}";
+        return new RuntimeStaleLockRecovery(store);
     }
 }
