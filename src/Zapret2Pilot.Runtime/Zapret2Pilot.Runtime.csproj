@@ -3,7 +3,8 @@
   <PropertyGroup>
     <AssemblyName>Zapret2Pilot.Runtime</AssemblyName>
     <RootNamespace>Zapret2Pilot.Runtime</RootNamespace>
-    <Description>Runtime ownership foundation for Zapret2Pilot.</Description>
+    <Description>Runtime ownership and safety foundation for Zapret2Pilot.</Description>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
