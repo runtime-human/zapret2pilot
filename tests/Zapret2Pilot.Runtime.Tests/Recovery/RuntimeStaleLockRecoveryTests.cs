@@ -95,7 +95,7 @@ public sealed class RuntimeStaleLockRecoveryTests
                 throw new TimeoutException("Recovery thread did not finish.");
             }
 
-            Assert.IsType<InvalidOperationException>(recoveryException);
+            Assert.IsType<RuntimeOwnershipThreadAffinityException>(recoveryException);
         }
         finally
         {
