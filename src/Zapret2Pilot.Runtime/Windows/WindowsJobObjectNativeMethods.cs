@@ -8,7 +8,7 @@ internal static partial class WindowsJobObjectNativeMethods
     internal const uint JobObjectLimitKillOnJobClose = 0x00002000;
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateJobObjectW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    internal static partial SafeJobObjectHandle CreateJobObject(
+    internal static partial IntPtr CreateJobObject(
         IntPtr jobAttributes,
         string? name);
 
