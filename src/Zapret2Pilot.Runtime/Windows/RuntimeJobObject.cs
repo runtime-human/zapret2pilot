@@ -25,14 +25,14 @@ public sealed class RuntimeJobObject : IRuntimeJobObject
 
     public static RuntimeJobObjectCreateResult CreateWithKillOnClose(string? name = null)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return RuntimeJobObjectCreateResult.UnsupportedPlatformResult();
-        }
-
         if (name is not null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return RuntimeJobObjectCreateResult.UnsupportedPlatformResult();
         }
 
         SafeJobObjectHandle jobHandle = CreateJobObject(
