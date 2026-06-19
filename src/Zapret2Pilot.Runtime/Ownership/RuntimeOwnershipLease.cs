@@ -37,8 +37,7 @@ public sealed class RuntimeOwnershipLease : IDisposable
 
         if (Environment.CurrentManagedThreadId != ownerManagedThreadId)
         {
-            throw new InvalidOperationException(
-                "Runtime ownership lease must be used on the same managed thread that acquired it.");
+            throw new RuntimeOwnershipThreadAffinityException();
         }
     }
 
@@ -49,7 +48,10 @@ public sealed class RuntimeOwnershipLease : IDisposable
             return;
         }
 
-        EnsureActiveOwnershipOnCurrentThread();
+        if (Environment.CurrentManagedThreadId != ownerManagedThreadId)
+        {
+            return;
+        }
 
         disposed = true;
 
