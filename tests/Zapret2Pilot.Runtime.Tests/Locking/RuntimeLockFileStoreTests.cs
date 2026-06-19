@@ -11,7 +11,7 @@ public sealed class RuntimeLockFileStoreTests
     public static void ReadReturnsMissingWhenLockFileDoesNotExist()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
 
         RuntimeLockFileReadResult result = store.Read();
 
@@ -23,9 +23,9 @@ public sealed class RuntimeLockFileStoreTests
     public static void WriteCreatesReadableLockFile()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
 
-        store.Write(CreateMetadata());
+        store.Write(RuntimeTestData.CreateLockMetadata());
 
         Assert.True(File.Exists(store.LockFilePath));
         Assert.False(string.IsNullOrWhiteSpace(File.ReadAllText(store.LockFilePath)));
@@ -35,8 +35,9 @@ public sealed class RuntimeLockFileStoreTests
     public static void ReadReturnsValidMetadataAfterWrite()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
-        RuntimeLockMetadata metadata = CreateMetadata();
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
+        RuntimeLockMetadata metadata = RuntimeTestData.CreateLockMetadata(
+            ownerInstanceId: Guid.NewGuid().ToString("N"));
 
         store.Write(metadata);
 
@@ -50,9 +51,8 @@ public sealed class RuntimeLockFileStoreTests
     public static void ReadReturnsInvalidWhenJsonIsMalformed()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
 
-        Directory.CreateDirectory(temporaryDirectory.DirectoryPath);
         File.WriteAllText(store.LockFilePath, "{ invalid json");
 
         RuntimeLockFileReadResult result = store.Read();
@@ -65,25 +65,13 @@ public sealed class RuntimeLockFileStoreTests
     public static void ReadReturnsInvalidWhenMetadataHasInvalidProcessId()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
 
         File.WriteAllText(
             store.LockFilePath,
-            """
-            {
-              "SchemaVersion": 1,
-              "OwnerInstanceId": "owner",
-              "Process": {
-                "ProcessId": 0,
-                "ProcessName": "runtime-engine",
-                "ExecutablePath": "runtime-engine.exe",
-                "CommandLineHash": "command-line-hash",
-                "PlanHash": "plan-hash",
-                "ProcessStartedAtUtc": "2026-06-18T09:59:55.0000000+00:00"
-              },
-              "AcquiredAtUtc": "2026-06-18T10:00:00.0000000+00:00"
-            }
-            """);
+            RuntimeTestData.CreateLockMetadataJson(
+                ownerInstanceId: "owner",
+                processId: 0));
 
         RuntimeLockFileReadResult result = store.Read();
 
@@ -95,25 +83,13 @@ public sealed class RuntimeLockFileStoreTests
     public static void ReadReturnsInvalidWhenMetadataHasEmptyOwnerInstanceId()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
 
         File.WriteAllText(
             store.LockFilePath,
-            """
-            {
-              "SchemaVersion": 1,
-              "OwnerInstanceId": "",
-              "Process": {
-                "ProcessId": 1234,
-                "ProcessName": "runtime-engine",
-                "ExecutablePath": "runtime-engine.exe",
-                "CommandLineHash": "command-line-hash",
-                "PlanHash": "plan-hash",
-                "ProcessStartedAtUtc": "2026-06-18T09:59:55.0000000+00:00"
-              },
-              "AcquiredAtUtc": "2026-06-18T10:00:00.0000000+00:00"
-            }
-            """);
+            RuntimeTestData.CreateLockMetadataJson(
+                ownerInstanceId: string.Empty,
+                processId: RuntimeTestData.ProcessId));
 
         RuntimeLockFileReadResult result = store.Read();
 
@@ -124,32 +100,24 @@ public sealed class RuntimeLockFileStoreTests
     [Fact]
     public static void ProcessMetadataRejectsInvalidProcessId()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => new RuntimeLockProcessMetadata(
-            processId: 0,
-            processName: "runtime-engine",
-            executablePath: "runtime-engine.exe",
-            commandLineHash: "command-line-hash",
-            planHash: "plan-hash",
-            processStartedAtUtc: DateTimeOffset.UtcNow));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            RuntimeTestData.CreateLockProcessMetadata(processId: 0));
     }
 
     [Fact]
     public static void MetadataRejectsEmptyOwnerInstanceId()
     {
-        Assert.Throws<ArgumentException>(() => new RuntimeLockMetadata(
-            schemaVersion: 1,
-            ownerInstanceId: string.Empty,
-            process: CreateProcessMetadata(),
-            acquiredAtUtc: DateTimeOffset.UtcNow));
+        Assert.Throws<ArgumentException>(() =>
+            RuntimeTestData.CreateLockMetadata(ownerInstanceId: string.Empty));
     }
 
     [Fact]
     public static void DeleteRemovesExistingLockFile()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
 
-        store.Write(CreateMetadata());
+        store.Write(RuntimeTestData.CreateLockMetadata());
         store.Delete();
 
         Assert.False(File.Exists(store.LockFilePath));
@@ -159,30 +127,15 @@ public sealed class RuntimeLockFileStoreTests
     public static void DeleteIgnoresMissingLockFile()
     {
         using TemporaryDirectory temporaryDirectory = new();
-        RuntimeLockFileStore store = new(temporaryDirectory.DirectoryPath);
+        RuntimeLockFileStore store = CreateStore(temporaryDirectory);
 
         store.Delete();
 
         Assert.False(File.Exists(store.LockFilePath));
     }
 
-    private static RuntimeLockMetadata CreateMetadata()
+    private static RuntimeLockFileStore CreateStore(TemporaryDirectory temporaryDirectory)
     {
-        return new RuntimeLockMetadata(
-            schemaVersion: 1,
-            ownerInstanceId: Guid.NewGuid().ToString("N"),
-            process: CreateProcessMetadata(),
-            acquiredAtUtc: DateTimeOffset.UtcNow);
-    }
-
-    private static RuntimeLockProcessMetadata CreateProcessMetadata()
-    {
-        return new RuntimeLockProcessMetadata(
-            processId: 1234,
-            processName: "runtime-engine",
-            executablePath: "runtime-engine.exe",
-            commandLineHash: "command-line-hash",
-            planHash: "plan-hash",
-            processStartedAtUtc: DateTimeOffset.UtcNow.AddSeconds(-5));
+        return new RuntimeLockFileStore(temporaryDirectory.DirectoryPath);
     }
 }
