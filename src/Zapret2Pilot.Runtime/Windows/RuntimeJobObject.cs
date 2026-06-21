@@ -21,6 +21,8 @@ public sealed class RuntimeJobObject : IRuntimeJobObject
 
     public bool IsDisposed => disposed;
 
+    internal SafeJobObjectHandle SafeHandle => handle;
+
     public static RuntimeJobObjectCreateResult CreateWithKillOnClose(string? name = null)
     {
         if (name is not null)

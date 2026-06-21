@@ -314,3 +314,44 @@ Acceptance:
 - lock file is metadata only;
 - mutex is atomic ownership primitive;
 - stale lock scenarios tested.
+
+## 0.0.8 — Job Objects foundation
+
+Status: Implemented.
+
+Scope:
+
+- Windows Job Object primitive;
+- close-time child process cleanup configuration;
+- safe native handle lifetime;
+- unsupported-platform guard;
+- focused tests for supported and unsupported behavior.
+
+Acceptance:
+
+- primitive can be created and disposed safely on Windows;
+- native handle ownership is deterministic;
+- unsupported platforms return controlled behavior;
+- production runtime code still has no real process-launch integration.
+
+## 0.0.9 — Job Assignment Foundation
+
+Status: Implemented.
+
+Scope:
+
+- `AssignProcessToJobObject` P/Invoke seam;
+- `IRuntimeJobObjectProcessAssigner` abstraction;
+- `RuntimeJobObjectProcessAssigner` production implementation;
+- `RuntimeProcessHandle` process-handle wrapper;
+- fake-native `IJobObjectNativeApi` seam for unit tests;
+- platform guards for non-Windows hosts;
+- result model that maps native error codes to typed statuses;
+- focused unit tests covering all rejection paths and error mapping.
+
+Acceptance:
+
+- `dotnet build` and `dotnet test` pass;
+- no real process is launched in any unit test;
+- production runtime code carries no `Process.Start`, `Process.Kill`, `winws2`, `WinDivert`, or `WindowsService` references;
+- handle lifetime remains owned by `RuntimeJobObject`; `SafeProcessHandle` is never exposed publicly.

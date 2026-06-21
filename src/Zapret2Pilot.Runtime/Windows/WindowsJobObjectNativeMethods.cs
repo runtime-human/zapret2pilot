@@ -20,6 +20,12 @@ internal static partial class WindowsJobObjectNativeMethods
         ref JobObjectExtendedLimitInformation jobObjectInformation,
         int jobObjectInformationLength);
 
+    [LibraryImport("kernel32.dll", EntryPoint = "AssignProcessToJobObject", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AssignProcessToJobObject(
+        SafeJobObjectHandle jobHandle,
+        IntPtr processHandle);
+
     [LibraryImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool CloseHandle(IntPtr handle);
