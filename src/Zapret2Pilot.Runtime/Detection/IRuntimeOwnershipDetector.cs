@@ -4,5 +4,7 @@ namespace Zapret2Pilot.Runtime.Detection;
 
 public interface IRuntimeOwnershipDetector
 {
-    RuntimeOwnershipVerificationResult Verify(RuntimeLockMetadata metadata);
+    RuntimeOwnershipVerificationResult Verify(
+        RuntimeLockMetadata metadata,
+        string expectedPlanHash);
 }

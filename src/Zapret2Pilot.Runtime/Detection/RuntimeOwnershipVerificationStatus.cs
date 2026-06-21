@@ -9,5 +9,6 @@ public enum RuntimeOwnershipVerificationStatus
     CommandLineHashMismatch = 4,
     PlanHashMismatch = 5,
     ProcessStartTimeMismatch = 6,
-    Unknown = 7
+    Unknown = 7,
+    CommandLineUnverifiable = 8
 }

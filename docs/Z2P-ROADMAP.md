@@ -355,3 +355,28 @@ Acceptance:
 - no real process is launched in any unit test;
 - production runtime code carries no `Process.Start`, `Process.Kill`, `winws2`, `WinDivert`, or `WindowsService` references;
 - handle lifetime remains owned by `RuntimeJobObject`; `SafeProcessHandle` is never exposed publicly.
+
+## 0.0.10 — Runtime Detector Implementation
+
+Status: Implemented.
+
+Scope:
+
+- `IProcessSnapshot` immutable process introspection seam (nullable `CommandLine`);
+- `IProcessSystemAccessor` testable seam with a Windows production accessor (`WindowsProcessSystemAccessor`);
+- `RuntimeOwnershipDetector` real verification implementation: PID, process name, executable path, command-line hash, plan hash and process start time (±5 s);
+- `RuntimeOwnershipVerificationResult` factory methods for all mismatch statuses and `CommandLineUnverifiable`;
+- `RuntimeOwnershipVerificationStatus.CommandLineUnverifiable = 8`;
+- `IRuntimeOwnershipDetector.Verify(RuntimeLockMetadata, string expectedPlanHash)` signature;
+- `FakeProcessSystemAccessor` and focused `RuntimeOwnershipDetector` unit tests;
+- contract tests updated to the new two-argument signature;
+- `DEC-0028 — Nullable CommandLine in IProcessSnapshot`.
+
+Acceptance:
+
+- `dotnet build` and `dotnet test` pass on the whole solution;
+- no real process is launched in any unit test;
+- `WindowsProcessSystemAccessor` does NOT retrieve another process's real command line (returns `null` with a `TODO(0.0.17)` marker);
+- no new NuGet packages and no unsafe P/Invoke for process introspection;
+- verification order matches the specification exactly;
+- `IProcessSnapshot.CommandLine` is `string?` and is never coerced to non-null.

@@ -13,7 +13,7 @@ public sealed class RuntimeOwnershipDetectorContractTests
         StaticRuntimeOwnershipDetector detector = new(
             RuntimeOwnershipVerificationResult.OwnedByExpectedRuntime());
 
-        RuntimeOwnershipVerificationResult result = detector.Verify(CreateMetadata());
+        RuntimeOwnershipVerificationResult result = detector.Verify(CreateMetadata(), "expected-plan-hash");
 
         Assert.Equal(RuntimeOwnershipVerificationStatus.OwnedByExpectedRuntime, result.Status);
     }
@@ -24,7 +24,7 @@ public sealed class RuntimeOwnershipDetectorContractTests
         StaticRuntimeOwnershipDetector detector = new(
             RuntimeOwnershipVerificationResult.NoProcess());
 
-        RuntimeOwnershipVerificationResult result = detector.Verify(CreateMetadata());
+        RuntimeOwnershipVerificationResult result = detector.Verify(CreateMetadata(), "expected-plan-hash");
 
         Assert.Equal(RuntimeOwnershipVerificationStatus.NoProcess, result.Status);
     }
@@ -102,9 +102,12 @@ public sealed class RuntimeOwnershipDetectorContractTests
             this.result = result;
         }
 
-        public RuntimeOwnershipVerificationResult Verify(RuntimeLockMetadata metadata)
+        public RuntimeOwnershipVerificationResult Verify(
+            RuntimeLockMetadata metadata,
+            string expectedPlanHash)
         {
             ArgumentNullException.ThrowIfNull(metadata);
+            ArgumentException.ThrowIfNullOrWhiteSpace(expectedPlanHash);
 
             return result;
         }

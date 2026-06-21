@@ -427,3 +427,30 @@ Scope:
 - diagnostics redactor v1;
 - unit tests for layout creation, path traversal prevention, atomic writes and diagnostics redaction;
 - no Core, Application, App, Storage, runtime, profile compiler, Auto Doctor, Windows Service, IPC, WinDivert or real `winws2` integration.
+
+## DEC-0028 — Nullable CommandLine in IProcessSnapshot
+
+Date: 2026-06
+
+Decision:
+
+- `IProcessSnapshot.CommandLine` is typed as `string?` (nullable).
+- The production `WindowsProcessSystemAccessor` always returns `null` for `CommandLine` in the `0.0.10` milestone.
+- The detector treats `null` `CommandLine` as the new typed status
+  `RuntimeOwnershipVerificationStatus.CommandLineUnverifiable` instead of failing the run.
+- Real cross-process command-line retrieval is deferred to a later roadmap step (currently `0.0.17`) and must use `NtQueryInformationProcess` or WMI with explicit oracle approval.
+
+Rationale:
+
+- The managed `System.Diagnostics.Process` API does not expose another process's command line on Windows.
+- Adding a `string` (non-nullable) `CommandLine` would force a placeholder, an empty string, or an exception — all of which would leak the limitation into the public seam and into the detector.
+- A nullable `CommandLine` keeps the seam honest, lets the detector express the new "cannot verify" status explicitly, and prevents `CommandLineHashMismatch` from being used as a misleading catch-all.
+- `NtQueryInformationProcess` requires `unsafe` P/Invoke (or a native helper) and pulls in additional attack surface; this is a high-impact change that must not be bundled into the `0.0.10` detector implementation.
+- The `0.0.10` milestone delivers a real, testable detector for PID, process name, executable path, plan hash and start time. Command-line verification is intentionally the only step that is structurally present but unverified on Windows until `0.0.17`.
+
+Consequence:
+
+- `WindowsProcessSystemAccessor` carries a `TODO(0.0.17)` comment on the `null` `CommandLine` accessor.
+- `RuntimeOwnershipVerificationStatus.CommandLineUnverifiable` is a terminal, typed status — it is not a fallback to `CommandLineHashMismatch` or `Unknown`.
+- The runtime lock metadata still records `CommandLineHash` from the owner process; it is only the verification of that hash that is currently unverified.
+- The new decision must be revisited before `0.0.17` is started.

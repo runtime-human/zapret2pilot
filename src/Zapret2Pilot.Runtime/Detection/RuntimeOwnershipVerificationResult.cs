@@ -15,6 +15,42 @@ public sealed record class RuntimeOwnershipVerificationResult(
             RuntimeOwnershipVerificationStatus.NoProcess);
     }
 
+    public static RuntimeOwnershipVerificationResult ProcessNameMismatch()
+    {
+        return new RuntimeOwnershipVerificationResult(
+            RuntimeOwnershipVerificationStatus.ProcessNameMismatch);
+    }
+
+    public static RuntimeOwnershipVerificationResult ExecutablePathMismatch()
+    {
+        return new RuntimeOwnershipVerificationResult(
+            RuntimeOwnershipVerificationStatus.ExecutablePathMismatch);
+    }
+
+    public static RuntimeOwnershipVerificationResult CommandLineHashMismatch()
+    {
+        return new RuntimeOwnershipVerificationResult(
+            RuntimeOwnershipVerificationStatus.CommandLineHashMismatch);
+    }
+
+    public static RuntimeOwnershipVerificationResult CommandLineUnverifiable()
+    {
+        return new RuntimeOwnershipVerificationResult(
+            RuntimeOwnershipVerificationStatus.CommandLineUnverifiable);
+    }
+
+    public static RuntimeOwnershipVerificationResult PlanHashMismatch()
+    {
+        return new RuntimeOwnershipVerificationResult(
+            RuntimeOwnershipVerificationStatus.PlanHashMismatch);
+    }
+
+    public static RuntimeOwnershipVerificationResult ProcessStartTimeMismatch()
+    {
+        return new RuntimeOwnershipVerificationResult(
+            RuntimeOwnershipVerificationStatus.ProcessStartTimeMismatch);
+    }
+
     public static RuntimeOwnershipVerificationResult Unknown()
     {
         return new RuntimeOwnershipVerificationResult(
