@@ -6,7 +6,7 @@ Status: **implemented**.
 
 Implemented files:
 
-- `Zapret2Pilot.sln`
+- `Zapret2Pilot.slnx`
 - `.gitignore`
 - `Directory.Build.props`
 - `Directory.Packages.props`

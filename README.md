@@ -71,9 +71,9 @@ Requirements:
 Commands:
 
 ```powershell
-dotnet restore
-dotnet build -c Release
-dotnet test -c Release
+dotnet restore Zapret2Pilot.slnx
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test Zapret2Pilot.slnx -c Release
 ```
 
 ## Run app shell

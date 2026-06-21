@@ -128,7 +128,7 @@ Non-goals:
 - Do not add updater.
 
 Files/projects:
-- Zapret2Pilot.slnx or Zapret2Pilot.sln
+- `Zapret2Pilot.slnx` (legacy `Zapret2Pilot.sln` removed)
 - Directory.Build.props
 - Directory.Packages.props
 - global.json
