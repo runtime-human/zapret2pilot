@@ -1,9 +1,10 @@
 using System;
 using System.IO;
+using Zapret2Pilot.Core.FileSystem;
 
 namespace Zapret2Pilot.Infrastructure.FileSystem;
 
-public sealed class SafePathResolver
+public sealed class SafePathResolver : ISafePathResolver
 {
     private readonly string rootDirectory;
 

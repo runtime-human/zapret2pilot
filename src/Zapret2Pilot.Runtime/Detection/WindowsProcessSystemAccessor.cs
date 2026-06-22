@@ -31,13 +31,11 @@ public sealed class WindowsProcessSystemAccessor : IProcessSystemAccessor
 
         try
         {
-            string processName = process.ProcessName;
-            DateTime startedAtUtc = process.StartTime.ToUniversalTime();
+            if (!TryReadProcessMetadata(process, out string processName, out DateTimeOffset startedAtUtc, out string? executablePath))
+            {
+                return false;
+            }
 
-            // MainModule access can fail on protected / system processes.
-            // We treat that as a failed read so the detector can map it to
-            // its typed result status.
-            string? executablePath = TryReadExecutablePath(process);
             if (executablePath is null)
             {
                 return false;
@@ -53,6 +51,41 @@ public sealed class WindowsProcessSystemAccessor : IProcessSystemAccessor
         finally
         {
             process.Dispose();
+        }
+    }
+
+    private static bool TryReadProcessMetadata(
+        Process process,
+        out string processName,
+        out DateTimeOffset startedAtUtc,
+        out string? executablePath)
+    {
+        processName = string.Empty;
+        startedAtUtc = default;
+        executablePath = null;
+
+        try
+        {
+            processName = process.ProcessName;
+            startedAtUtc = new DateTimeOffset(process.StartTime.ToUniversalTime());
+
+            // MainModule access can fail on protected / system processes.
+            // We treat that as a failed read so the detector can map it to
+            // its typed result status.
+            executablePath = TryReadExecutablePath(process);
+            return true;
+        }
+        catch (Win32Exception)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (NotSupportedException)
+        {
+            return false;
         }
     }
 

@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Zapret2Pilot.Infrastructure\Zapret2Pilot.Infrastructure.csproj" />
+    <ProjectReference Include="..\Zapret2Pilot.Engine.Zapret2\Zapret2Pilot.Engine.Zapret2.csproj" />
   </ItemGroup>
 
 </Project>

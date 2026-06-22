@@ -3,6 +3,7 @@
     <Project Path="src/Zapret2Pilot.App/Zapret2Pilot.App.csproj" />
     <Project Path="src/Zapret2Pilot.Application/Zapret2Pilot.Application.csproj" />
     <Project Path="src/Zapret2Pilot.Core/Zapret2Pilot.Core.csproj" />
+    <Project Path="src/Zapret2Pilot.Engine.Zapret2/Zapret2Pilot.Engine.Zapret2.csproj" />
     <Project Path="src/Zapret2Pilot.Infrastructure/Zapret2Pilot.Infrastructure.csproj" />
     <Project Path="src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj" />
     <Project Path="src/Zapret2Pilot.Storage/Zapret2Pilot.Storage.csproj" />
@@ -11,6 +12,7 @@
     <Project Path="tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj" />
     <Project Path="tests/Zapret2Pilot.Application.Tests/Zapret2Pilot.Application.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Core.Tests/Zapret2Pilot.Core.Tests.csproj" />
+    <Project Path="tests/Zapret2Pilot.Engine.Zapret2.Tests/Zapret2Pilot.Engine.Zapret2.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Infrastructure.Tests/Zapret2Pilot.Infrastructure.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Storage.Tests/Zapret2Pilot.Storage.Tests.csproj" />

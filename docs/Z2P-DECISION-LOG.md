@@ -454,3 +454,27 @@ Consequence:
 - `RuntimeOwnershipVerificationStatus.CommandLineUnverifiable` is a terminal, typed status — it is not a fallback to `CommandLineHashMismatch` or `Unknown`.
 - The runtime lock metadata still records `CommandLineHash` from the owner process; it is only the verification of that hash that is currently unverified.
 - The new decision must be revisited before `0.0.17` is started.
+
+## DEC-0029 — ISafePathResolver abstraction in Core
+
+Date: 2026-06
+
+Decision:
+
+- Add a minimal `ISafePathResolver` abstraction to `Zapret2Pilot.Core.FileSystem`.
+- Keep the concrete `SafePathResolver` implementation in `Zapret2Pilot.Infrastructure.FileSystem` and have it implement the Core interface.
+- `Zapret2Pilot.Infrastructure` gains a `ProjectReference` to `Zapret2Pilot.Core` so the implementation can be expressed in terms of the abstraction.
+- `Zapret2Pilot.Engine.Zapret2` depends on `Zapret2Pilot.Core` only, takes `ISafePathResolver` through constructor injection, and never references `Zapret2Pilot.Infrastructure`.
+
+Rationale:
+
+- The `Engine.Zapret2` adapter must verify the integrity of runtime assets on disk before any profile can be compiled or any `winws2` process can be launched. That requires resolving relative asset paths against an allowed root.
+- Putting the path-resolver contract in `Core` keeps the engine adapter free of `Infrastructure` and of file-system APIs, preserves the existing `Core` ↔ `Infrastructure` direction (Core has no file-system dependency), and lets the engine be unit-tested with a fake resolver.
+- Keeping the concrete implementation in `Infrastructure` preserves the ownership rule that "file safety primitives live in `Infrastructure`" and avoids duplicating path validation in two places.
+- A single-method interface (`ResolveFilePath(string)`) is sufficient for the asset verification use case; broader path APIs (e.g. directory enumeration, atomic write) remain the responsibility of `Infrastructure` and are not pulled into `Core`.
+
+Consequence:
+
+- `Zapret2Pilot.Infrastructure` is no longer a leaf project in the dependency graph: it now references `Zapret2Pilot.Core`.
+- The asset verifier (`Zapret2Pilot.Engine.Zapret2.Assets.ZapretAssetVerifier`) accepts an `ISafePathResolver` through its constructor and is fully unit-testable with a fake resolver.
+- The production wiring of `SafePathResolver` into `Zapret2Pilot.Runtime` is intentionally out of scope for `0.0.11` and will land with the kernel-host wiring in a later milestone.

@@ -380,3 +380,24 @@ Acceptance:
 - no new NuGet packages and no unsafe P/Invoke for process introspection;
 - verification order matches the specification exactly;
 - `IProcessSnapshot.CommandLine` is `string?` and is never coerced to non-null.
+
+## 0.0.11 — Runtime Asset Manifest
+
+Status: Implemented.
+
+Scope:
+
+- `Zapret2Pilot.Engine.Zapret2` project: a Zapret2 engine adapter that owns runtime asset verification, profile compilation and `winws2` argument building (no real process launch yet);
+- runtime asset manifest model: `ZapretAssetManifest`, `ZapretRuntimeAsset`, `AssetKind` and `ZapretAssetVerificationSummary`;
+- `ZapretAssetVerifier` that verifies presence, path safety and SHA-256 hash of every asset declared in the manifest and returns a `Result<ZapretAssetVerificationSummary>`;
+- `ISafePathResolver` minimal abstraction in `Zapret2Pilot.Core.FileSystem`, implemented by `Zapret2Pilot.Infrastructure.FileSystem.SafePathResolver`, so that `Engine.Zapret2` stays free of `Infrastructure` and remains unit-testable with a fake resolver;
+- `Zapret2Pilot.Engine.Zapret2.Tests` with focused tests for: valid manifest, missing executable, hash mismatch, and path escape attempt;
+- `DEC-0029 — ISafePathResolver abstraction in Core`.
+
+Acceptance:
+
+- `dotnet build Zapret2Pilot.slnx -c Release` passes on the whole solution;
+- `dotnet test Zapret2Pilot.slnx -c Release` passes on the whole solution;
+- no real `winws2` process is launched by `Engine.Zapret2` or by its tests;
+- the asset verifier uses `ISafePathResolver` from Core, not a concrete Infrastructure type;
+- no new NuGet packages.

@@ -6,4 +6,8 @@
     <Description>File safety and diagnostics infrastructure foundation for Zapret2Pilot.</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Zapret2Pilot.Core\Zapret2Pilot.Core.csproj" />
+  </ItemGroup>
+
 </Project>

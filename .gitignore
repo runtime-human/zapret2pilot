@@ -48,3 +48,7 @@ packages/
 # Temporary files
 *.tmp
 *.temp
+
+.opencode
+opencode.jsonc
+AGENTS.md

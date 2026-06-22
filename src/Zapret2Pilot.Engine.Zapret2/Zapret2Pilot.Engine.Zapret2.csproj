@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Engine.Zapret2</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Engine.Zapret2</RootNamespace>
+    <Description>Zapret2 adapter: asset verification, profile compilation, and winws2 argument building for Zapret2Pilot.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Zapret2Pilot.Core\Zapret2Pilot.Core.csproj" />
+  </ItemGroup>
+</Project>
