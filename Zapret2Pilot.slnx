@@ -16,5 +16,6 @@
     <Project Path="tests/Zapret2Pilot.Infrastructure.Tests/Zapret2Pilot.Infrastructure.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Storage.Tests/Zapret2Pilot.Storage.Tests.csproj" />
+    <Project Path="tests/Zapret2Pilot.Testing.FakeRuntime/Zapret2Pilot.Testing.FakeRuntime.csproj" />
   </Folder>
 </Solution>
