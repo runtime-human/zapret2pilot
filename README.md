@@ -2,7 +2,7 @@
 
 Zapret2Pilot is a Windows desktop manager and control plane for zapret2/winws2.
 
-Current version: `0.0.11`.
+Current version: `0.0.14`.
 
 ## Project status
 
@@ -11,13 +11,13 @@ This repository is in early bootstrap stage.
 Current milestone:
 
 ```text
-0.0.11 — Runtime Asset Manifest
+0.0.14 — Profile Definition Foundation
 ```
 
 Current patch:
 
 ```text
-0.0.11 — Runtime Asset Manifest
+0.0.14 — Profile Definition Foundation
 ```
 
 ## Architecture baseline
@@ -39,6 +39,9 @@ Zapret2Pilot is planned as:
 - Windows Job Object foundation with kill-on-close containment primitive;
 - job assignment seam for Windows Job Objects;
 - runtime asset manifest and verification for Zapret2/winws2 assets;
+- runtime workspace materialization that writes hostlists, generated config and args file into a workspace directory using the safe path and atomic write infrastructure;
+- profile document and strategy pack document schema with a structural validator in `Engine.Zapret2/Profiles`;
+- profile definition foundation in `Core.Profiles` plus a pure `ProfileDocumentMapper` that resolves validated `ProfileDocument` + supplied `StrategyPackDocument`s into a `ProfileDefinition` (the domain model accepted by the future profile compiler, per `DEC-0010` and Critical Review #18);
 - no Windows Service in MVP;
 - no IPC service layer in MVP;
 - no VPN/proxy/MITM/traffic-router functionality;

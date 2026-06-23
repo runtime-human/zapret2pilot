@@ -193,3 +193,97 @@ Notes:
 - No real `winws2` process is started, killed, or assigned. The verifier is read-only and is the only `Engine.Zapret2` runtime primitive at this point.
 - SHA-256 comparison is case-insensitive on the hex string so that both lowercase and uppercase manifests verify consistently.
 - The `0.0.11` milestone is the first `Engine.Zapret2` slice: manifest + asset verification. Profile compilation and `winws2` argument building remain intentionally out of scope until later `Engine.Zapret2` milestones.
+
+## 0.0.12 — Runtime Workspace Materialization
+
+Status: **implemented**.
+
+Implemented files and areas:
+
+- `src/Zapret2Pilot.Core/Runtime/CompiledZapretPlan.cs` — minimal placeholder for the future profile compiler output (generated config content, args content, hostlist contents keyed by relative path);
+- `src/Zapret2Pilot.Runtime/Workspace/IRuntimeWorkspaceMaterializer.cs` — async materializer contract returning `Result<RuntimeWorkspaceMaterializeResult>`;
+- `src/Zapret2Pilot.Runtime/Workspace/RuntimeWorkspaceMaterializer.cs` — production implementation: validates arguments, ensures workspace directory, verifies assets via `ZapretAssetVerifier` with a workspace-rooted `SafePathResolver`, then writes `generated.cfg`, `args.txt`, and hostlist files via `AtomicFileWriter`;
+- `src/Zapret2Pilot.Runtime/Workspace/RuntimeWorkspaceMaterializeResult.cs` — success result exposing workspace directory, args file path, generated config path, and written hostlist paths;
+- `tests/Zapret2Pilot.Runtime.Tests/Workspace/RuntimeWorkspaceMaterializerTests.cs` — focused tests for happy path, path traversal rejection, atomic replace of existing files, and missing asset failure;
+- `VERSION = 0.0.12`;
+- `docs/Z2P-ROADMAP.md` — added the `0.0.12 — Runtime Workspace Materialization` section;
+- `docs/Z2P-IMPLEMENTATION-STATUS.md` — this section.
+
+Validation commands to run locally:
+
+```powershell
+dotnet --version
+dotnet restore Zapret2Pilot.slnx
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release
+dotnet test Zapret2Pilot.slnx -c Release
+```
+
+Notes:
+
+- The materializer uses the same `SafePathResolver` instance for both asset verification and file writes, so unsafe paths are rejected uniformly and the workspace root acts as a containment boundary.
+- All file writes go through `AtomicFileWriter`; partial writes never leave the workspace inconsistent.
+- `CompiledZapretPlan` is intentionally a minimal placeholder. The real profile compiler and `winws2` argument builder will arrive in later milestones.
+- No real process is started, killed, or assigned. The materializer only writes files.
+
+## 0.0.13 — Profile Document Foundation
+
+Status: **implemented (current)**.
+
+Implemented files and areas:
+
+- `src/Zapret2Pilot.Engine.Zapret2/Profiles/ProfileDocument.cs` — profile document DTO (`ProfileId`, display name, description, strategy references, hostlist references);
+- `src/Zapret2Pilot.Engine.Zapret2/Profiles/StrategyPackDocument.cs` — strategy pack document skeleton (`StrategyPackId`, `StrategyDocument` list);
+- `src/Zapret2Pilot.Engine.Zapret2/Profiles/ProfileDocumentValidator.cs` — pure lexical/structural validator returning `Result` with error codes `ProfileDocumentMissing`, `ProfileIdMissing`, `ProfileDisplayNameMissing`, `StrategyReferencesMissing`, `HostlistReferencesMissing`, `StrategyReferenceInvalid`, `DuplicateStrategyReference`, `HostlistReferenceInvalid`, `HostlistPathUnsafe`;
+- `tests/Zapret2Pilot.Engine.Zapret2.Tests/Profiles/ProfileDocumentValidatorTests.cs` — focused unit tests for valid document, empty ID/name, duplicate strategy references, invalid hostlist paths, null collections and invalid references;
+- `VERSION = 0.0.13`;
+- `README.md`, `docs/Z2P-ROADMAP.md` and `docs/Z2P-IMPLEMENTATION-STATUS.md` updated.
+
+Validation commands to run locally:
+
+```powershell
+dotnet --version
+dotnet restore Zapret2Pilot.slnx
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test tests/Zapret2Pilot.Engine.Zapret2.Tests -c Release
+dotnet test Zapret2Pilot.slnx -c Release
+```
+
+Notes:
+
+- The validator is intentionally DTO-level and does not access the filesystem or resolve strategy/hostlist contents. Mapping to domain `ProfileDefinition` and compiler integration are explicitly out of scope for 0.0.13.
+- No real process is started, killed, or assigned.
+
+## 0.0.14 — Profile Definition Foundation
+
+Status: **implemented (current)**.
+
+Implemented files and areas:
+
+- `src/Zapret2Pilot.Core/Profiles/StrategyDefinition.cs` — `sealed record` `StrategyDefinition` with name + ordered `IReadOnlyList<string>` parameters and explicit constructor validation (`ArgumentNullException.ThrowIfNull` / `ArgumentException` for null/blank name);
+- `src/Zapret2Pilot.Core/Profiles/StrategyPackDefinition.cs` — `sealed record` `StrategyPackDefinition` with `StrategyPackId Id` and `IReadOnlyList<StrategyDefinition> Strategies`;
+- `src/Zapret2Pilot.Core/Profiles/ProfileDefinition.cs` — `sealed record` `ProfileDefinition`, `StrategyAssignment` and `HostlistAssignment`; `Description` is the only nullable member, the rest are non-null/non-blank; all five Core.Profiles types are dependency-free of Avalonia, Windows APIs, SQLite, the file system and `Process` (they only reference `Zapret2Pilot.Core.Primitives` and `Zapret2Pilot.Core.Results`);
+- `src/Zapret2Pilot.Engine.Zapret2/Profiles/IProfileMapper.cs` — public mapper contract: `Result<ProfileDefinition> Map(ProfileDocument profile, IReadOnlyList<StrategyPackDocument> strategyPacks)`;
+- `src/Zapret2Pilot.Engine.Zapret2/Profiles/ProfileDocumentMapper.cs` — production implementation that returns `ProfileDocumentMissing` (ErrorCategory.Profile) for a null profile, `StrategyPackMissing` (ErrorCategory.StrategyPack) when a `StrategyReference` cannot be matched to any supplied `StrategyPackDocument` by `StrategyPackId`, `StrategyMissing` (ErrorCategory.StrategyPack) when the matched pack does not contain the named `StrategyDocument`, and `HostlistReferenceInvalid` (ErrorCategory.Hostlist) for a `HostlistReference` with a null `HostlistId` or null/whitespace `RelativePath`; the mapper is a pure resolver and does NOT duplicate the path-traversal checks already performed by `ProfileDocumentValidator`;
+- `tests/Zapret2Pilot.Engine.Zapret2.Tests/Profiles/ProfileDocumentMapperTests.cs` — focused xUnit tests: `ValidProfileMapsToDefinition`, `MissingStrategyPackReturnsStrategyPackMissing`, `MissingStrategyInExistingPackReturnsStrategyMissing`, `NullHostlistRelativePathReturnsHostlistReferenceInvalid`, `BlankHostlistRelativePathReturnsHostlistReferenceInvalid`, `NullHostlistIdReturnsHostlistReferenceInvalid`, `EmptyStrategyAndHostlistListsMapSuccessfully`, `NullProfileReturnsProfileDocumentMissing`;
+- `VERSION = 0.0.14`;
+- `README.md`, `docs/Z2P-ROADMAP.md` and `docs/Z2P-IMPLEMENTATION-STATUS.md` updated to reflect the new milestone.
+
+Validation commands to run locally:
+
+```powershell
+dotnet --version
+dotnet restore Zapret2Pilot.slnx
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test tests/Zapret2Pilot.Engine.Zapret2.Tests -c Release
+dotnet test Zapret2Pilot.slnx -c Release
+```
+
+Notes:
+
+- The mapper is intentionally a pure resolver. It does not access the filesystem, does not load hostlist contents, does not compile to a `CompiledZapretPlan`, and does not build `winws2` arguments. Profile compilation and `winws2` argument building remain explicitly out of scope for this milestone.
+- The mapper uses `Equals` on `StrategyPackId` for pack matching and ordinal string comparison for strategy-name matching, consistent with the validator's `StrategyReferenceComparer`.
+- The `Core.Profiles` types follow the same null/blank-guard pattern as `Zapret2Pilot.Core.Runtime.CompiledZapretPlan.HostlistContent` (`ArgumentNullException.ThrowIfNull` + `ArgumentException` for whitespace), which keeps the new domain types consistent with the existing Core style and analyzers (`CA1510`).
+- Per `DEC-0010` and Critical Review #18, the boundary between `ProfileDocument` (DTO) and `ProfileDefinition` (domain) is now enforced at the type level: the future profile compiler (0.0.15+) will accept `ProfileDefinition` only.
+- No real process is started, killed, or assigned. The mapper is a read-only resolver.
+- No new NuGet packages, no `global.json` change, no `Directory.Packages.props` change, no lock file change, no `Zapret2Pilot.slnx` change (the new `Core.Profiles` types live inside the existing `Zapret2Pilot.Core` project and the new mapper lives inside the existing `Zapret2Pilot.Engine.Zapret2` project).
