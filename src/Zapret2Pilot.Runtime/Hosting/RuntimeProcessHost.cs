@@ -161,7 +161,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
     /// <see cref="RuntimeProcessHostResult"/> describing the launched
     /// process on success, or a <see cref="ErrorInfo"/> on failure.
     /// </returns>
-    public async Task<Result<RuntimeProcessHostResult>> StartAsync(
+    public Task<Result<RuntimeProcessHostResult>> StartAsync(
         RuntimeProcessStartContext context,
         CancellationToken cancellationToken = default)
     {
@@ -173,31 +173,31 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         // to throw ArgumentException because planHash cannot be whitespace.
         if (context.Plan.CacheKey is null)
         {
-            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimePlanCacheKeyMissing",
                 message: "Cannot start the runtime: the compiled plan has no cache key.",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime));
+                category: ErrorCategory.Runtime)));
         }
 
         lock (stateLock)
         {
             if (disposed)
             {
-                return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+                return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                     code: "RuntimeProcessHostDisposed",
                     message: "Cannot start the runtime: the host has been disposed.",
                     severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime));
+                    category: ErrorCategory.Runtime)));
             }
 
             if (ownershipLease is not null)
             {
-                return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+                return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                     code: "RuntimeAlreadyRunning",
                     message: "Cannot start the runtime: a previous start has not been stopped.",
                     severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime));
+                    category: ErrorCategory.Runtime)));
             }
         }
 
@@ -205,11 +205,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         RuntimeOwnershipAcquireResult acquireResult = ownershipMutex.TryAcquire(TimeSpan.Zero);
         if (!acquireResult.Acquired || acquireResult.Lease is null)
         {
-            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimeOwnershipNotAcquired",
                 message: "Cannot start the runtime: ownership mutex is held by another process.",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime));
+                category: ErrorCategory.Runtime)));
         }
 
         RuntimeOwnershipLease lease = acquireResult.Lease;
@@ -243,16 +243,14 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: $"Workspace materialization failed: {materializeResult.Error.Message}",
                     severity: ErrorSeverity.Error,
                     category: materializeResult.Error.Category);
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(error);
+                return FailStartAndCleanup(error, startedProcess: null, createdJobObject: null, transaction: null, lease);
             }
 
             // 4. Begin the start transaction.
             Result<RuntimeTransaction> beginResult = transactionManager.BeginStart(context.Plan);
             if (beginResult.IsFailure)
             {
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(beginResult.Error);
+                return FailStartAndCleanup(beginResult.Error, startedProcess: null, createdJobObject: null, transaction: null, lease);
             }
             transaction = beginResult.Value;
 
@@ -269,10 +267,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: $"Failed to create a job object for runtime containment: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(jobError);
+                return FailStartAndCleanup(jobError, startedProcess: null, createdJobObject: null, transaction, lease);
             }
 
             if (!createResult.Created || createResult.JobObject is null)
@@ -282,10 +277,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: "Cannot create a job object: the current platform is not supported.",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(jobError);
+                return FailStartAndCleanup(jobError, startedProcess: null, createdJobObject: null, transaction, lease);
             }
             createdJobObject = createResult.JobObject;
 
@@ -322,11 +314,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: $"Failed to start the runtime process: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(startError);
+                return FailStartAndCleanup(startError, startedProcess: null, createdJobObject, transaction, lease);
             }
 
             if (startedProcess is null)
@@ -336,11 +324,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: "Failed to start the runtime process: Process.Start returned null.",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(startError);
+                return FailStartAndCleanup(startError, startedProcess: null, createdJobObject, transaction, lease);
             }
 
             // 7. Capture process identity (used for both assignment and lock metadata).
@@ -360,12 +344,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: $"Failed to read runtime process information: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                BestEffortKillAndDispose(startedProcess);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(infoError);
+                return FailStartAndCleanup(infoError, startedProcess, createdJobObject, transaction, lease);
             }
 
             IntPtr processHandle;
@@ -380,12 +359,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: $"Failed to obtain the runtime process handle: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                BestEffortKillAndDispose(startedProcess);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(handleError);
+                return FailStartAndCleanup(handleError, startedProcess, createdJobObject, transaction, lease);
             }
 
             // 8. Assign the process to the job object.
@@ -399,12 +373,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: $"Failed to assign the runtime process to the job object: status={assignResult.Status}.",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                BestEffortKillAndDispose(startedProcess);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(assignError);
+                return FailStartAndCleanup(assignError, startedProcess, createdJobObject, transaction, lease);
             }
 
             // 9. Readiness check (synchronous to preserve ownership-mutex thread
@@ -421,12 +390,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: readinessResult.Error.Message,
                     severity: ErrorSeverity.Error,
                     category: readinessResult.Error.Category);
-                BestEffortKillAndDispose(startedProcess);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(readinessError);
+                return FailStartAndCleanup(readinessError, startedProcess, createdJobObject, transaction, lease);
             }
 
             // 10. Write the lock metadata.
@@ -461,12 +425,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     message: $"Failed to write the runtime lock file: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Storage);
-                BestEffortKillAndDispose(startedProcess);
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                transaction = null;
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(lockError);
+                return FailStartAndCleanup(lockError, startedProcess, createdJobObject, transaction, lease);
             }
 
             // 11. Commit the start transaction.
@@ -485,7 +444,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                 }
                 try { createdJobObject.Dispose(); } catch { /* best effort */ }
                 try { lease.Dispose(); } catch { /* best effort */ }
-                return Result.Failure<RuntimeProcessHostResult>(commitError);
+                return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(commitError));
             }
             transactionCommitted = true;
             transaction = null;
@@ -498,11 +457,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                 jobObject = createdJobObject;
             }
 
-            return Result.Success(new RuntimeProcessHostResult(
+            return Task.FromResult(Result.Success(new RuntimeProcessHostResult(
                 processId: processId,
                 processName: processName,
                 executablePath: executablePath,
-                plan: context.Plan));
+                plan: context.Plan)));
         }
         catch (OperationCanceledException)
         {
@@ -513,11 +472,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                 transactionCommitted,
                 lockFileWritten,
                 lease);
-            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimeStartCancelled",
                 message: "The runtime start was cancelled.",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime));
+                category: ErrorCategory.Runtime)));
         }
         catch (Exception ex)
         {
@@ -528,11 +487,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                 transactionCommitted,
                 lockFileWritten,
                 lease);
-            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimeStartUnexpectedError",
                 message: $"Unexpected error while starting the runtime: {ex.Message}",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime));
+                category: ErrorCategory.Runtime)));
         }
     }
 
@@ -837,6 +796,73 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         {
             // best effort
         }
+    }
+
+    /// <summary>
+    /// Performs the standard partial-state cleanup for a
+    /// <see cref="StartAsync"/> failure path and returns the
+    /// corresponding failure <see cref="Result{T}"/>. Kills and
+    /// disposes the started process (if any), disposes the job
+    /// object (if any), rolls the transaction back (if any) and
+    /// disposes the ownership lease. The lock file is NOT deleted
+    /// here because it has not been written in the failure paths
+    /// that use this helper; the commit-failure path that owns the
+    /// lock-file cleanup uses inline code instead. All steps swallow
+    /// exceptions because the method is invoked from
+    /// already-failing paths.
+    /// </summary>
+    /// <param name="error">The error to surface to the caller.</param>
+    /// <param name="startedProcess">The partially-started process, or <c>null</c>.</param>
+    /// <param name="createdJobObject">The created job object, or <c>null</c>.</param>
+    /// <param name="transaction">The open transaction, or <c>null</c>.</param>
+    /// <param name="lease">The ownership lease acquired at the start of the pipeline.</param>
+    /// <returns>A failed <see cref="Task{T}"/> wrapping a <see cref="Result{T}"/> around <paramref name="error"/>.</returns>
+    private Task<Result<RuntimeProcessHostResult>> FailStartAndCleanup(
+        ErrorInfo error,
+        Process? startedProcess,
+        IRuntimeJobObject? createdJobObject,
+        RuntimeTransaction? transaction,
+        RuntimeOwnershipLease lease)
+    {
+        if (startedProcess is not null)
+        {
+            BestEffortKillAndDispose(startedProcess);
+        }
+
+        if (createdJobObject is not null)
+        {
+            try
+            {
+                createdJobObject.Dispose();
+            }
+            catch
+            {
+                // best effort
+            }
+        }
+
+        if (transaction is not null)
+        {
+            try
+            {
+                transactionManager.Rollback(transaction);
+            }
+            catch
+            {
+                // best effort
+            }
+        }
+
+        try
+        {
+            lease.Dispose();
+        }
+        catch
+        {
+            // best effort
+        }
+
+        return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(error));
     }
 
     /// <summary>
