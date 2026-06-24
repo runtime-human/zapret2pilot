@@ -2,7 +2,7 @@
 
 Zapret2Pilot is a Windows desktop manager and control plane for zapret2/winws2.
 
-Current version: `0.0.16`.
+Current version: `0.0.17`.
 
 ## Project status
 
@@ -11,13 +11,13 @@ This repository is in early bootstrap stage.
 Current milestone:
 
 ```text
-0.0.16 — Runtime Transaction Model
+0.0.17 — Runtime Process Host
 ```
 
 Current patch:
 
 ```text
-0.0.16 — Runtime Transaction Model
+0.0.17 — Runtime Process Host
 ```
 
 ## Architecture baseline

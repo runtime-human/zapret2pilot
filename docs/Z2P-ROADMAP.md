@@ -587,3 +587,52 @@ Reviewer focus:
 - every `Begin*` flow pushes a rollback action BEFORE applying the proposed state change, so the manager can never be left in an inconsistent state on the rollback path;
 - `Result<Unit>` is the success type for `Commit` / `Rollback`; the unit tests assert `IsSuccess` rather than the value payload;
 - the `IsRunning` and `CurrentPlan` properties are `internal` only — they must not be promoted to the public surface in this milestone.
+
+## 0.0.17 — Runtime Process Host
+
+Status: Implemented.
+
+Follows 0.0.16. Wires the existing safety primitives (global ownership mutex, lock file store, `RuntimeTransactionManager`, Windows Job Object, `RuntimeWorkspaceMaterializer`, `ZapretAssetVerifier`) together into a single `RuntimeProcessHost` that can launch, contain and shut down a Zapret2 runtime process end-to-end. **The implementation uses a fake runtime binary only (`Zapret2Pilot.Testing.FakeRuntime`); real `winws2` launch remains explicitly out of scope and remains gated by oracle approval.**
+
+Scope:
+
+- `Zapret2Pilot.Runtime.Hosting.RuntimeProcessStartContext` — public input DTO for `RuntimeProcessHost.StartAsync` carrying the `CompiledZapretPlan`, the resolved `ZapretAssetManifest`, the absolute workspace directory and the absolute path of the runtime executable to launch; constructor rejects null/blank arguments;
+- `Zapret2Pilot.Runtime.Hosting.RuntimeProcessHostResult` — public success payload returned from a successful start/stop, exposing the live `ProcessId`, `ProcessName`, `ExecutablePath` and the `CompiledZapretPlan` that was launched;
+- `Zapret2Pilot.Runtime.Hosting.RuntimeProcessHost` — public `sealed class` that runs the start pipeline on the calling thread to preserve ownership-mutex thread affinity: acquire the global ownership mutex, perform stale lock recovery, materialize the workspace, begin a `Start` transaction, create a Windows Job Object with kill-on-close, launch the runtime process, assign it to the job object, run a readiness check, write the recovery lock file, and finally commit the transaction. Any failure between `BeginStart` and `Commit` rolls the transaction back and tears down the partially-constructed resources. `StopAsync` reverses that pipeline (begin a `Stop` transaction, kill the process if any, wait for exit bounded by a constructor-supplied `stopTimeout`, dispose the process and the job object, delete the lock file, dispose the ownership lease, and commit);
+- `Zapret2Pilot.Runtime.Health.RuntimeReadinessChecker` — public `static` post-start readiness probe that waits a short, caller-supplied readiness window (default 250 ms, in the documented 100–500 ms range) and then reports whether the process is still running; returns `Result<Unit>` with `RUNTIME_NOT_READY` (`ErrorCategory.Runtime`) when the process has already exited; performs no log parsing or standard-output sniffing (those are future work);
+- `tests/Zapret2Pilot.Testing.FakeRuntime` — new console project that prints a single `READY` line on stdout, flushes it and blocks until SIGINT/Ctrl+C, then exits with code 0. It is a test-only stand-in for `winws2.exe` and is referenced by `Zapret2Pilot.Runtime.Tests` via `<ProjectReference PrivateAssets="all" />` so that the fake `.exe` and `.dll` are copied next to the test assembly;
+- `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessStartContextTests.cs` — focused xUnit tests for the input DTO: valid construction, null plan, null manifest, null/whitespace workspace, null/whitespace runtime path;
+- `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessHostResultTests.cs` — focused xUnit tests for the success payload: valid construction, non-positive PID, null/whitespace process name or executable path, null plan;
+- `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessHostTests.cs` — integration-style xUnit tests for the host: null-context rejection, null-manifest rejection, double-start rejection (`AlreadyRunning`), and a full `StartAsync` → `StopAsync` round-trip with the bundled `FakeRuntime` (the host launches the fake executable, assigns it to the job object, runs the readiness check, writes the recovery lock file and commits the transaction);
+- `tests/Zapret2Pilot.Runtime.Tests/Health/RuntimeReadinessCheckerTests.cs` — focused xUnit tests for the readiness probe: success path, fast-exit detection (`RUNTIME_NOT_READY`), null process rejection, non-positive timeout rejection and `CancellationToken` propagation;
+- `Zapret2Pilot.slnx` — added the new `tests/Zapret2Pilot.Testing.FakeRuntime/Zapret2Pilot.Testing.FakeRuntime.csproj` so the fake is built as part of the solution;
+- `VERSION = 0.0.17`;
+- `README.md`, `docs/Z2P-ROADMAP.md` and `docs/Z2P-IMPLEMENTATION-STATUS.md` updated to reflect the new milestone.
+
+Out of scope for 0.0.17:
+
+- launching the real `winws2.exe` binary; the production wiring uses `Zapret2Pilot.Testing.FakeRuntime` as a placeholder until oracle approves the real launch (per `docs/Z2P-CANON.md`, `docs/Z2P-CRITICAL-REVIEW.md` and `DEC-0028`);
+- cross-process command-line retrieval (`NtQueryInformationProcess` / WMI) — still requires oracle approval, the `TODO(0.0.17)` marker on `WindowsProcessSystemAccessor.CommandLine` is intentionally not retired in this milestone;
+- log scraping, heartbeat / native liveness probes or any richer readiness signal than "process did not exit during the readiness window";
+- surfacing the runtime host through the Avalonia UI or wiring it into `RuntimeTransactionManager` call sites from the application layer.
+
+Acceptance:
+
+- the host launches a process only when the start context, the ownership mutex, the transaction manager, the workspace materializer, the asset verifier and the job object are all available and consistent;
+- the host rolls back the transaction and tears down partially-constructed resources (process, job object, lock file) on any failure between `BeginStart` and `Commit`;
+- the host never launches `winws2`; it launches exactly the executable path supplied in `RuntimeProcessStartContext.RuntimeExecutablePath`, which in the milestone's tests is the `Zapret2Pilot.Testing.FakeRuntime.exe` copied next to the test assembly;
+- `RuntimeReadinessChecker` is a pure probe that performs no I/O on the process; it only inspects `Process.HasExited` after a bounded wait;
+- no new NuGet packages, no `global.json` change, no `Directory.Packages.props` change, no lock file change.
+
+Verification ladder:
+
+- `dotnet build Zapret2Pilot.slnx -c Release` — passes on the whole solution (including the new `Zapret2Pilot.Testing.FakeRuntime` project);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release` — passes (all host, DTO and readiness tests run against the bundled `FakeRuntime`);
+- `dotnet test Zapret2Pilot.slnx -c Release` — passes on the whole solution;
+- the host tests are the only ones that launch a real OS process; the fake process is part of the test binary and is killed deterministically by `StopAsync` before each test completes.
+
+Reviewer focus:
+
+- confirm that the production wiring uses the fake runtime and that no production code path can resolve to the real `winws2.exe` without an explicit, oracle-approved change;
+- confirm that the `TODO(0.0.17)` marker on `WindowsProcessSystemAccessor.CommandLine` is still present (cross-process command-line retrieval remains explicitly deferred);
+- confirm that `RuntimeProcessHost` honors the existing safety primitives end-to-end: ownership mutex is acquired before launch, the transaction is committed only after the lock file is written, and rollback tears down the process, the job object, the lock file and the ownership lease in the right order.

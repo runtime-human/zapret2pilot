@@ -15,6 +15,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
+    <!--
+      Reference the FakeRuntime test executable so its .exe and .dll are
+      copied next to the test assembly. Used by the 0.0.17 host integration
+      test that launches the fake runtime in place of winws2. Marked
+      PrivateAssets="all" so the fake does not become a transitive
+      dependency of anything that consumes the test assembly.
+    -->
+    <ProjectReference Include="..\Zapret2Pilot.Testing.FakeRuntime\Zapret2Pilot.Testing.FakeRuntime.csproj" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>
