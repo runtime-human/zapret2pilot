@@ -6,9 +6,9 @@ namespace Zapret2Pilot.Runtime.Recovery;
 
 public sealed class RuntimeStaleLockRecovery
 {
-    private readonly RuntimeLockFileStore lockFileStore;
+    private readonly IRuntimeLockFileStore lockFileStore;
 
-    public RuntimeStaleLockRecovery(RuntimeLockFileStore lockFileStore)
+    public RuntimeStaleLockRecovery(IRuntimeLockFileStore lockFileStore)
     {
         ArgumentNullException.ThrowIfNull(lockFileStore);
 
