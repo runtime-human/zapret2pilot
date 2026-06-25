@@ -7,10 +7,37 @@ internal static partial class WindowsJobObjectNativeMethods
 {
     internal const uint JobObjectLimitKillOnJobClose = 0x00002000;
 
+    /// <summary>
+    /// <c>CTRL_BREAK_EVENT</c> value for <c>GenerateConsoleCtrlEvent</c>.
+    /// Sends a CTRL+BREAK signal to the specified process group.
+    /// </summary>
+    internal const uint CtrlBreakEvent = 1;
+
     [LibraryImport("kernel32.dll", EntryPoint = "CreateJobObjectW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     internal static partial IntPtr CreateJobObject(
         IntPtr jobAttributes,
         string? name);
+
+    /// <summary>
+    /// Sends a specified signal to a console process group. A
+    /// <paramref name="dwProcessGroupId"/> of <c>0</c> delivers the
+    /// signal to every process attached to the calling process's
+    /// console. The <c>CTRL_BREAK_EVENT</c> signal can be intercepted
+    /// by a well-behaved console application via
+    /// <see cref="Console.CancelKeyPress"/> so it can shut down
+    /// gracefully; processes created with <c>CreateNoWindow=true</c>
+    /// or without an attached console will not receive the signal,
+    /// in which case callers must fall back to
+    /// <see cref="System.Diagnostics.Process.Kill(bool)"/>.
+    /// </summary>
+    /// <param name="dwCtrlEvent">The signal to deliver (use <see cref="CtrlBreakEvent"/>).</param>
+    /// <param name="dwProcessGroupId">The process group id (0 = current console).</param>
+    /// <returns><c>true</c> on success, <c>false</c> otherwise. Use <c>Marshal.GetLastPInvokeError</c> to inspect the Win32 error code.</returns>
+    [LibraryImport("kernel32.dll", EntryPoint = "GenerateConsoleCtrlEvent", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GenerateConsoleCtrlEvent(
+        uint dwCtrlEvent,
+        uint dwProcessGroupId);
 
     [LibraryImport("kernel32.dll", EntryPoint = "SetInformationJobObject", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

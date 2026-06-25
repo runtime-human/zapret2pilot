@@ -3,10 +3,13 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Zapret2Pilot.Core.Results;
 using Zapret2Pilot.Core.Runtime;
 using Zapret2Pilot.Engine.Zapret2.Assets;
@@ -50,9 +53,13 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// </para>
 /// <para>
 /// This host does NOT execute the real <c>winws2</c> binary; it
-/// launches whatever path is supplied in
-/// <see cref="RuntimeProcessStartContext.RuntimeExecutablePath"/>.
-/// In milestone 0.0.17 the production wiring uses the
+/// launches only the verified path supplied in
+/// <see cref="RuntimeProcessStartContext.RuntimeExecutablePath"/>,
+/// which is a <see cref="VerifiedRuntimeExecutablePath"/> that can
+/// only be constructed from a passing
+/// <see cref="ZapretAssetVerificationSummary"/> produced by
+/// <see cref="ZapretAssetVerifier"/>, closing P0-4. In milestone
+/// 0.0.17 the production wiring uses the
 /// <c>Zapret2Pilot.Testing.FakeRuntime</c> test executable as a
 /// placeholder until <c>winws2</c> launch is approved by oracle.
 /// </para>
@@ -71,12 +78,22 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
     /// </summary>
     private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Maximum time to wait for the runtime process to exit after a
+    /// successful <c>CTRL_BREAK_EVENT</c> delivery before the host
+    /// escalates to a forced <see cref="Process.Kill(bool)"/>. The
+    /// remainder of <c>stopTimeout</c> is still available for the
+    /// final post-kill wait.
+    /// </summary>
+    private const int GracefulStopTimeoutMs = 3000;
+
     private readonly RuntimeOwnershipMutex ownershipMutex;
     private readonly RuntimeStaleLockRecovery staleLockRecovery;
     private readonly IRuntimeWorkspaceMaterializer workspaceMaterializer;
     private readonly IRuntimeTransactionManager transactionManager;
     private readonly IRuntimeJobObjectProcessAssigner jobObjectAssigner;
     private readonly RuntimeLockFileStore lockFileStore;
+    private readonly ILogger<RuntimeProcessHost> logger;
     private readonly TimeSpan stopTimeout;
     private readonly string ownerInstanceId;
 
@@ -111,6 +128,12 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
     /// <param name="lockFileStore">
     /// Lock file store that writes and removes the recovery lock file.
     /// </param>
+    /// <param name="logger">
+    /// Logger that receives structured events for cleanup-path
+    /// exceptions, graceful-stop fallbacks and stop-pipeline warnings.
+    /// Pass <see cref="NullLogger{T}.Instance"/> when the host is used
+    /// outside of a hosted service (e.g. in unit tests).
+    /// </param>
     /// <param name="stopTimeout">
     /// Maximum time to wait for the runtime process to exit after
     /// <see cref="StopAsync"/> requests termination. Defaults to 5
@@ -123,6 +146,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         IRuntimeTransactionManager transactionManager,
         IRuntimeJobObjectProcessAssigner jobObjectAssigner,
         RuntimeLockFileStore lockFileStore,
+        ILogger<RuntimeProcessHost> logger,
         TimeSpan? stopTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(ownershipMutex, nameof(ownershipMutex));
@@ -131,6 +155,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         ArgumentNullException.ThrowIfNull(transactionManager, nameof(transactionManager));
         ArgumentNullException.ThrowIfNull(jobObjectAssigner, nameof(jobObjectAssigner));
         ArgumentNullException.ThrowIfNull(lockFileStore, nameof(lockFileStore));
+        ArgumentNullException.ThrowIfNull(logger, nameof(logger));
 
         this.ownershipMutex = ownershipMutex;
         this.staleLockRecovery = staleLockRecovery;
@@ -138,6 +163,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         this.transactionManager = transactionManager;
         this.jobObjectAssigner = jobObjectAssigner;
         this.lockFileStore = lockFileStore;
+        this.logger = logger;
         this.stopTimeout = stopTimeout ?? DefaultStopTimeout;
         ownerInstanceId = Guid.NewGuid().ToString("N");
     }
@@ -294,8 +320,17 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WorkingDirectory = context.WorkspaceDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
+                // P0-5 (0.0.18): redirection is intentionally disabled.
+                // A previous milestone redirected stdout/stderr without
+                // ever wiring OutputDataReceived/ErrorDataReceived, which
+                // deadlocks a verbose runtime (such as the real winws2)
+                // once the OS pipe buffer fills. A bounded pump that
+                // captures and drains output under a backpressure
+                // contract will be added in a later milestone; until
+                // then the runtime process owns its own console and the
+                // host must not allocate a pipe.
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
             };
 
             try
@@ -442,8 +477,26 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                 {
                     BestEffortDeleteLock();
                 }
-                try { createdJobObject.Dispose(); } catch { /* best effort */ }
-                try { lease.Dispose(); } catch { /* best effort */ }
+                try
+                {
+                    createdJobObject.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(
+                        ex,
+                        "StartAsync: failed to dispose the job object during commit-failure cleanup.");
+                }
+                try
+                {
+                    lease.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(
+                        ex,
+                        "StartAsync: failed to dispose the ownership lease during commit-failure cleanup.");
+                }
                 return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(commitError));
             }
             transactionCommitted = true;
@@ -550,12 +603,27 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
 
         RuntimeTransaction transaction = beginStopResult.Value;
 
+        // P0-6 (0.0.18): the process is about to be killed. From this
+        // point on we MUST NOT call transactionManager.Rollback — the
+        // transaction was opened with BeginStop, and Rollback would
+        // restore isRunning = true in the manager, leaving the host
+        // and the manager out of sync with reality. Cleanup failures
+        // are logged but never roll back. Host state is cleared
+        // unconditionally before returning.
+        Result<Unit>? finalResult = null;
+
         try
         {
-            // 1. Kill the process if it is still running, then wait.
+            // 1. Stop the process. Try a graceful CTRL_BREAK first
+            //    (3 s window), then fall back to Kill. See
+            //    StopProcess for the full escalation contract.
             StopProcess(processToStop);
 
-            // 2. Dispose the job object (triggers kill-on-close for any remaining process).
+            // 2. Dispose the job object. Triggers kill-on-close for
+            //    any remaining process or thread attached to it.
+            //    Best-effort: the process is already gone, so a
+            //    failure here is a kernel-resource leak we log but
+            //    cannot recover from without a restart.
             if (jobObjectToDispose is not null)
             {
                 try
@@ -564,78 +632,91 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                 }
                 catch (RuntimeJobObjectException ex)
                 {
-                    try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                    return Task.FromResult(Result.Failure<Unit>(new ErrorInfo(
-                        code: "RuntimeJobObjectDisposeFailed",
-                        message: $"Failed to dispose the job object: {ex.Message}",
-                        severity: ErrorSeverity.Error,
-                        category: ErrorCategory.Runtime)));
+                    logger.LogError(
+                        ex,
+                        "StopAsync: failed to dispose the job object after kill; resource may leak until process exit.");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(
+                        ex,
+                        "StopAsync: unexpected error disposing the job object after kill.");
                 }
             }
 
-            // 3. Delete the lock file.
+            // 3. Delete the lock file. Best-effort: a failure leaves
+            //    a stale lock on disk that the next startup's stale
+            //    lock recovery will surface and clear.
             try
             {
                 lockFileStore.Delete();
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                return Task.FromResult(Result.Failure<Unit>(new ErrorInfo(
-                    code: "RuntimeLockDeleteFailed",
-                    message: $"Failed to delete the runtime lock file: {ex.Message}",
-                    severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Storage)));
+                logger.LogError(
+                    ex,
+                    "StopAsync: failed to delete the runtime lock file after kill; stale-lock recovery will clear it on next start.");
             }
 
-            // 4. Dispose the ownership lease.
+            // 4. Dispose the ownership lease. Best-effort: a
+            //    failure here means the mutex will only be released
+            //    when the OS reaps the lease's SafeWaitHandle, which
+            //    is acceptable.
             try
             {
                 lease.Dispose();
             }
             catch (Exception ex) when (ex is RuntimeOwnershipThreadAffinityException or ObjectDisposedException)
             {
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                return Task.FromResult(Result.Failure<Unit>(new ErrorInfo(
-                    code: "RuntimeLeaseDisposeFailed",
-                    message: $"Failed to dispose the ownership lease: {ex.Message}",
-                    severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime)));
+                logger.LogError(
+                    ex,
+                    "StopAsync: failed to dispose the ownership lease after kill; mutex will be released by the OS.");
             }
 
-            // 5. Commit the stop transaction.
+            // 5. Commit the stop transaction. We do NOT roll back
+            //    on a commit failure: rolling back would put the
+            //    manager back into Running, contradicting the fact
+            //    that the process is dead. The host's local state
+            //    is cleared unconditionally below.
             Result<Unit> commitResult = transactionManager.Commit(transaction);
             if (commitResult.IsFailure)
             {
-                // Commit failed: best-effort rollback so the transaction
-                // manager does not retain an active transaction.
-                try { transactionManager.Rollback(transaction); } catch { /* best effort */ }
-                return Task.FromResult(commitResult);
+                logger.LogError(
+                    "StopAsync: commit of the stop transaction failed after kill; manager and host may be out of sync. Code={Code} Message={Message}",
+                    commitResult.Error.Code,
+                    commitResult.Error.Message);
+                finalResult = commitResult;
             }
-
-            // 6. Clear state.
-            lock (stateLock)
+            else
             {
-                ownershipLease = null;
-                process = null;
-                jobObject = null;
+                finalResult = Result.Success(Unit.Instance);
             }
-
-            return Task.FromResult(Result.Success(Unit.Instance));
         }
-        catch
+        catch (Exception ex)
         {
-            try
-            {
-                transactionManager.Rollback(transaction);
-            }
-            catch
-            {
-                // best effort
-            }
-
-            throw;
+            // Anything thrown after the kill is logged and surfaced
+            // as a failure, but we never roll the transaction back
+            // to Running. The process is already dead.
+            logger.LogError(ex, "StopAsync: unexpected error after kill.");
+            finalResult = Result.Failure<Unit>(new ErrorInfo(
+                code: "RuntimeStopUnexpectedError",
+                message: $"Unexpected error while stopping the runtime: {ex.Message}",
+                severity: ErrorSeverity.Error,
+                category: ErrorCategory.Runtime));
         }
+
+        // 6. Always clear host state. The process is dead
+        //    regardless of how cleanup finished, so the host must
+        //    not retain the old lease / process / job object
+        //    references. A subsequent StartAsync must be allowed.
+        lock (stateLock)
+        {
+            ownershipLease = null;
+            process = null;
+            jobObject = null;
+        }
+
+        return Task.FromResult(finalResult ?? Result.Success(Unit.Instance));
     }
 
     /// <summary>
@@ -679,9 +760,9 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             {
                 jobObjectToDispose.Dispose();
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                logger.LogError(ex, "Dispose: failed to dispose the job object.");
             }
         }
 
@@ -689,9 +770,9 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         {
             lockFileStore.Delete();
         }
-        catch
+        catch (Exception ex)
         {
-            // best effort
+            logger.LogWarning(ex, "Dispose: failed to delete the runtime lock file.");
         }
 
         if (lease is not null)
@@ -700,9 +781,9 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             {
                 lease.Dispose();
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                logger.LogError(ex, "Dispose: failed to dispose the ownership lease.");
             }
         }
     }
@@ -719,50 +800,177 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Kills <paramref name="processToStop"/> if it is still running,
-    /// waits for it to exit (bounded by <c>stopTimeout</c>) and
-    /// disposes it. All exceptions are swallowed because the method
-    /// is used from best-effort cleanup paths.
+    /// Stops <paramref name="processToStop"/> gracefully and falls
+    /// back to <see cref="Process.Kill(bool)"/> if it does not exit
+    /// within the configured window. The graceful step is a
+    /// <c>CTRL_BREAK_EVENT</c> delivered via
+    /// <c>GenerateConsoleCtrlEvent</c> to the target's own process
+    /// group (its process id, which only equals its process group id
+    /// when the process was launched with
+    /// <c>CREATE_NEW_PROCESS_GROUP</c>); a well-behaved console
+    /// application can intercept this signal and shut down cleanly.
+    /// Processes started without <c>CREATE_NEW_PROCESS_GROUP</c>
+    /// (including our test FakeRuntime) inherit the caller's
+    /// process group, so the targeted call is rejected by the
+    /// kernel and the method falls back to a forced termination.
+    /// All exceptions are swallowed (and logged at
+    /// <see cref="LogLevel.Debug"/>) so the method is safe to call
+    /// from best-effort cleanup paths.
     /// </summary>
     /// <param name="processToStop">The process to terminate and dispose.</param>
     private void StopProcess(Process processToStop)
     {
+        // 1. Try a graceful CTRL_BREAK if the process is still alive.
+        //    We address the signal to the target's own PID/process
+        //    group, NOT to process group 0 (which is the calling
+        //    process's console). Addressing group 0 would also
+        //    deliver CTRL_BREAK to every other process attached to
+        //    our console — including the host's own test runner
+        //    when the runtime is launched by an xunit test — and
+        //    crash it. Using the target's PID is safe: it succeeds
+        //    when the target is in its own process group
+        //    (CREATE_NEW_PROCESS_GROUP) and is rejected with
+        //    ERROR_INVALID_PARAMETER otherwise, in which case we
+        //    fall straight through to the Kill fallback.
+        bool gracefulAttempted = false;
+        try
+        {
+            if (!processToStop.HasExited && TrySendCtrlBreak(processToStop))
+            {
+                gracefulAttempted = true;
+                if (processToStop.WaitForExit(GracefulStopTimeoutMs))
+                {
+                    logger.LogDebug(
+                        "Runtime process {ProcessId} exited gracefully after CTRL_BREAK.",
+                        SafeGetProcessId(processToStop));
+                }
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            // already disposed or never started
+            logger.LogDebug(ex, "StopProcess: race while waiting for graceful exit.");
+        }
+        catch (Win32Exception ex)
+        {
+            logger.LogDebug(ex, "StopProcess: race while waiting for graceful exit.");
+        }
+
+        // 2. Forced termination as a fallback. If the graceful step was
+        //    attempted and the process is still alive, escalate.
         try
         {
             if (!processToStop.HasExited)
             {
+                if (gracefulAttempted)
+                {
+                    logger.LogWarning(
+                        "Runtime process {ProcessId} ignored CTRL_BREAK; falling back to Kill.",
+                        SafeGetProcessId(processToStop));
+                }
                 processToStop.Kill(entireProcessTree: true);
             }
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex)
         {
-            // already disposed or never started
+            logger.LogDebug(ex, "StopProcess: Kill on a disposed or non-started process.");
         }
-        catch (Win32Exception)
+        catch (Win32Exception ex)
         {
-            // race or access denied
+            logger.LogDebug(ex, "StopProcess: Kill failed (race or access denied).");
         }
 
+        // 3. Final bounded wait so the process handle is fully released
+        //    before we dispose it. Use the full stopTimeout here
+        //    because the graceful step already consumed part of it.
         try
         {
             processToStop.WaitForExit((int)stopTimeout.TotalMilliseconds);
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex)
         {
-            // already disposed
+            logger.LogDebug(ex, "StopProcess: WaitForExit on a disposed process.");
         }
-        catch (Win32Exception)
+        catch (Win32Exception ex)
         {
-            // race
+            logger.LogDebug(ex, "StopProcess: WaitForExit race.");
         }
 
+        // 4. Dispose the process handle.
         try
         {
             processToStop.Dispose();
         }
-        catch
+        catch (Exception ex)
         {
-            // best effort
+            logger.LogDebug(ex, "StopProcess: best-effort process dispose failed.");
+        }
+    }
+
+    /// <summary>
+    /// Delivers a <c>CTRL_BREAK_EVENT</c> to the target process's
+    /// own process group so the target can intercept it via
+    /// <see cref="Console.CancelKeyPress"/> while leaving the
+    /// calling process and its peers untouched. Returns
+    /// <c>false</c> on any failure (e.g. the platform is not
+    /// Windows, the target has no assigned process group, the call
+    /// is denied, or the target is already gone). The exception
+    /// is swallowed because the method is invoked from a
+    /// best-effort graceful-stop path.
+    /// </summary>
+    /// <param name="processToStop">
+    /// The target process whose PID is used as the process group id.
+    /// </param>
+    private bool TrySendCtrlBreak(Process processToStop)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        int targetPid = SafeGetProcessId(processToStop);
+        if (targetPid <= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            bool delivered = WindowsJobObjectNativeMethods.GenerateConsoleCtrlEvent(
+                WindowsJobObjectNativeMethods.CtrlBreakEvent,
+                dwProcessGroupId: (uint)targetPid);
+            if (!delivered)
+            {
+                int errorCode = Marshal.GetLastPInvokeError();
+                logger.LogDebug(
+                    "GenerateConsoleCtrlEvent to process group {ProcessId} returned false (Win32 error {ErrorCode}); the runtime may not own a separate console group.",
+                    targetPid,
+                    errorCode);
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "GenerateConsoleCtrlEvent threw; graceful stop is unavailable.");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns the target process's id without throwing. Used inside
+    /// log messages to keep cleanup paths free of unhandled
+    /// <see cref="InvalidOperationException"/>s.
+    /// </summary>
+    private static int SafeGetProcessId(Process process)
+    {
+        try
+        {
+            return process.Id;
+        }
+        catch (Exception)
+        {
+            return 0;
         }
     }
 
@@ -792,9 +1000,9 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         {
             lockFileStore.Delete();
         }
-        catch
+        catch (Exception ex)
         {
-            // best effort
+            logger.LogWarning(ex, "BestEffortDeleteLock: lock file delete failed.");
         }
     }
 
@@ -835,9 +1043,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             {
                 createdJobObject.Dispose();
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                logger.LogError(
+                    ex,
+                    "FailStartAndCleanup: failed to dispose the job object.");
             }
         }
 
@@ -847,9 +1057,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             {
                 transactionManager.Rollback(transaction);
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                logger.LogError(
+                    ex,
+                    "FailStartAndCleanup: transaction rollback failed.");
             }
         }
 
@@ -857,9 +1069,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         {
             lease.Dispose();
         }
-        catch
+        catch (Exception ex)
         {
-            // best effort
+            logger.LogError(
+                ex,
+                "FailStartAndCleanup: failed to dispose the ownership lease.");
         }
 
         return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(error));
@@ -893,9 +1107,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             {
                 createdJobObject.Dispose();
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                logger.LogError(
+                    ex,
+                    "CleanupAfterStartFailure: failed to dispose the job object.");
             }
         }
 
@@ -905,9 +1121,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             {
                 transactionManager.Rollback(transaction);
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                logger.LogError(
+                    ex,
+                    "CleanupAfterStartFailure: transaction rollback failed.");
             }
         }
 
@@ -920,9 +1138,11 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
         {
             lease.Dispose();
         }
-        catch
+        catch (Exception ex)
         {
-            // best effort
+            logger.LogError(
+                ex,
+                "CleanupAfterStartFailure: failed to dispose the ownership lease.");
         }
     }
 

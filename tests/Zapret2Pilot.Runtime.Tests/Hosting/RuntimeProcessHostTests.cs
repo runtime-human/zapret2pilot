@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using Zapret2Pilot.Core.Results;
 using Zapret2Pilot.Core.Runtime;
@@ -179,6 +180,166 @@ public sealed class RuntimeProcessHostTests
     }
 
     /// <summary>
+    /// P0-6 contract: after a successful stop, a subsequent start
+    /// must succeed. This proves that <see cref="RuntimeProcessHost.StopAsync"/>
+    /// does not roll the transaction back to <c>Running</c> after the
+    /// runtime has been killed, and that the host's local state
+    /// (lease, process, job object) is cleared unconditionally.
+    ///
+    /// <para>
+    /// The test exercises the full start → stop → start cycle on
+    /// Windows. It is the lightweight companion to
+    /// <see cref="StopAsync_LockFileDeleteFails_AllowsRestart"/>
+    /// (which forces a cleanup failure): together they document that
+    /// the stop pipeline is irreversible from the caller's point of
+    /// view and that a restart is always allowed afterwards.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public static void StopAsync_AfterSuccess_AllowsRestart()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        HostFixture fixture = HostFixture.Create();
+        fixture.PrepareFakeRuntimeInWorkspace();
+
+        RuntimeProcessStartContext context = fixture.CreateStartContextForFakeRuntime();
+
+        // 1. First start.
+        Result<RuntimeProcessHostResult> firstStart = host_StartAsync(fixture.Host, context);
+        Assert.True(firstStart.IsSuccess, firstStart.IsFailure ? firstStart.Error.ToString() : string.Empty);
+
+        // 2. Stop. The host commits the stop transaction and clears
+        //    its local state, so the manager considers the runtime
+        //    stopped and the host has no leftover lease / process /
+        //    job object references.
+        Result<Unit> firstStop = host_StopAsync(fixture.Host);
+        Assert.True(firstStop.IsSuccess, firstStop.IsFailure ? firstStop.Error.ToString() : string.Empty);
+
+        Assert.False(File.Exists(fixture.LockFileStore.LockFilePath),
+            "Lock file should be deleted after stop.");
+
+        // 3. Second start must succeed. Pre-0.0.18, the stop path
+        //    could call Rollback on the stop transaction, which
+        //    restored isRunning = true in the manager and would have
+        //    made the second start fail with "RuntimeAlreadyRunning".
+        //    After 0.0.18-B, no rollback happens after kill, so the
+        //    second start goes through cleanly.
+        Result<RuntimeProcessHostResult> secondStart = host_StartAsync(fixture.Host, context);
+        try
+        {
+            Assert.True(secondStart.IsSuccess,
+                $"Second start must succeed after a stop; got: {(secondStart.IsFailure ? secondStart.Error.ToString() : string.Empty)}");
+            Assert.True(secondStart.Value.ProcessId > 0);
+        }
+        finally
+        {
+            // Clean up the second instance regardless of assertion outcome.
+            host_StopAsync(fixture.Host);
+        }
+    }
+
+    /// <summary>
+    /// P0-6 contract under a forced lock-file delete failure. The
+    /// lock file is marked read-only so that the stop pipeline's
+    /// delete step throws <see cref="UnauthorizedAccessException"/>.
+    /// The host must still commit the stop transaction and clear
+    /// its local state; the only consequence of the failed cleanup
+    /// is a logged warning. A subsequent start must succeed, which
+    /// proves that no rollback to <c>Running</c> happened.
+    ///
+    /// <para>
+    /// We deliberately do not assert the specific
+    /// <see cref="Result{T}"/> returned by <see cref="RuntimeProcessHost.StopAsync"/>:
+    /// the 0.0.18 refactor (P0-6) makes the lock-file delete a
+    /// best-effort cleanup step, so the stop can return success
+    /// with a logged warning, or surface the cleanup error as a
+    /// failure result, depending on the implementation choice. The
+    /// load-bearing contract — "no rollback, a restart must
+    /// succeed" — is what this test pins down.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public static void StopAsync_LockFileDeleteFails_AllowsRestart()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        HostFixture fixture = HostFixture.Create();
+        fixture.PrepareFakeRuntimeInWorkspace();
+
+        RuntimeProcessStartContext context = fixture.CreateStartContextForFakeRuntime();
+
+        // 1. First start.
+        Result<RuntimeProcessHostResult> firstStart = host_StartAsync(fixture.Host, context);
+        Assert.True(firstStart.IsSuccess, firstStart.IsFailure ? firstStart.Error.ToString() : string.Empty);
+
+        // 2. Make the lock file read-only so File.Delete will throw
+        //    UnauthorizedAccessException during the stop pipeline.
+        string lockFilePath = fixture.LockFileStore.LockFilePath;
+        Assert.True(File.Exists(lockFilePath), "Lock file should exist after a successful start.");
+        File.SetAttributes(lockFilePath, FileAttributes.ReadOnly);
+
+        try
+        {
+            // 3. Stop. The delete step will fail; the host must
+            //    log the failure, commit the stop transaction and
+            //    clear its local state (P0-6).
+            Result<Unit> stop = host_StopAsync(fixture.Host);
+            // The Result may be success or failure; we do not assert
+            // its IsSuccess value. The P0-6 contract is verified
+            // below by the second start.
+
+            // 4. Reset the read-only attribute so the next start's
+            //    stale-lock recovery can delete the leftover file.
+            if (File.Exists(lockFilePath))
+            {
+                File.SetAttributes(lockFilePath, FileAttributes.Normal);
+            }
+
+            // 5. Second start must succeed. If the host had rolled
+            //    the stop transaction back, the transaction manager
+            //    would still report isRunning = true and the start
+            //    would fail with "RuntimeAlreadyRunning". After
+            //    0.0.18-B, the manager is in the stopped state and
+            //    the start goes through (and clears any leftover
+            //    lock file via stale-lock recovery).
+            Result<RuntimeProcessHostResult> secondStart = host_StartAsync(fixture.Host, context);
+            try
+            {
+                Assert.True(secondStart.IsSuccess,
+                    $"Second start must succeed after a stop with failed lock delete; got: {(secondStart.IsFailure ? secondStart.Error.ToString() : string.Empty)}");
+                Assert.True(secondStart.Value.ProcessId > 0);
+            }
+            finally
+            {
+                host_StopAsync(fixture.Host);
+            }
+        }
+        finally
+        {
+            // Best-effort cleanup: ensure the lock file attribute is
+            // reset so the temp directory cleanup does not fail.
+            if (File.Exists(lockFilePath))
+            {
+                try
+                {
+                    File.SetAttributes(lockFilePath, FileAttributes.Normal);
+                }
+                catch
+                {
+                    // best effort
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Calls <see cref="RuntimeProcessHost.StartAsync"/> synchronously
     /// on the calling thread so the ownership-mutex thread affinity
     /// invariants are preserved.
@@ -283,6 +444,7 @@ public sealed class RuntimeProcessHostTests
                 transactionManager,
                 jobObjectAssigner,
                 lockFileStore,
+                NullLogger<RuntimeProcessHost>.Instance,
                 stopTimeout: TimeSpan.FromSeconds(5));
 
             return new HostFixture(

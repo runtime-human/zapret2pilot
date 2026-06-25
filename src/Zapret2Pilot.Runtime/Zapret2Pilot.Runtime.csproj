@@ -5,11 +5,27 @@
     <RootNamespace>Zapret2Pilot.Runtime</RootNamespace>
     <Description>Runtime ownership and safety foundation for Zapret2Pilot.</Description>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!--
+      CA1848 (LoggerMessage source generator) and CA1873 (expensive
+      logging arguments) are suppressed at the project level. The
+      Runtime Kernel's first logger (ILogger<RuntimeProcessHost>,
+      added in 0.0.18) is used only in best-effort cleanup paths
+      where allocation-free logging is not a concern, and the
+      arguments it captures are already-resolved exception and PID
+      values rather than freshly-allocated strings. Migrating to
+      LoggerMessage source generators is tracked separately and is
+      out of scope for 0.0.18.
+    -->
+    <NoWarn>$(NoWarn);CA1848;CA1873</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Zapret2Pilot.Infrastructure\Zapret2Pilot.Infrastructure.csproj" />
     <ProjectReference Include="..\Zapret2Pilot.Engine.Zapret2\Zapret2Pilot.Engine.Zapret2.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 
 </Project>
