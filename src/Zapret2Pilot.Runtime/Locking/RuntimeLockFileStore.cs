@@ -6,7 +6,7 @@ using Zapret2Pilot.Runtime.Ownership;
 
 namespace Zapret2Pilot.Runtime.Locking;
 
-public sealed class RuntimeLockFileStore
+public sealed class RuntimeLockFileStore : IRuntimeLockFileStore
 {
     public RuntimeLockFileStore(string runtimeDirectory)
     {
