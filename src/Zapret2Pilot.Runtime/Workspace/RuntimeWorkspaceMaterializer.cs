@@ -103,6 +103,8 @@ public sealed class RuntimeWorkspaceMaterializer : IRuntimeWorkspaceMaterializer
                     verificationResult.Error.Category));
         }
 
+        ZapretAssetVerificationSummary verificationSummary = verificationResult.Value;
+
         List<string> writtenHostlistPaths = new();
 
         try
@@ -166,6 +168,7 @@ public sealed class RuntimeWorkspaceMaterializer : IRuntimeWorkspaceMaterializer
             workspaceDirectory: fullWorkspaceDirectory,
             argsFilePath: pathResolver.ResolveFilePath(ArgsFileRelativePath),
             generatedConfigPath: pathResolver.ResolveFilePath(GeneratedConfigRelativePath),
-            writtenHostlistPaths: writtenHostlistPaths));
+            writtenHostlistPaths: writtenHostlistPaths,
+            verificationSummary: verificationSummary));
     }
 }

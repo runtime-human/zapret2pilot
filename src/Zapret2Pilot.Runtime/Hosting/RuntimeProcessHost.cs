@@ -282,7 +282,7 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             createdJobObject = createResult.JobObject;
 
             // 6. Start the runtime process.
-            string executablePath = context.RuntimeExecutablePath;
+            string executablePath = context.RuntimeExecutablePath.AbsolutePath;
             string arguments = context.Plan.Arguments is null
                 ? string.Empty
                 : string.Join(" ", context.Plan.Arguments);

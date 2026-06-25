@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -9,6 +10,7 @@ using Zapret2Pilot.Core.Results;
 using Zapret2Pilot.Core.Runtime;
 using Zapret2Pilot.Engine.Zapret2.Assets;
 using Zapret2Pilot.Runtime.Hosting;
+using Zapret2Pilot.Runtime.Integrity;
 using Zapret2Pilot.Runtime.Locking;
 using Zapret2Pilot.Runtime.Ownership;
 using Zapret2Pilot.Runtime.Recovery;
@@ -64,7 +66,7 @@ public sealed class RuntimeProcessHostTests
             plan: planWithoutCacheKey,
             manifest: HostFixture.CreateMissingAssetManifest(),
             workspaceDirectory: fixture.WorkspaceDirectory,
-            runtimeExecutablePath: Path.Combine(fixture.TempDir.DirectoryPath, "fake.exe"));
+            runtimeExecutablePath: fixture.CreatePlaceholderVerifiedPath());
 
         Result<RuntimeProcessHostResult> result = host_StartAsync(fixture.Host, context);
 
@@ -91,7 +93,7 @@ public sealed class RuntimeProcessHostTests
             plan: HostFixture.CreatePlanWithCacheKey(),
             manifest: HostFixture.CreateMissingAssetManifest(),
             workspaceDirectory: fixture.WorkspaceDirectory,
-            runtimeExecutablePath: Path.Combine(fixture.TempDir.DirectoryPath, "fake.exe"));
+            runtimeExecutablePath: fixture.CreatePlaceholderVerifiedPath());
 
         Result<RuntimeProcessHostResult> result = host_StartAsync(fixture.Host, context);
 
@@ -150,7 +152,12 @@ public sealed class RuntimeProcessHostTests
 
         RuntimeProcessHostResult hostResult = startResult.Value;
         Assert.True(hostResult.ProcessId > 0);
-        Assert.Equal(FakeRuntimeExecutableName[..^".exe".Length], hostResult.ProcessName, ignoreCase: true);
+        // The verified path resolves to the workspace copy
+        // "<workspace>/bin/fake-runtime.exe", so the OS-reported
+        // process name is the file's base name ("fake-runtime"), not
+        // the apphost's source assembly name.
+        string expectedProcessName = Path.GetFileNameWithoutExtension(ManifestExecutableRelativePath);
+        Assert.Equal(expectedProcessName, hostResult.ProcessName, ignoreCase: true);
         Assert.Same(context.Plan, hostResult.Plan);
 
         // 2. Lock file exists, process is alive.
@@ -288,10 +295,11 @@ public sealed class RuntimeProcessHostTests
         }
 
         /// <summary>
-        /// Locates the bundled fake runtime, copies it into the
+        /// Locates the bundled fake runtime, copies it (together with
+        /// its .dll, .deps.json and .runtimeconfig.json) into the
         /// workspace under the manifest-relative path, and returns the
-        /// absolute path of the original executable that the host
-        /// should launch.
+        /// absolute path of the workspace copy that the host should
+        /// launch.
         /// </summary>
         public string PrepareFakeRuntimeInWorkspace()
         {
@@ -314,7 +322,25 @@ public sealed class RuntimeProcessHostTests
             }
 
             File.Copy(fakeRuntimeExePath, workspaceExePath, overwrite: true);
-            return fakeRuntimeExePath;
+
+            // Copy the apphost's adjacent files (.dll, .deps.json,
+            // .runtimeconfig.json) so the workspace copy can actually
+            // start. Without these the apphost exits immediately
+            // because it cannot resolve the managed assembly or the
+            // framework configuration.
+            string fakeRuntimeBaseName = "Zapret2Pilot.Testing.FakeRuntime";
+            string[] siblingExtensions = new[] { ".dll", ".deps.json", ".runtimeconfig.json" };
+            foreach (string ext in siblingExtensions)
+            {
+                string source = Path.Combine(AppContext.BaseDirectory, fakeRuntimeBaseName + ext);
+                string destination = Path.Combine(workspaceExeDir ?? WorkspaceDirectory, fakeRuntimeBaseName + ext);
+                if (File.Exists(source))
+                {
+                    File.Copy(source, destination, overwrite: true);
+                }
+            }
+
+            return workspaceExePath;
         }
 
         public static CompiledZapretPlan CreatePlanWithCacheKey()
@@ -369,12 +395,63 @@ public sealed class RuntimeProcessHostTests
 
         public RuntimeProcessStartContext CreateStartContextForFakeRuntime()
         {
-            string fakeRuntimeExePath = Path.Combine(AppContext.BaseDirectory, FakeRuntimeExecutableName);
+            ZapretAssetManifest manifest = CreateFakeRuntimeManifest();
+            string workspaceExePath = Path.Combine(
+                WorkspaceDirectory,
+                ManifestExecutableRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            ZapretAssetVerificationSummary summary = new(
+                new[] { ManifestExecutableRelativePath });
+            Result<VerifiedRuntimeExecutablePath> verifiedResult = VerifiedRuntimeExecutablePath.TryCreate(
+                manifest,
+                summary,
+                WorkspaceDirectory);
+            Assert.True(
+                verifiedResult.IsSuccess,
+                verifiedResult.IsFailure ? verifiedResult.Error.ToString() : string.Empty);
             return new RuntimeProcessStartContext(
                 plan: CreatePlanWithCacheKey(),
-                manifest: CreateFakeRuntimeManifest(),
+                manifest: manifest,
                 workspaceDirectory: WorkspaceDirectory,
-                runtimeExecutablePath: fakeRuntimeExePath);
+                runtimeExecutablePath: verifiedResult.Value);
+        }
+
+        /// <summary>
+        /// Creates a <see cref="VerifiedRuntimeExecutablePath"/> pointing
+        /// at a placeholder file outside the workspace. Used by tests
+        /// that need a syntactically valid verified path but never
+        /// reach the point where the host actually launches the
+        /// executable (e.g. cache-key validation, materialization
+        /// failure).
+        /// </summary>
+        public VerifiedRuntimeExecutablePath CreatePlaceholderVerifiedPath()
+        {
+            const string RelativePath = "bin/placeholder.exe";
+            string assetsRoot = Path.Combine(TempDir.DirectoryPath, "placeholder-assets");
+            string absolutePath = Path.Combine(
+                assetsRoot,
+                RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            string? parent = Path.GetDirectoryName(absolutePath);
+            if (!string.IsNullOrEmpty(parent))
+            {
+                Directory.CreateDirectory(parent);
+            }
+
+            File.WriteAllBytes(absolutePath, Encoding.UTF8.GetBytes("placeholder"));
+
+            string hash = ComputeSha256HexLower(absolutePath);
+            ZapretAssetManifest placeholderManifest = new(
+                RuntimeExecutable: new ZapretRuntimeAsset(RelativePath, hash, AssetKind.Executable),
+                Hostlists: Array.Empty<ZapretRuntimeAsset>(),
+                StrategyPacks: Array.Empty<ZapretRuntimeAsset>());
+            ZapretAssetVerificationSummary summary = new(new[] { RelativePath });
+            Result<VerifiedRuntimeExecutablePath> verifiedResult = VerifiedRuntimeExecutablePath.TryCreate(
+                placeholderManifest,
+                summary,
+                assetsRoot);
+            Assert.True(
+                verifiedResult.IsSuccess,
+                verifiedResult.IsFailure ? verifiedResult.Error.ToString() : string.Empty);
+            return verifiedResult.Value;
         }
 
         public void Dispose()
