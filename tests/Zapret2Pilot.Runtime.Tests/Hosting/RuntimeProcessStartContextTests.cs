@@ -16,7 +16,6 @@ namespace Zapret2Pilot.Runtime.Tests.Hosting;
 public sealed class RuntimeProcessStartContextTests
 {
     private const string WorkspaceDirectory = @"C:\z2p\workspace";
-    private const string RuntimeExecutablePath = @"C:\z2p\bin\winws2.exe";
 
     [Fact]
     public static void ValidConstructionExposesAllInputs()
@@ -27,13 +26,11 @@ public sealed class RuntimeProcessStartContextTests
         RuntimeProcessStartContext context = new(
             plan: plan,
             manifest: manifest,
-            workspaceDirectory: WorkspaceDirectory,
-            runtimeExecutablePath: RuntimeExecutablePath);
+            workspaceDirectory: WorkspaceDirectory);
 
         Assert.Same(plan, context.Plan);
         Assert.Same(manifest, context.Manifest);
         Assert.Equal(WorkspaceDirectory, context.WorkspaceDirectory);
-        Assert.Equal(RuntimeExecutablePath, context.RuntimeExecutablePath);
     }
 
     [Fact]
@@ -45,8 +42,7 @@ public sealed class RuntimeProcessStartContextTests
             new RuntimeProcessStartContext(
                 plan: null!,
                 manifest: manifest,
-                workspaceDirectory: WorkspaceDirectory,
-                runtimeExecutablePath: RuntimeExecutablePath));
+                workspaceDirectory: WorkspaceDirectory));
 
         Assert.Equal("plan", exception.ParamName);
     }
@@ -60,8 +56,7 @@ public sealed class RuntimeProcessStartContextTests
             new RuntimeProcessStartContext(
                 plan: plan,
                 manifest: null!,
-                workspaceDirectory: WorkspaceDirectory,
-                runtimeExecutablePath: RuntimeExecutablePath));
+                workspaceDirectory: WorkspaceDirectory));
 
         Assert.Equal("manifest", exception.ParamName);
     }
@@ -76,17 +71,13 @@ public sealed class RuntimeProcessStartContextTests
         CompiledZapretPlan plan = CreatePlan();
         ZapretAssetManifest manifest = CreateManifest();
 
-        // ArgumentException.ThrowIfNullOrWhiteSpace throws ArgumentNullException
-        // for null and ArgumentException for empty/whitespace. Both are
-        // acceptable signals for an invalid workspace directory.
         if (workspaceDirectory is null)
         {
             ArgumentNullException exception = Assert.Throws<ArgumentNullException>(() =>
                 new RuntimeProcessStartContext(
                     plan: plan,
                     manifest: manifest,
-                    workspaceDirectory: workspaceDirectory!,
-                    runtimeExecutablePath: RuntimeExecutablePath));
+                    workspaceDirectory: workspaceDirectory!));
 
             Assert.Equal("workspaceDirectory", exception.ParamName);
         }
@@ -96,47 +87,9 @@ public sealed class RuntimeProcessStartContextTests
                 new RuntimeProcessStartContext(
                     plan: plan,
                     manifest: manifest,
-                    workspaceDirectory: workspaceDirectory,
-                    runtimeExecutablePath: RuntimeExecutablePath));
+                    workspaceDirectory: workspaceDirectory));
 
             Assert.Equal("workspaceDirectory", exception.ParamName);
-        }
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    [InlineData("\t")]
-    public static void NullOrWhitespaceRuntimeExecutablePathThrows(string? runtimeExecutablePath)
-    {
-        CompiledZapretPlan plan = CreatePlan();
-        ZapretAssetManifest manifest = CreateManifest();
-
-        // ArgumentException.ThrowIfNullOrWhiteSpace throws ArgumentNullException
-        // for null and ArgumentException for empty/whitespace. Both are
-        // acceptable signals for an invalid runtime executable path.
-        if (runtimeExecutablePath is null)
-        {
-            ArgumentNullException exception = Assert.Throws<ArgumentNullException>(() =>
-                new RuntimeProcessStartContext(
-                    plan: plan,
-                    manifest: manifest,
-                    workspaceDirectory: WorkspaceDirectory,
-                    runtimeExecutablePath: runtimeExecutablePath!));
-
-            Assert.Equal("runtimeExecutablePath", exception.ParamName);
-        }
-        else
-        {
-            ArgumentException exception = Assert.Throws<ArgumentException>(() =>
-                new RuntimeProcessStartContext(
-                    plan: plan,
-                    manifest: manifest,
-                    workspaceDirectory: WorkspaceDirectory,
-                    runtimeExecutablePath: runtimeExecutablePath));
-
-            Assert.Equal("runtimeExecutablePath", exception.ParamName);
         }
     }
 
@@ -152,7 +105,7 @@ public sealed class RuntimeProcessStartContextTests
     {
         return new ZapretAssetManifest(
             RuntimeExecutable: new ZapretRuntimeAsset(
-                "bin/winws2.exe",
+                "bin/runtime-engine.exe",
                 new string('0', 64),
                 AssetKind.Executable),
             Hostlists: Array.Empty<ZapretRuntimeAsset>(),
