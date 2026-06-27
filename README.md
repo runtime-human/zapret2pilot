@@ -2,7 +2,7 @@
 
 Zapret2Pilot is a Windows desktop manager and control plane for zapret2/winws2.
 
-Current version: `0.0.18`.
+Current version: `0.0.19`.
 
 ## Project status
 
@@ -11,13 +11,13 @@ This repository is in early bootstrap stage.
 Current milestone:
 
 ```text
-0.0.18 — Runtime Process Host Hardening
+0.0.19 — Runtime State Store
 ```
 
 Current patch:
 
 ```text
-0.0.18 — Runtime Process Host Hardening
+0.0.19 — Runtime State Store
 ```
 
 ## Architecture baseline
@@ -44,6 +44,7 @@ Zapret2Pilot is planned as:
 - profile definition foundation in `Core.Profiles` plus a pure `ProfileDocumentMapper` that resolves validated `ProfileDocument` + supplied `StrategyPackDocument`s into a `ProfileDefinition` (the domain model accepted by the future profile compiler, per `DEC-0010` and Critical Review #18);
 - pure Zapret plan compiler in `Engine.Zapret2/Compiler` that turns a validated `ProfileDefinition` into a `CompiledZapretPlan` with a content-addressed `RuntimePlanCacheKey`;
 - explicit runtime transactions (start/stop/apply with rollback) managed by `RuntimeTransactionManager`;
+- persistent runtime/session state store (`RuntimeKernelStateStore`) backed by SQLite;
 - no Windows Service in MVP;
 - no IPC service layer in MVP;
 - no VPN/proxy/MITM/traffic-router functionality;

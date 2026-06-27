@@ -636,3 +636,41 @@ Reviewer focus:
 - confirm that the production wiring uses the fake runtime and that no production code path can resolve to the real `winws2.exe` without an explicit, oracle-approved change;
 - confirm that the `TODO(0.0.17)` marker on `WindowsProcessSystemAccessor.CommandLine` is still present (cross-process command-line retrieval remains explicitly deferred);
 - confirm that `RuntimeProcessHost` honors the existing safety primitives end-to-end: ownership mutex is acquired before launch, the transaction is committed only after the lock file is written, and rollback tears down the process, the job object, the lock file and the ownership lease in the right order.
+
+## 0.0.18 — Runtime Process Host Hardening
+
+Status: Implemented.
+
+Scope:
+
+- `VerifiedRuntimeExecutablePath` value object binding the launch path to `ZapretAssetVerificationSummary`;
+- `RuntimeProcessHost` cleanup hardening: logged best-effort catch blocks, disabled stdout/stderr redirection, correct stop transaction semantics after an irreversible kill;
+- analyzer baseline (`Meziantou.Analyzer`, `Roslynator.Analyzers`) and Avalonia 12.0.5 bump;
+- documentation refresh for `DEC-0030`, `DEC-0031`, `DEC-0032` and Critical Review findings #26–#29.
+
+Acceptance:
+
+- `dotnet build Zapret2Pilot.slnx -c Release` passes;
+- `dotnet test Zapret2Pilot.slnx -c Release` passes;
+- no real `winws2` launch;
+- no new forbidden dependencies.
+
+## 0.0.19 — Runtime State Store
+
+Status: Implemented.
+
+Scope:
+
+- `RuntimeKernelStateStore` persistent runtime/session state store in `Zapret2Pilot.Runtime.State`;
+- `IRuntimeKernelStateStore` contract with `StartSession`, `EndSession`, `GetCurrentSession` and `GetRecentSessions`;
+- SQLite migration `0002_runtime_state_store` creating `runtime_sessions` and `runtime_state` tables;
+- DI extension `AddRuntimeKernelStateStore` in `Zapret2Pilot.Runtime.DependencyInjection`;
+- App host registration in `Zapret2Pilot.App/Program.cs`;
+- unit tests (`RuntimeKernelStateStoreTests`) and DI integration test (`RuntimeServiceCollectionExtensionsTests`).
+
+Acceptance:
+
+- `dotnet build Zapret2Pilot.slnx -c Release` passes;
+- `dotnet test Zapret2Pilot.slnx -c Release` passes;
+- no real `winws2` launch;
+- no new NuGet packages beyond the already-centrally-managed `Microsoft.Extensions.Hosting` reference.

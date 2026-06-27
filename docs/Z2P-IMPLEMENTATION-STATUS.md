@@ -411,3 +411,43 @@ Notes:
 - `RuntimeReadinessChecker` is intentionally minimal: it performs no I/O on the process (no log parsing, no standard-output sniffing), it only inspects `Process.HasExited` after a bounded wait. Heartbeats, log scanning and native liveness probes are layered on top in a later milestone.
 - `RuntimeProcessStartContext` and `RuntimeProcessHostResult` were introduced as standalone DTOs ahead of the host so that the host's public contract is stable before the host is implemented; the constructor validation matches the project's analyzer-friendly pattern (`ArgumentNullException.ThrowIfNull` + `ArgumentException.ThrowIfNullOrWhiteSpace`).
 - No new NuGet packages, no `global.json` change, no `Directory.Packages.props` change, no lock file change. The only `Zapret2Pilot.slnx` change is the addition of the new `Zapret2Pilot.Testing.FakeRuntime` test project.
+
+## 0.0.19 — Runtime State Store
+
+Status: **implemented (current)**.
+
+Implemented files and areas:
+
+- `src/Zapret2Pilot.Storage/Sqlite/SqliteDbInitializer.cs` — added migration `0002_runtime_state_store` with `runtime_sessions` and `runtime_state` tables; refactored migration loop so future migrations can be appended;
+- `src/Zapret2Pilot.Runtime/State/IRuntimeKernelStateStore.cs` — public contract for persistent runtime/session state;
+- `src/Zapret2Pilot.Runtime/State/RuntimeKernelStateStore.cs` — default SQLite-backed implementation using `SqliteConnectionFactory`;
+- `src/Zapret2Pilot.Runtime/State/RuntimeSessionRecord.cs` — immutable session record (`RuntimeSessionId`, `StartedAtUtc`, `EndedAtUtc?`, `ProfileId?`, `RuntimePlanId?`, `RuntimePlanCacheKey?`, `RuntimeSessionState`);
+- `src/Zapret2Pilot.Runtime/State/RuntimeSessionState.cs` — `Active`, `Stopped`, `Failed` enum;
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` — `AddRuntimeKernelStateStore(this IServiceCollection, string databasePath)` extension registering `SqliteStorageOptions`, `SqliteConnectionFactory`, `SqliteDbInitializer` and `IRuntimeKernelStateStore`;
+- `src/Zapret2Pilot.App/Program.cs` — registers the state store against `%PROGRAMDATA%\Zapret2Pilot\z2p.db`;
+- `src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj` — added `ProjectReference` to `Zapret2Pilot.Storage` and `PackageReference` to `Microsoft.Extensions.Hosting`;
+- `src/Zapret2Pilot.App/Zapret2Pilot.App.csproj` — added `ProjectReference` to `Zapret2Pilot.Runtime`;
+- `tests/Zapret2Pilot.Runtime.Tests/State/RuntimeKernelStateStoreTests.cs` — 11 unit tests for start/end/current/recent session behavior and validation;
+- `tests/Zapret2Pilot.Runtime.Tests/State/TemporarySqliteDatabase.cs` — hermetic test fixture for file-backed SQLite;
+- `tests/Zapret2Pilot.Runtime.Tests/DependencyInjection/RuntimeServiceCollectionExtensionsTests.cs` — DI integration test resolving `IRuntimeKernelStateStore` from a generic host;
+- `tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj` — added `Microsoft.Extensions.Hosting` reference for the integration test;
+- `VERSION = 0.0.19`;
+- `README.md`, `docs/Z2P-ROADMAP.md` and `docs/Z2P-IMPLEMENTATION-STATUS.md` — this section.
+
+Validation commands to run locally:
+
+```powershell
+dotnet --version
+dotnet restore Zapret2Pilot.slnx
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release
+dotnet test Zapret2Pilot.slnx -c Release
+```
+
+Notes:
+
+- The store is synchronous to match the existing `Zapret2Pilot.Storage` repository style; it is intended to be called from the Runtime Kernel's single-writer thread in future milestones.
+- `StartSession` automatically closes any previously active session, so the singleton `runtime_state` row never points at more than one active session.
+- Timestamps are stored as ISO-8601 (`O`) strings and parsed with `DateTimeStyles.RoundtripKind`.
+- No real `winws2` process is started, killed or assigned. The milestone only adds SQLite persistence and DI wiring.
+- No new NuGet packages were added to `Directory.Packages.props`; the only new package reference is `Microsoft.Extensions.Hosting`, which is already centrally managed.
