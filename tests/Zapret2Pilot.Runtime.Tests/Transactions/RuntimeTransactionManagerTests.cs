@@ -328,5 +328,116 @@ public sealed class RuntimeTransactionManagerTests
         Assert.NotNull(result.Error);
         Assert.Same(error, result.Error);
     }
+
+    /// <summary>
+    /// P0-2 contract: the manager's state-mutating entry points are
+    /// thread-safe. Multiple threads racing on
+    /// <see cref="RuntimeTransactionManager.BeginStart(CompiledZapretPlan)"/>
+    /// must produce exactly one success and the rest must fail with
+    /// <c>RuntimeAlreadyRunning</c>; the manager must end up running
+    /// with the winning plan. The test uses a barrier to maximise the
+    /// chance of a real race.
+    /// </summary>
+    [Fact]
+    public static void Concurrent_BeginStart_FailsAfterFirstSuccess()
+    {
+        const int ThreadCount = 16;
+
+        RuntimeTransactionManager manager = new();
+        CompiledZapretPlan[] plans = new CompiledZapretPlan[ThreadCount];
+        for (int i = 0; i < ThreadCount; i++)
+        {
+            plans[i] = new CompiledZapretPlan(
+                generatedConfigContent: $"# config {i}\n",
+                argsContent: $"--thread-{i}\n",
+                hostlists: Array.Empty<CompiledZapretPlan.HostlistContent>());
+        }
+
+        using Barrier startBarrier = new(ThreadCount);
+        Result<RuntimeTransaction>[] results = new Result<RuntimeTransaction>[ThreadCount];
+        int[] failureCodes = new int[ThreadCount];
+        object resultsLock = new();
+
+        Thread[] threads = new Thread[ThreadCount];
+        for (int i = 0; i < ThreadCount; i++)
+        {
+            int index = i;
+            threads[i] = new Thread(() =>
+            {
+                startBarrier.SignalAndWait();
+                Result<RuntimeTransaction> result = manager.BeginStart(plans[index]);
+                lock (resultsLock)
+                {
+                    results[index] = result;
+                    failureCodes[index] = result.IsFailure ? 1 : 0;
+                }
+            });
+            threads[i].Start();
+        }
+
+        foreach (Thread thread in threads)
+        {
+            thread.Join();
+        }
+
+        int successCount = 0;
+        int alreadyRunningCount = 0;
+        CompiledZapretPlan? winningPlan = null;
+        for (int i = 0; i < ThreadCount; i++)
+        {
+            if (results[i].IsSuccess)
+            {
+                successCount++;
+                winningPlan = results[i].Value.Plan;
+            }
+            else if (results[i].Error.Code == "RuntimeAlreadyRunning")
+            {
+                alreadyRunningCount++;
+            }
+        }
+
+        Assert.Equal(1, successCount);
+        Assert.Equal(ThreadCount - 1, alreadyRunningCount);
+        Assert.True(manager.IsRunning);
+        Assert.Same(winningPlan, manager.CurrentPlan);
+    }
+
+    /// <summary>
+    /// Contract: a user-supplied rollback action may safely re-enter
+    /// the manager. Because the manager's lock is released before
+    /// invoking the action, calling <c>BeginStop</c> from inside a
+    /// rollback action must not deadlock. The action runs while the
+    /// manager is in the <c>Running</c> state (the default for a
+    /// <c>Start</c> transaction), so <c>BeginStop</c> succeeds and
+    /// transitions the manager to <c>Stopped</c>; the transaction
+    /// itself is then rolled back, which under the new locking
+    /// discipline must still complete cleanly.
+    /// </summary>
+    [Fact]
+    public static void RollbackAction_CallingManager_DoesNotDeadlock()
+    {
+        RuntimeTransactionManager manager = new();
+        CompiledZapretPlan plan = CreatePlan();
+
+        Result<RuntimeTransaction> begin = manager.BeginStart(plan);
+        Assert.True(begin.IsSuccess);
+        RuntimeTransaction transaction = begin.Value;
+
+        manager.AddRollbackAction(transaction, () =>
+        {
+            // Re-enter the manager: BeginStop takes the same lock.
+            // If the manager were holding the lock during action
+            // execution, this would deadlock.
+            Result<RuntimeTransaction> nestedStop = manager.BeginStop();
+            Assert.True(nestedStop.IsSuccess);
+        });
+
+        Result<Unit> rollback = manager.Rollback(transaction);
+
+        Assert.True(rollback.IsSuccess);
+        Assert.Equal(RuntimeTransactionState.RolledBack, transaction.State);
+        Assert.False(manager.IsRunning);
+        Assert.Null(manager.CurrentPlan);
+    }
 }
 #pragma warning restore CA1707 // Identifiers should not contain underscores
