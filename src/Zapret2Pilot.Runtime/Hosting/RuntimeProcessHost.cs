@@ -608,18 +608,19 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Performs the stop pipeline on the dedicated kernel worker
-    /// thread. This is the synchronous body of the old
-    /// <c>StopAsync</c>: cancellation check, state read, transaction
-    /// start, process termination, job object disposal, lock file
-    /// deletion, lease disposal and transaction commit.
+    /// thread. Rejects the call when the host is already disposed
+    /// (the public-facing <see cref="StopAsync"/> contract) and
+    /// also when the runtime is not running (the documented
+    /// <c>RuntimeNotRunning</c> failure). When the host is alive
+    /// AND the runtime is running, delegates the cleanup to
+    /// <see cref="CleanupOnWorkerAsync"/>, which is the
+    /// <c>disposed</c>-agnostic entry point also used by
+    /// <see cref="Dispose"/>.
     /// </summary>
     private Task<Result<Unit>> StopOnWorkerAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        RuntimeOwnershipLease? lease;
-        Process? processToStop;
-        IRuntimeJobObject? jobObjectToDispose;
         lock (stateLock)
         {
             if (disposed)
@@ -631,6 +632,68 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
                     category: ErrorCategory.Runtime)));
             }
 
+            if (ownershipLease is null || process is null)
+            {
+                return Task.FromResult(Result.Failure<Unit>(new ErrorInfo(
+                    code: "RuntimeNotRunning",
+                    message: "Cannot stop the runtime: the runtime is not running.",
+                    severity: ErrorSeverity.Error,
+                    category: ErrorCategory.Runtime)));
+            }
+        }
+
+        return CleanupOnWorkerAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Performs the stop / cleanup pipeline on the dedicated kernel
+    /// worker thread without consulting the <c>disposed</c> flag.
+    /// This is the entry point used by both
+    /// <see cref="StopOnWorkerAsync"/> (after the <c>disposed</c>
+    /// check) and <see cref="Dispose"/>, so the same teardown logic
+    /// runs in both paths. The <c>disposed</c> flag is deliberately
+    /// ignored here because <see cref="Dispose"/> sets the flag
+    /// before enqueuing the cleanup work, and the cleanup still has
+    /// to run.
+    ///
+    /// <para>
+    /// The method is idempotent: when there is no running process
+    /// (lease / process / job object are all <c>null</c>) it
+    /// returns <see cref="Result.Success{T}"/> with
+    /// <see cref="Unit.Instance"/> without opening a transaction or
+    /// touching any resource. This is the natural "nothing to
+    /// clean up" outcome, distinct from the
+    /// <c>RuntimeNotRunning</c> failure that
+    /// <see cref="StopAsync"/> returns when called on a
+    /// not-running host (that failure is produced by
+    /// <see cref="StopOnWorkerAsync"/>'s <c>disposed</c> guard, not
+    /// here).
+    /// </para>
+    /// <para>
+    /// When there is a running process the method begins a
+    /// <c>Stop</c> transaction, terminates the process (graceful
+    /// <c>CTRL_BREAK</c> with a <see cref="Process.Kill(bool)"/>
+    /// fallback), disposes the job object, deletes the lock file,
+    /// disposes the ownership lease, commits the transaction and
+    /// clears the host's local state. Cleanup failures after the
+    /// process has been killed are logged but never roll the
+    /// transaction back to <c>Running</c> (P0-6).
+    /// </para>
+    /// </summary>
+    /// <param name="cancellationToken">
+    /// Cancellation token observed before the cleanup pipeline
+    /// starts. The token is not honoured while a non-cancellable
+    /// kernel operation is in progress.
+    /// </param>
+    private Task<Result<Unit>> CleanupOnWorkerAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        RuntimeOwnershipLease? lease;
+        Process? processToStop;
+        IRuntimeJobObject? jobObjectToDispose;
+        lock (stateLock)
+        {
             lease = ownershipLease;
             processToStop = process;
             jobObjectToDispose = jobObject;
@@ -638,11 +701,12 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
 
         if (lease is null || processToStop is null)
         {
-            return Task.FromResult(Result.Failure<Unit>(new ErrorInfo(
-                code: "RuntimeNotRunning",
-                message: "Cannot stop the runtime: the runtime is not running.",
-                severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime)));
+            // Nothing to clean up: either the host was never started
+            // or a previous stop / cleanup already cleared the
+            // state. Treated as a successful no-op so that
+            // Dispose (which always reaches this method) is
+            // idempotent.
+            return Task.FromResult(Result.Success(Unit.Instance));
         }
 
         Result<RuntimeTransaction> beginStopResult = transactionManager.BeginStop();
@@ -771,13 +835,29 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Disposes the host. Sets the <c>disposed</c> flag and dispatches
-    /// the stop pipeline to the dedicated kernel worker thread so the
-    /// ownership lease is disposed on the thread that acquired the
-    /// mutex. If the worker is unavailable or rejects the work item,
-    /// falls back to <see cref="BestEffortDispose"/> which performs
-    /// the same cleanup on the calling thread (with the caveat that
-    /// the lease dispose becomes a no-op off-thread, so the mutex
-    /// is released by the OS instead). Idempotent.
+    /// the cleanup pipeline to the dedicated kernel worker thread so
+    /// the ownership lease is disposed on the thread that acquired
+    /// the mutex.
+    ///
+    /// <para>
+    /// The dispatched work is <see cref="CleanupOnWorkerAsync"/>,
+    /// NOT <see cref="StopOnWorkerAsync"/>. The two methods
+    /// share the same teardown body, but <see cref="StopOnWorkerAsync"/>
+    /// short-circuits when <c>disposed = true</c>, while
+    /// <see cref="CleanupOnWorkerAsync"/> does not consult the flag.
+    /// Routing <see cref="Dispose"/> through
+    /// <see cref="CleanupOnWorkerAsync"/> ensures the running
+    /// process, job object, lock file and ownership lease are
+    /// actually torn down, instead of being silently leaked because
+    /// the public-facing stop path rejected the call.
+    /// </para>
+    /// <para>
+    /// If the worker is unavailable or rejects the work item, the
+    /// catch falls back to <see cref="BestEffortDispose"/> which
+    /// performs the same cleanup on the calling thread (with the
+    /// caveat that the lease dispose becomes a no-op off-thread, so
+    /// the mutex is released by the OS instead). Idempotent.
+    /// </para>
     /// </summary>
     public void Dispose()
     {
@@ -791,20 +871,13 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
             disposed = true;
         }
 
-        if (worker is not null)
+        try
         {
-            try
-            {
-                worker.Enqueue(ct => StopOnWorkerAsync(ct), CancellationToken.None).GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Dispose: failed to dispatch cleanup to worker; falling back to best-effort cleanup.");
-                BestEffortDispose();
-            }
+            worker.Enqueue(ct => CleanupOnWorkerAsync(ct), CancellationToken.None).GetAwaiter().GetResult();
         }
-        else
+        catch (Exception ex)
         {
+            logger.LogError(ex, "Dispose: failed to dispatch cleanup to worker; falling back to best-effort cleanup.");
             BestEffortDispose();
         }
     }

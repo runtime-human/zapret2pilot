@@ -180,6 +180,111 @@ public sealed class RuntimeProcessHostTests
     }
 
     /// <summary>
+    /// 0.0.20 bug fix contract: <see cref="RuntimeProcessHost.Dispose"/>
+    /// must clean up a running runtime (kill the process, dispose the
+    /// job object, delete the lock file, release the ownership lease)
+    /// even though <see cref="RuntimeProcessHost.StopAsync"/> refuses
+    /// to run after <c>disposed = true</c> has been set.
+    ///
+    /// <para>
+    /// Pre-fix behaviour: <see cref="RuntimeProcessHost.Dispose"/> set
+    /// the <c>disposed</c> flag and then enqueued
+    /// <c>StopOnWorkerAsync</c> on the dedicated kernel worker.
+    /// <c>StopOnWorkerAsync</c> checked the flag and returned a
+    /// <c>RuntimeProcessHostDisposed</c> failure without touching the
+    /// process, the job object, the lock file or the ownership lease.
+    /// <see cref="RuntimeProcessHost.Dispose"/> ignored the returned
+    /// <see cref="Result{T}"/> and no exception was thrown, so the
+    /// <see cref="RuntimeProcessHost.BestEffortDispose"/> fallback
+    /// never ran. The result was a silent leak: the runtime kept
+    /// running, the job object stayed open, the lock file stayed on
+    /// disk and the ownership mutex stayed held until the OS reaped
+    /// the process.
+    /// </para>
+    /// <para>
+    /// Post-fix behaviour: <see cref="RuntimeProcessHost.Dispose"/>
+    /// enqueues a dedicated <c>CleanupOnWorkerAsync</c> entry point
+    /// that performs the full stop pipeline without consulting the
+    /// <c>disposed</c> flag. This test pins down the contract by
+    /// asserting that, after <see cref="RuntimeProcessHost.Dispose"/>
+    /// is called on a host that has a running process, the process
+    /// is gone, the lock file is deleted, and a fresh
+    /// <see cref="RuntimeProcessHost"/> can be started on a clean
+    /// baseline.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public static void Dispose_CleansUpRunningProcess()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        HostFixture fixture = HostFixture.Create();
+        try
+        {
+            fixture.PrepareFakeRuntimeInWorkspace();
+            RuntimeProcessStartContext context = fixture.CreateStartContextForFakeRuntime();
+
+            // 1. Start a fake runtime and verify it is alive and the
+            //    lock file is on disk.
+            Result<RuntimeProcessHostResult> startResult = host_StartAsync(fixture.Host, context);
+            Assert.True(startResult.IsSuccess, startResult.IsFailure ? startResult.Error.ToString() : string.Empty);
+
+            int processId = startResult.Value.ProcessId;
+            string lockFilePath = fixture.LockFileStore.LockFilePath;
+            Assert.True(File.Exists(lockFilePath), "Lock file should exist after a successful start.");
+
+            using (Process runningProcess = Process.GetProcessById(processId))
+            {
+                Assert.False(runningProcess.HasExited, "Fake runtime should still be running after start.");
+            }
+
+            // 2. Dispose the host. With the bug, this set disposed =
+            //    true and enqueued StopOnWorkerAsync, which
+            //    short-circuited on the disposed check. With the
+            //    fix, Dispose enqueues CleanupOnWorkerAsync instead,
+            //    which performs the full stop pipeline regardless of
+            //    the disposed flag.
+            fixture.Host.Dispose();
+
+            // 3. Direct bug detectors: the process is gone and the
+            //    lock file is deleted. Pre-fix both assertions fail
+            //    because the stop pipeline never ran.
+            Assert.True(IsProcessGone(processId),
+                "Fake runtime should have exited after host.Dispose().");
+            Assert.False(File.Exists(lockFilePath),
+                "Lock file should be deleted after host.Dispose().");
+        }
+        finally
+        {
+            // 4. Tear down the first fixture: idempotent host
+            //    Dispose, worker shutdown and temp dir cleanup. With
+            //    the bug, the recursive temp dir delete may leave a
+            //    stray file because the fake runtime is still
+            //    running and holds the .exe open; the test still
+            //    reports cleanly via the assertion failures above.
+            fixture.Dispose();
+        }
+
+        // 5. A new host on a fresh fixture must be able to start a
+        //    new runtime. Proves that the ownership mutex was
+        //    released by Dispose and that the kernel state is back
+        //    to a clean "not running" baseline.
+        using (HostFixture secondFixture = HostFixture.Create())
+        {
+            secondFixture.PrepareFakeRuntimeInWorkspace();
+            RuntimeProcessStartContext secondContext = secondFixture.CreateStartContextForFakeRuntime();
+
+            Result<RuntimeProcessHostResult> secondStart = host_StartAsync(secondFixture.Host, secondContext);
+            Assert.True(secondStart.IsSuccess,
+                $"Subsequent start on a new host must succeed; got: {(secondStart.IsFailure ? secondStart.Error.ToString() : string.Empty)}");
+            Assert.True(secondStart.Value.ProcessId > 0);
+        }
+    }
+
+    /// <summary>
     /// P0-6 contract: after a successful stop, a subsequent start
     /// must succeed. This proves that <see cref="RuntimeProcessHost.StopAsync"/>
     /// does not roll the transaction back to <c>Running</c> after the
