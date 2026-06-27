@@ -7,6 +7,7 @@ namespace Zapret2Pilot.Storage.Sqlite;
 public sealed class SqliteDbInitializer
 {
     private const string BaselineMigrationId = "0001_storage_foundation";
+    private const string RuntimeStateMigrationId = "0002_runtime_state_store";
 
     private static readonly SqliteSchemaMigration BaselineMigration = new(
         BaselineMigrationId,
@@ -26,6 +27,34 @@ public sealed class SqliteDbInitializer
         );
         """);
 
+    private static readonly SqliteSchemaMigration RuntimeStateMigration = new(
+        RuntimeStateMigrationId,
+        """
+        CREATE TABLE IF NOT EXISTS runtime_sessions (
+            id TEXT NOT NULL PRIMARY KEY,
+            started_utc TEXT NOT NULL,
+            ended_utc TEXT,
+            profile_id TEXT,
+            plan_id TEXT,
+            plan_cache_key TEXT,
+            state TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS runtime_state (
+            id INTEGER NOT NULL PRIMARY KEY,
+            session_id TEXT,
+            is_running INTEGER NOT NULL,
+            updated_utc TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES runtime_sessions(id)
+        );
+        """);
+
+    private static readonly SqliteSchemaMigration[] Migrations =
+    [
+        BaselineMigration,
+        RuntimeStateMigration
+    ];
+
     private readonly SqliteConnectionFactory connectionFactory;
 
     public SqliteDbInitializer(SqliteConnectionFactory connectionFactory)
@@ -42,17 +71,20 @@ public sealed class SqliteDbInitializer
         ApplyRequiredPragmas(connection);
         CreateMigrationsTable(connection);
 
-        if (IsMigrationApplied(connection, BaselineMigration.Id))
+        foreach (SqliteSchemaMigration migration in Migrations)
         {
-            return;
+            if (IsMigrationApplied(connection, migration.Id))
+            {
+                continue;
+            }
+
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            ExecuteNonQuery(connection, transaction, migration.Sql);
+            InsertMigration(connection, transaction, migration.Id);
+
+            transaction.Commit();
         }
-
-        using SqliteTransaction transaction = connection.BeginTransaction();
-
-        ExecuteNonQuery(connection, transaction, BaselineMigration.Sql);
-        InsertMigration(connection, transaction, BaselineMigration.Id);
-
-        transaction.Commit();
     }
 
     private static void ApplyRequiredPragmas(SqliteConnection connection)
