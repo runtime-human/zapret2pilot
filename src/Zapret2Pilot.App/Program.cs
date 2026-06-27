@@ -59,6 +59,11 @@ internal static class AppHost
             .CreateDefaultBuilder(args)
             .ConfigureServices(static services =>
             {
+                string databasePath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "Zapret2Pilot",
+                    "z2p.db");
+                services.AddRuntimeKernelStateStore(databasePath);
                 services.AddSingleton<MainWindowViewModel>();
                 services.AddSingleton<MainWindow>();
             })

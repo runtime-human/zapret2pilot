@@ -19,5 +19,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Zapret2Pilot.Application\Zapret2Pilot.Application.csproj" />
+    <ProjectReference Include="..\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
   </ItemGroup>
 </Project>
