@@ -22,6 +22,17 @@
 
   <ItemGroup>
     <!--
+      Analyzer packages (0.0.18-C / D-A1, D-A2).
+      Wired repo-wide. Severity is phased via .editorconfig: starts as
+      "suggestion", will be ramped to "warning" in a later milestone.
+      PrivateAssets="all" keeps these analyzers from leaking to consumers.
+    -->
+    <PackageReference Include="Meziantou.Analyzer" PrivateAssets="all" />
+    <PackageReference Include="Roslynator.Analyzers" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
       Microsoft.Data.Sqlite 10.0.9 currently restores SQLitePCLRaw.lib.e_sqlite3 2.1.11 transitively.
       The package is deprecated and renamed upstream, but there is no patched SQLitePCLRaw.lib.e_sqlite3 version to upgrade to.
       Keep this exact advisory suppression narrow and remove it once Microsoft.Data.Sqlite moves off the deprecated package.

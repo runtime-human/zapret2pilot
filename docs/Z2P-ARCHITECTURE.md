@@ -167,6 +167,10 @@ z2p-runtime.lock             -> recovery metadata
 
 Lock file is never trusted alone.
 
+`VerifiedRuntimeExecutablePath` is a value object that binds the executable path the host is about to launch to a passing `ZapretAssetVerificationSummary`. The type has no public string constructor; the only production producer is the workspace materializer after `ZapretAssetVerifier` has confirmed the manifest hash, the file hash and the path stay inside the allowed root. `RuntimeProcessStartContext` accepts `VerifiedRuntimeExecutablePath` (not a raw `string`), so the property "the host only launches what was just verified" is enforced by the type system rather than by caller discipline. Expired or missing verification produces an explicit failure. See `DEC-0032` and Critical Review #26.
+
+`RuntimeKernelWorker` owns a single dedicated thread (a `LongRunning` task registered as an `IHostedService`) on which all Runtime Kernel state mutations happen. The worker exposes `Enqueue(Func<CancellationToken, Task>)` and `Enqueue<T>(Func<CancellationToken, Task<T>>)` for callers. The UI and the Application layer enqueue kernel work asynchronously and observe results through observables that marshal back to the UI scheduler; the host never blocks the UI thread and never exposes a kernel handle outside the worker thread. The worker is the canonical owner thread for `RuntimeOwnershipLease`, the Job Object handle and the running `Process` reference. See `DEC-0033` and Critical Review #29.
+
 ## 7. Runtime lifecycle
 
 Start:

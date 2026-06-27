@@ -2,7 +2,7 @@
 
 Zapret2Pilot is a Windows desktop manager and control plane for zapret2/winws2.
 
-Current version: `0.0.17`.
+Current version: `0.0.18`.
 
 ## Project status
 
@@ -11,13 +11,13 @@ This repository is in early bootstrap stage.
 Current milestone:
 
 ```text
-0.0.17 — Runtime Process Host
+0.0.18 — Runtime Process Host Hardening
 ```
 
 Current patch:
 
 ```text
-0.0.17 — Runtime Process Host
+0.0.18 — Runtime Process Host Hardening
 ```
 
 ## Architecture baseline
@@ -68,6 +68,7 @@ tests/
   Zapret2Pilot.Infrastructure.Tests/
   Zapret2Pilot.Engine.Zapret2.Tests/
   Zapret2Pilot.Runtime.Tests/
+  Zapret2Pilot.Testing.FakeRuntime/
   Zapret2Pilot.App.ViewModelTests/
 ```
 

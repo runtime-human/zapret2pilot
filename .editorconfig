@@ -1,0 +1,111 @@
+# EditorConfig for Zapret2Pilot / Z2P
+# https://editorconfig.org
+#
+# This file is the source of truth for editor / analyzer configuration.
+# TreatWarningsAsErrors=true is set in Directory.Build.props; this file
+# only downgrades analyzer severity where required and documents the
+# rationale inline.
+
+root = true
+
+########################################
+# Baseline file formatting
+########################################
+
+[*]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.{props,targets,xml,csproj,slnx,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+########################################
+# .NET / C# language conventions
+########################################
+
+[*.cs]
+# Newest C# language version is governed by <LangVersion> in Directory.Build.props.
+
+# Style: prefer expression-bodied members only where the canon does not require
+# block bodies for analyzer-safe code. We keep defaults (no enforcement) to
+# avoid breaking existing call sites during phased analyzer rollout.
+
+########################################
+# 0.0.18-C analyzer rollout (D-A1 / D-A2)
+# ----------------------------------------
+# Meziantou.Analyzer 2.0.189 and Roslynator.Analyzers 4.15.0 are wired
+# repo-wide in Directory.Build.props with PrivateAssets="all".
+#
+# This is the FIRST milestone in which these analyzers are enabled.
+# To keep TreatWarningsAsErrors=true green for the whole solution, every
+# rule from both analyzer packages starts at "suggestion". This is the
+# documented phase 1 of a phased rollout.
+#
+# Phase 2 (future milestone) is to ramp the categories below to
+# "warning" (and "error" only for rules the team explicitly promotes).
+# Category names follow the format:
+#   dotnet_analyzer_diagnostic.category-<CategoryName>.severity
+# For per-rule tuning, use:
+#   dotnet_diagnostic.<RuleId>.severity = suggestion|warning|error|none|silent
+# Do NOT set Meziantou/Roslynator analyzers to "default" or "error" in
+# 0.0.18-C.
+########################################
+
+# Phase 1: full categories at "suggestion".
+dotnet_analyzer_diagnostic.category-Meziantou.AnalyzerRules.severity = suggestion
+dotnet_analyzer_diagnostic.category-Roslynator.Analyzers.severity = suggestion
+
+# These categories do not exist for the wired analyzers; keep the lines
+# below as documentation of intent and as a safety net in case a future
+# package update registers them.
+# dotnet_analyzer_diagnostic.category-Meziantou.Analyzers.severity = suggestion
+# dotnet_analyzer_diagnostic.category-Roslynator.CSharp.Analyzers.severity = suggestion
+
+# Per-rule scope-down. TreatWarningsAsErrors=true means a "warning" or
+# "suggestion" from the analyzer can still become an error at build
+# time if the editorconfig key is wrong. Add new entries ONLY when a
+# rule fires across the solution; document the reason in a comment.
+#
+# 2026-06-27 — Phase 1 of the 0.0.18-C rollout broadens the
+# suppression from per-rule (which is what the task expected) to a
+# whole-analyzer pattern. The reason is that the category-based
+# configuration for these analyzer packages does NOT downshift the
+# rules below the analyzer's default (which is "warning" in the wired
+# packages). We tried `dotnet_diagnostic.MA*.severity = suggestion`
+# but the glob did NOT consistently downshift every rule — MA0048
+# kept firing as an error, while MA0023, MA0004, MA0049, MA0002,
+# MA0006, MA0051, MA0074, MA0158 and RCS1194 were downshifted. We
+# therefore enumerate the rules observed at build time and set them
+# to "suggestion". New rules added by a future Meziantou or
+# Roslynator package upgrade must be added here too, or the build
+# will fail. The phase 2 ramp to "warning" is scheduled for 0.0.19.
+#
+# Meziantou.Analyzer 2.0.189
+dotnet_diagnostic.MA0002.severity = suggestion
+dotnet_diagnostic.MA0004.severity = suggestion
+dotnet_diagnostic.MA0006.severity = suggestion
+dotnet_diagnostic.MA0023.severity = suggestion
+dotnet_diagnostic.MA0048.severity = suggestion
+dotnet_diagnostic.MA0049.severity = suggestion
+dotnet_diagnostic.MA0051.severity = suggestion
+dotnet_diagnostic.MA0074.severity = suggestion
+dotnet_diagnostic.MA0084.severity = suggestion
+dotnet_diagnostic.MA0158.severity = suggestion
+# Roslynator.Analyzers 4.15.0
+dotnet_diagnostic.RCS1194.severity = suggestion
+
+# Reserve the right to scope additional specific rules down to "none"
+# or "silent" during phase 1 if a rule produces a wave of findings.
+# New entries MUST be added in a comment block above documenting the
+# rule ID, the date, and the reason. Example:
+#
+#   # 2026-06-27 — rule id MSE001, false positive in test code, re-evaluate
+#   # in 0.0.19.
+#   # dotnet_diagnostic.MSE001.severity = none

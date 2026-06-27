@@ -478,3 +478,92 @@ Consequence:
 - `Zapret2Pilot.Infrastructure` is no longer a leaf project in the dependency graph: it now references `Zapret2Pilot.Core`.
 - The asset verifier (`Zapret2Pilot.Engine.Zapret2.Assets.ZapretAssetVerifier`) accepts an `ISafePathResolver` through its constructor and is fully unit-testable with a fake resolver.
 - The production wiring of `SafePathResolver` into `Zapret2Pilot.Runtime` is intentionally out of scope for `0.0.11` and will land with the kernel-host wiring in a later milestone.
+
+## DEC-0030 — Runtime Transaction Model
+
+Date: 2026-06
+
+Decision:
+
+- `RuntimeTransactionManager` is the single source of truth for runtime state.
+- `IsRunning`, `IsOwned` and `IsHealthy` may only be flipped through the transaction API (`Begin`, `Commit`, `Rollback`).
+- After an irreversible kill (process terminated, Job Object drained, mutex released), the transaction is **never** rolled back to `Running`; cleanup failures are logged and the host state is cleared.
+- The transaction remains in `Stopped` or `Failed` until the next `Begin` succeeds.
+
+Rationale:
+
+- Rolling back a transaction that corresponds to a killed process would silently leave the kernel thinking it is still running, with no live Job Object, no live process and no live mutex. A subsequent `StartAsync` would corrupt the host state machine.
+- The decision codifies the rule "no rollback after irreversible kill" introduced in `0.0.18-B` (Critical Review #28).
+
+Consequence:
+
+- `StopAsync` failure paths must log a `Cleanup` warning with the precise failure and clear host state, then leave the transaction in `Stopped` / `Failed`.
+- Subsequent `StartAsync` calls must succeed: the host must not be wedged by a previous kill.
+- Tests in `Zapret2Pilot.Runtime.Tests` cover this invariant.
+
+## DEC-0031 — FakeRuntime Gate
+
+Date: 2026-06
+
+Decision:
+
+- No real `winws2` process may be launched from the Runtime Kernel until the FakeRuntime gate is green.
+- The FakeRuntime gate is the suite of tests in `Zapret2Pilot.Testing.FakeRuntime` plus the tests in `Zapret2Pilot.Runtime.Tests` that exercise `RuntimeProcessHost` against `FakeRuntime`.
+- The gate is the contract referenced by `0.0.17` and `0.0.18-A/B/C`: every P0 finding that touches the host must be reproducible against `FakeRuntime` before any real `winws2` launch.
+
+Rationale:
+
+- `winws2` is a privileged process that manipulates WinDivert, raw sockets and process state. Launching it against real network traffic without a known-good test target is exactly the failure mode the canon exists to prevent.
+- `FakeRuntime` provides a deterministic, hermetic process for the host to launch, observe, kill and assert against. It is the only acceptable test target for the kernel in 0.0.18.
+- The gate also blocks premature wins: every safety primitive (Job Object, VerifiedRuntimeExecutablePath, no rollback after kill) is exercised against `FakeRuntime` first.
+
+Consequence:
+
+- The 0.0.18 milestone is a "no real winws2" milestone by definition.
+- Any future PR that tries to launch real `winws2` must be gated on a new decision that updates this entry and the canon.
+- `Zapret2Pilot.Testing.FakeRuntime` is the test-only project allowed to expose a fake `winws2`. Production code must not import it.
+
+## DEC-0032 — Verified Executable Launch
+
+Date: 2026-06
+
+Decision:
+
+- `RuntimeProcessHost` may only launch paths that are an instance of `VerifiedRuntimeExecutablePath`.
+- `VerifiedRuntimeExecutablePath` is a value object that can only be constructed from a passing `ZapretAssetVerificationSummary` (typically produced by `ZapretAssetVerifier`).
+- The workspace materializer is the only place that produces this value object in production code.
+- An expired or missing verification summary must produce an explicit failure, not a silent fallback to a raw `string` path.
+
+Rationale:
+
+- Before `0.0.18-A`, the host accepted any `RuntimeExecutablePath` string and launched it under the elevated token. A malicious or corrupted path could be executed.
+- Binding the launch path to the verifier output makes "you can only launch what you just verified" a structural property of the type system, not a convention that callers may forget.
+- The decision implements Critical Review #26 (P0-4) and is the foundation of any future real `winws2` launch.
+
+Consequence:
+
+- `RuntimeProcessStartContext` accepts `VerifiedRuntimeExecutablePath` (or an equivalent opaque type) instead of a raw `string`.
+- Tests cover: host refuses an unverified path; launched path matches the manifest; expired verification summary cannot construct `VerifiedRuntimeExecutablePath`; `FakeRuntime` paths remain launchable.
+
+## DEC-0033 — Runtime Kernel Single-Thread Worker
+
+Date: 2026-06
+
+Decision:
+
+- All Runtime Kernel state mutations happen on a single dedicated worker thread owned by `RuntimeKernelWorker`.
+- `RuntimeKernelWorker` exposes `Enqueue(Func<CancellationToken, Task>)` and `Enqueue<T>(Func<CancellationToken, Task<T>>)` for callers.
+- The UI and the `Application` layer enqueue kernel work asynchronously; they never `Wait`, `Result` or otherwise block on a kernel future.
+- The worker is registered as an `IHostedService` and started/stopped by the Generic Host lifecycle in `0.0.19`.
+
+Rationale:
+
+- The kernel owns the `Mutex` SafeHandle, the Job Object handle, the running process and the transaction state. None of these can be mutated from arbitrary threads without causing `SafeHandle` corruption, transaction drift or UI freezes.
+- A dedicated worker thread makes "the kernel thread" a single, named, debuggable entity. It also makes thread-affinity exceptions (e.g. a non-owner-thread `Dispose`) detectable and reportable.
+- The decision implements Critical Review #29 (P0-7).
+
+Consequence:
+
+- UI code must not call kernel APIs from the UI thread directly. It enqueues work to the worker and observes results through observables that marshal back to the UI scheduler.
+- The worker owns the owner thread for `RuntimeOwnershipLease` and the canonical place where Job Object handles live.
+- Manual `Thread.Sleep` / spin-wait paths in the host are replaced with `Task`-based awaits off the worker.

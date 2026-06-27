@@ -315,3 +315,131 @@ Decision:
 ## 25. Current review conclusion
 
 The architecture remains valid, but Runtime Kernel implementation must start with process safety and concurrency primitives, not with UI buttons or direct process launch.
+
+## 26. Verified executable integrity gap (P0-4)
+
+Status: **Accepted / P0**
+
+Problem:
+
+- `RuntimeProcessHost` previously launched any `RuntimeExecutablePath` string it was handed. The output of `ZapretAssetVerifier` (a `ZapretAssetVerificationSummary`) was produced by the workspace materializer but was **not** threaded into the launch decision.
+- A caller could pass a corrupted or attacker-controlled path and the elevated token would execute it.
+
+Decision:
+
+- Introduce a new value object `VerifiedRuntimeExecutablePath` that can only be constructed from a passing `ZapretAssetVerificationSummary`.
+- `RuntimeProcessStartContext` accepts `VerifiedRuntimeExecutablePath` (or an equivalent opaque type) instead of a raw `string`.
+- The workspace materializer is the only place that produces this type in production.
+- The host launches only what it receives. Expired or missing verification produces an explicit failure, not a silent fallback.
+
+Files/classes:
+
+- `src/Zapret2Pilot.Runtime/Integrity/VerifiedRuntimeExecutablePath.cs`
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessStartContext.cs`
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs`
+- `src/Zapret2Pilot.Engine.Zapret2/Assets/ZapretAssetVerificationSummary.cs`
+- `src/Zapret2Pilot.Runtime/Workspace/RuntimeWorkspaceMaterializer.cs`
+
+Tests:
+
+- Host rejects an unverified executable.
+- Launched path matches the manifest.
+- Expired verification summary cannot construct `VerifiedRuntimeExecutablePath`.
+- `FakeRuntime` paths remain launchable.
+
+Roadmap alignment:
+
+- Implements `0.0.18-A` and codifies `DEC-0032`.
+
+## 27. Redirected stdout / stderr not consumed (P0-5)
+
+Status: **Accepted / P0**
+
+Problem:
+
+- `ProcessStartInfo.RedirectStandardOutput` and `RedirectStandardError` were set to `true`, but the host never subscribed to `OutputDataReceived` / `ErrorDataReceived`.
+- A verbose `winws2` could deadlock on a full pipe before reaching a readiness check.
+
+Decision:
+
+- For `0.0.18`, both redirects are set to `false` so the OS owns the child stdio.
+- A bounded output pump (fixed-size ring buffer, explicit consumer thread, backpressure contract) is planned for `0.0.19`.
+- The pump must be observable from the Application layer for diagnostics, not hidden in the host.
+
+Files/classes:
+
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs`
+- `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessHostTests.cs`
+
+Tests:
+
+- A `FakeRuntime` that emits a configurable volume of stdout / stderr must not deadlock within 30 seconds.
+- The process is reported `Running` and `Exited` cleanly.
+
+Roadmap alignment:
+
+- Implements `0.0.18-B` and the preparation for the bounded pump in `0.0.19`.
+
+## 28. StopAsync rollback after irreversible kill (P0-6)
+
+Status: **Accepted / P0**
+
+Problem:
+
+- `RuntimeProcessHost.StopAsync` killed the process and then called `Rollback` on the transaction, which restored `IsRunning = true` in `RuntimeTransactionManager`.
+- A subsequent restart found the kernel thinking it was still running, with no live process, no live Job Object and no live mutex.
+
+Decision:
+
+- After an irreversible kill, the transaction is **not** rolled back. The transaction remains in `Stopped` or `Failed`.
+- Cleanup failures (e.g. lock file delete failures) are logged with severity `Warning` or `Error` and the host state (`IsRunning`, `OwnedHandles`) is cleared.
+- A subsequent `StartAsync` is allowed and must succeed.
+
+Files/classes:
+
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs`
+- `src/Zapret2Pilot.Runtime/Transactions/RuntimeTransactionManager.cs`
+- `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessHostTests.cs`
+- `tests/Zapret2Pilot.Runtime.Tests/Transactions/RuntimeTransactionManagerTests.cs`
+
+Tests:
+
+- After kill, transaction manager state is `Stopped` even if a follow-up lock delete fails.
+- A second `StartAsync` is allowed.
+- `Rollback` from a kill path is not invoked.
+
+Roadmap alignment:
+
+- Implements `0.0.18-B` and codifies `DEC-0030`.
+
+## 29. UI thread affinity and missing RuntimeKernelWorker (P0-7)
+
+Status: **Accepted / P0**
+
+Problem:
+
+- The host used `GetAwaiter().GetResult()` for mutex thread affinity.
+- There was no dedicated runtime thread. `ImmediateUiScheduler` was synchronous.
+- UI code could therefore block on kernel awaits, and the kernel had no single, named thread to reason about for `SafeHandle` ownership.
+
+Decision:
+
+- Add a `RuntimeKernelWorker` that owns a single dedicated thread (or `LongRunning` task) and exposes `Enqueue(Func<CancellationToken, Task>)` and `Enqueue<T>(Func<CancellationToken, Task<T>>)`.
+- UI and the Application layer enqueue kernel work asynchronously; the host never blocks the UI thread.
+- The worker is registered as an `IHostedService` in `0.0.19` and started/stopped by the Generic Host lifecycle.
+
+Files/classes:
+
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeKernelWorker.cs` (planned for `0.0.19`)
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs`
+- `src/Zapret2Pilot.App/Program.cs`
+
+Tests:
+
+- Host commands execute on the dedicated thread (assert `Thread.CurrentThread.ManagedThreadId`).
+- UI thread is not blocked for more than 1 ms during a kernel call.
+- Cancellation is honored.
+
+Roadmap alignment:
+
+- Implements `0.0.19` (P0-7) and codifies `DEC-0033`. The 0.0.18 milestone adds the **decision** and the documentation; the worker itself lands in 0.0.19.

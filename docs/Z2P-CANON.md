@@ -302,3 +302,16 @@ First implementation version is `0.0.1`.
 - add Windows Service;
 - add IPC service layer;
 - add `.bat` / `.cmd` wrapper architecture.
+
+## 19. 0.0.18 P0 canon compliance
+
+Every P0 task in the `0.0.18` milestone (P0-1 through P0-7, including the A/B/C implementation packets) must respect the forbidden list above. In particular, the 0.0.18 P0 work does **not** introduce:
+
+- a Windows Service registration or SCM interaction;
+- an IPC service layer (named pipes, sockets, shared memory, mailslots);
+- a VPN, proxy, MITM utility, or per-URL traffic filtering / routing layer;
+- a raw `bat` / `cmd` wrapper invoked from the application;
+- arbitrary command execution from the UI;
+- a real `winws2` launch against real network traffic.
+
+The 0.0.18 P0 work is bounded to Runtime Kernel safety primitives (Job Objects, VerifiedRuntimeExecutablePath, RuntimeTransactionManager, no rollback after kill, RuntimeKernelWorker) and to phased analyzer rollout (Meziantou, Roslynator, Avalonia 12.0.5) and documentation updates. No new attack surface is introduced beyond the surface already approved for `0.0.17` and earlier milestones.
