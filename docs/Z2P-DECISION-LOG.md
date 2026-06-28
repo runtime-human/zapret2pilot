@@ -567,3 +567,29 @@ Consequence:
 - UI code must not call kernel APIs from the UI thread directly. It enqueues work to the worker and observes results through observables that marshal back to the UI scheduler.
 - The worker owns the owner thread for `RuntimeOwnershipLease` and the canonical place where Job Object handles live.
 - Manual `Thread.Sleep` / spin-wait paths in the host are replaced with `Task`-based awaits off the worker.
+
+## DEC-0034 — Async Main & Non-Blocking Kernel Integration
+
+Date: 2026-06
+
+Decision:
+
+- `Zapret2Pilot.App/Program.cs` must use `public static async Task<int> Main(string[] args)` and carry `[STAThread]`. The Generic Host's `StartAsync` and `StopAsync` are awaited; sync-over-async via `GetAwaiter().GetResult()` on the entry-point path is forbidden.
+- All Runtime Kernel work issued from the UI / Application layer is enqueued through `RuntimeKernelWorker.Enqueue` (or `Enqueue<T>`). Callers observe the returned `Task`; they do not block the UI thread.
+- The Generic Host owns the `RuntimeKernelWorker` lifetime: the worker is registered as a singleton and as an `IHostedService` via `AddRuntimeKernelWorker`. The worker is started and stopped by the host in the same way as every other `IHostedService`.
+- `RuntimeProcessHost` is registered as a singleton via the new `AddRuntimeProcessHost` DI extension in `Zapret2Pilot.Runtime.DependencyInjection.RuntimeServiceCollectionExtensions`. The extension registers every constructor dependency (mutex, lock file store, stale lock recovery, workspace materializer, transaction manager, job object process assigner, host) as a singleton; the runtime directory is shared via a singleton `AppDataLayout` so factory lambdas stay free of captured locals, and the extension does NOT call `AppDataLayout.EnsureCreated()` (registration is pure).
+- The order of registrations in `AppHost.Build` is `AddRuntimeKernelStateStore` → `AddRuntimeKernelWorker` → `AddRuntimeProcessHost`, so the process host resolves the same `RuntimeKernelWorker` instance the host starts.
+
+Rationale:
+
+- Sync-over-async on the UI thread is the exact failure mode Critical Review #29 (P0-7) was opened for. A blocking entry point makes any future "enqueue from UI" a freeze-the-UI bug.
+- A dedicated worker thread is necessary for the ownership-mutex / Job Object thread affinity `RuntimeProcessHost` already documents in 0.0.20 packet 2. The host must therefore be reachable through the same DI container the rest of the kernel uses, not as a hard-coded singleton inside the entry point.
+- Registering the worker as an `IHostedService` gives us deterministic, ordered start / stop semantics for free. The host's `StartAsync` returns only after the worker thread has been created, and the worker's `StopAsync` is awaited during shutdown.
+- Keeping the `AddRuntimeProcessHost` extension pure (no `EnsureCreated` call) preserves the rule "DI registration is configuration, not side-effecting I/O". The kernel may decide when to materialise the layout on disk; the DI container never does.
+
+Consequence:
+
+- The UI / Application layer may NOT call `RuntimeProcessHost.StartAsync` / `StopAsync` (or any other kernel API) directly. It MUST go through `RuntimeKernelWorker.Enqueue` so the call lands on the dedicated worker thread and never blocks the UI thread.
+- A new xUnit test in `Zapret2Pilot.Runtime.Tests.Hosting.RuntimeKernelWorkerUiNonBlockingTests` enforces the non-blocking contract: a work item that awaits 100 ms inside the worker does not delay the `Enqueue` call on the caller thread by more than 5 ms.
+- `Program.Main` is `async Task<int>`; the Avalonia classic-desktop lifetime is started AFTER `host.StartAsync()` returns so the host services are live for the entire UI lifetime.
+- Critical Review #29 (P0-7) is marked **Resolved** in `docs/Z2P-CRITICAL-REVIEW.md`.

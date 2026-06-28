@@ -414,7 +414,7 @@ Roadmap alignment:
 
 ## 29. UI thread affinity and missing RuntimeKernelWorker (P0-7)
 
-Status: **Accepted / P0**
+Status: **Resolved**
 
 Problem:
 
@@ -424,22 +424,25 @@ Problem:
 
 Decision:
 
-- Add a `RuntimeKernelWorker` that owns a single dedicated thread (or `LongRunning` task) and exposes `Enqueue(Func<CancellationToken, Task>)` and `Enqueue<T>(Func<CancellationToken, Task<T>>)`.
+- Add a `RuntimeKernelWorker` that owns a single dedicated thread (or `LongRunning` task) and exposes `Enqueue(Func<CancellationToken, Task>)` and `Enqueue<T>(Func<CancellationToken, Task<T}>)`.
 - UI and the Application layer enqueue kernel work asynchronously; the host never blocks the UI thread.
 - The worker is registered as an `IHostedService` in `0.0.19` and started/stopped by the Generic Host lifecycle.
+- `Program.cs` becomes `async Task<int>` so the host's `StartAsync` / `StopAsync` are awaited instead of `GetAwaiter().GetResult()`. (Resolved by `0.0.20` packet 3 and `DEC-0034`.)
+- The `RuntimeProcessHost` is wired into the host through the new `AddRuntimeProcessHost` DI extension and resolves the same `RuntimeKernelWorker` singleton that the host starts as an `IHostedService`. (Resolved by `0.0.20` packet 3 and `DEC-0034`.)
 
 Files/classes:
 
-- `src/Zapret2Pilot.Runtime/Hosting/RuntimeKernelWorker.cs` (planned for `0.0.19`)
-- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs`
-- `src/Zapret2Pilot.App/Program.cs`
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeKernelWorker.cs` (implemented in `0.0.20` packet 1, registered in `0.0.20` packet 3)
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs` (marshalled onto the worker in `0.0.20` packet 2, registered in `0.0.20` packet 3)
+- `src/Zapret2Pilot.App/Program.cs` (async entry point in `0.0.20` packet 3)
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` (new `AddRuntimeProcessHost` extension in `0.0.20` packet 3)
 
 Tests:
 
-- Host commands execute on the dedicated thread (assert `Thread.CurrentThread.ManagedThreadId`).
-- UI thread is not blocked for more than 1 ms during a kernel call.
-- Cancellation is honored.
+- Host commands execute on the dedicated thread (assert `Thread.CurrentThread.ManagedThreadId`). Implemented in `RuntimeKernelWorkerTests.Enqueue_RunsOnDedicatedThread`.
+- UI thread is not blocked for more than 1 ms during a kernel call. Implemented in `RuntimeKernelWorkerUiNonBlockingTests.Enqueue_ReturnsImmediately_WithoutBlockingCaller` and `Enqueue_DoesNotBlockCaller_WhenWorkItemAwaitsForever` (caller-side bound is 5 ms over a 100 ms work item).
+- Cancellation is honored. Implemented in `RuntimeKernelWorkerTests.Cancellation_Honored`.
 
 Roadmap alignment:
 
-- Implements `0.0.19` (P0-7) and codifies `DEC-0033`. The 0.0.18 milestone adds the **decision** and the documentation; the worker itself lands in 0.0.19.
+- Implemented by `0.0.20` (worker: packet 1, worker-marshalled host: packet 2, host wiring + async Main: packet 3). Codifies `DEC-0033` and `DEC-0034`. The 0.0.18 milestone added the **decision** and the documentation; the worker and the host integration landed in 0.0.20.

@@ -674,3 +674,53 @@ Acceptance:
 - `dotnet test Zapret2Pilot.slnx -c Release` passes;
 - no real `winws2` launch;
 - no new NuGet packages beyond the already-centrally-managed `Microsoft.Extensions.Hosting` reference.
+
+## 0.0.20 — Health, Readiness & RuntimeKernelWorker Integration
+
+Status: Implemented.
+
+Follows 0.0.19. Closes the host-integration half of `DEC-0033` (P0-7) by wiring the dedicated `RuntimeKernelWorker` and the `RuntimeProcessHost` into the Generic Host used by `z2p.exe`, and by converting the entry point to `async Task<int>` so the UI thread never blocks on a kernel future. Builds on the `RuntimeKernelWorker` added in 0.0.20 packet 1 and the worker-marshalled `RuntimeProcessHost` added in 0.0.20 packet 2.
+
+Scope:
+
+- `src/Zapret2Pilot.App/Program.cs` — `Program.Main` is now `public static async Task<int> Main(string[] args)` and still carries `[STAThread]`. The host's `StartAsync` and `StopAsync` are awaited; the old `GetAwaiter().GetResult()` calls are gone. The call order `AppHost.Build` → `AppHost.SetCurrent(host)` → `await host.StartAsync()` → Avalonia classic-desktop lifetime → `await host.StopAsync(...)` is preserved;
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` — new `AddRuntimeProcessHost()` extension that registers `RuntimeProcessHost` and every constructor dependency it needs as singletons: `RuntimeOwnershipMutex` (built with `RuntimeOwnershipNames.GlobalMutexName`), `RuntimeLockFileStore` (built with the runtime directory from `AppDataPathProvider.GetDefaultLayout()`), `RuntimeStaleLockRecovery`, `IRuntimeWorkspaceMaterializer` (built via `RuntimeWorkspaceMaterializer.CreateForRoot`), `IRuntimeTransactionManager`, `IRuntimeJobObjectProcessAssigner` and the host itself. The runtime directory is registered once as a singleton `AppDataLayout` so every factory resolves it from the service provider — the lambdas stay free of captured locals, and registration never touches the filesystem (no `AppDataLayout.EnsureCreated()` call inside the extension);
+- `Zapret2Pilot.App/Program.cs` host composition — `AddRuntimeKernelStateStore`, `AddRuntimeKernelWorker` and `AddRuntimeProcessHost` are registered in that order in `AppHost.Build`. The worker is registered both as its concrete type and as an `IHostedService`, so the Generic Host owns its lifetime; the process host resolves the same singleton instance via `GetRequiredService<RuntimeKernelWorker>()`;
+- `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeKernelWorkerUiNonBlockingTests.cs` — focused xUnit v3 tests that prove the UI non-blocking contract: a work item that awaits 100 ms (or `Timeout.Infinite`) on the worker thread does not cause the `Enqueue` call on the caller thread to block. The enqueue-call return latency is asserted to stay below 5 ms, which is the contract P0-7 introduced. Tests use `StopAsync` + `Dispose` in `finally` and never block the test thread waiting for the work item inside the enqueue call;
+- `VERSION = 0.0.20`;
+- `docs/Z2P-ROADMAP.md`, `docs/Z2P-DECISION-LOG.md` and `docs/Z2P-CRITICAL-REVIEW.md` updated for `0.0.20`.
+
+Out of scope for 0.0.20 packet 3:
+
+- launching a real `winws2` process;
+- promoting `RuntimeProcessHost` to a hosted service (it is a singleton, not an `IHostedService` — the worker is the only hosted service the kernel registers);
+- changing `MainWindowViewModel.AppVersion` (it is a hard-coded display value, not driven by `VERSION`);
+- any non-kernel UI, application or storage refactor.
+
+Acceptance:
+
+- `dotnet restore Zapret2Pilot.slnx` passes;
+- `dotnet build Zapret2Pilot.slnx -c Release` passes on the whole solution;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release` passes (the two new UI non-blocking tests are included in the suite);
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release` passes (no view-model changes were required for this packet);
+- `dotnet test Zapret2Pilot.slnx -c Release` passes on the whole solution;
+- `Program.Main` is `async Task<int>`, the host is started and stopped with `await`, and the Avalonia lifetime runs after `host.StartAsync()` returns;
+- the new `AddRuntimeProcessHost` extension resolves end-to-end from the service provider: the host constructor receives the registered `RuntimeOwnershipMutex`, `RuntimeStaleLockRecovery`, `IRuntimeWorkspaceMaterializer`, `IRuntimeTransactionManager`, `IRuntimeJobObjectProcessAssigner`, `RuntimeLockFileStore`, `ILogger<RuntimeProcessHost>` and the same `RuntimeKernelWorker` singleton that the Generic Host starts as an `IHostedService`;
+- the UI non-blocking contract is enforced by a regression test: a 100 ms work item inside the worker does not delay the `Enqueue` call by more than 5 ms on the calling thread;
+- no new NuGet packages, no `global.json` change, no `Directory.Packages.props` change, no lock file change.
+
+Verification ladder:
+
+- `dotnet restore Zapret2Pilot.slnx`;
+- `dotnet build Zapret2Pilot.slnx -c Release`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release` (all runtime tests, including the two new UI non-blocking tests, pass);
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release` (view-model tests stay green; the `AppVersion` assertion is unaffected by the `VERSION` bump);
+- `dotnet test Zapret2Pilot.slnx -c Release` (whole solution stays green).
+
+Reviewer focus:
+
+- confirm `Program.Main` carries `[STAThread]`, is `async Task<int>`, awaits `host.StartAsync()` and `host.StopAsync(...)`, and the call order is `Build` → `SetCurrent` → `StartAsync` → Avalonia lifetime → `StopAsync`;
+- confirm `AddRuntimeProcessHost` does NOT call `AppDataLayout.EnsureCreated()` and that the factory lambdas resolve `AppDataLayout` from the service provider rather than capturing a local string;
+- confirm `AddRuntimeKernelWorker` is registered BEFORE `AddRuntimeProcessHost` in `AppHost.Build`, so the host's constructor resolves the same `RuntimeKernelWorker` instance that the Generic Host starts as an `IHostedService`;
+- confirm the new UI non-blocking test measures the `Enqueue` call only, not the work item, and that the test does not block the test thread waiting for the work item inside the enqueue call;
+- confirm `Z2P-CRITICAL-REVIEW.md` finding #29 (P0-7) is marked **Resolved** and that the live doc matches the implemented behaviour.

@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -11,13 +12,13 @@ namespace Zapret2Pilot.App;
 internal static class Program
 {
     [STAThread]
-    public static int Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         using IHost host = AppHost.Build(args);
 
         AppHost.SetCurrent(host);
 
-        host.StartAsync().GetAwaiter().GetResult();
+        await host.StartAsync().ConfigureAwait(false);
 
         try
         {
@@ -28,9 +29,7 @@ internal static class Program
         {
             using CancellationTokenSource shutdownTimeout = new(TimeSpan.FromSeconds(5));
 
-            host.StopAsync(shutdownTimeout.Token)
-                .GetAwaiter()
-                .GetResult();
+            await host.StopAsync(shutdownTimeout.Token).ConfigureAwait(false);
         }
     }
 
@@ -64,6 +63,8 @@ internal static class AppHost
                     "Zapret2Pilot",
                     "z2p.db");
                 services.AddRuntimeKernelStateStore(databasePath);
+                services.AddRuntimeKernelWorker();
+                services.AddRuntimeProcessHost();
                 services.AddSingleton<MainWindowViewModel>();
                 services.AddSingleton<MainWindow>();
             })

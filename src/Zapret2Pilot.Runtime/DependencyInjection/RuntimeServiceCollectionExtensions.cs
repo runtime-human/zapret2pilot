@@ -1,8 +1,17 @@
 using System;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Zapret2Pilot.Infrastructure.FileSystem;
 using Zapret2Pilot.Runtime.Hosting;
+using Zapret2Pilot.Runtime.Locking;
+using Zapret2Pilot.Runtime.Ownership;
+using Zapret2Pilot.Runtime.Recovery;
 using Zapret2Pilot.Runtime.State;
+using Zapret2Pilot.Runtime.Transactions;
+using Zapret2Pilot.Runtime.Windows;
+using Zapret2Pilot.Runtime.Workspace;
 using Zapret2Pilot.Storage.Sqlite;
 
 namespace Microsoft.Extensions.DependencyInjection;
@@ -45,6 +54,77 @@ public static class RuntimeServiceCollectionExtensions
         services.AddSingleton<RuntimeKernelWorker>();
         services.AddSingleton<IHostedService>(
             static sp => sp.GetRequiredService<RuntimeKernelWorker>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="RuntimeProcessHost"/> and every constructor
+    /// dependency it needs as singletons in the supplied
+    /// <see cref="IServiceCollection"/>. The runtime directory is
+    /// resolved once via <see cref="AppDataPathProvider.GetDefaultLayout"/>
+    /// and shared by the lock file store and the workspace materializer;
+    /// both factory lambdas resolve the registered
+    /// <see cref="AppDataLayout"/> rather than capturing the directory
+    /// string in a closure, so the extension stays free of "static
+    /// lambda captures local" diagnostics.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Registration is intentionally pure: this method does NOT call
+    /// <see cref="AppDataLayout.EnsureCreated"/>. Directory creation
+    /// remains a kernel / host responsibility so DI resolution never
+    /// touches the filesystem.
+    /// </para>
+    /// <para>
+    /// <see cref="RuntimeKernelWorker"/> is NOT registered here. The
+    /// worker is registered by <see cref="AddRuntimeKernelWorker"/>;
+    /// callers MUST register the worker before (or independently of)
+    /// this extension so the host resolves the same worker instance
+    /// that the process host depends on.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The service collection to add to.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
+    public static IServiceCollection AddRuntimeProcessHost(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        // The runtime directory is the only piece of configuration
+        // shared by RuntimeLockFileStore and RuntimeWorkspaceMaterializer.
+        // Register the layout once as a singleton; every downstream
+        // factory resolves it from the service provider so the
+        // lambdas stay free of captured locals.
+        services.TryAddSingleton(AppDataPathProvider.GetDefaultLayout);
+
+        services.AddSingleton<RuntimeOwnershipMutex>(
+            static _ => new RuntimeOwnershipMutex(RuntimeOwnershipNames.GlobalMutexName));
+
+        services.AddSingleton<RuntimeLockFileStore>(
+            static sp => new RuntimeLockFileStore(
+                sp.GetRequiredService<AppDataLayout>().RuntimeDirectory));
+
+        services.AddSingleton<RuntimeStaleLockRecovery>(
+            static sp => new RuntimeStaleLockRecovery(
+                sp.GetRequiredService<RuntimeLockFileStore>()));
+
+        services.AddSingleton<IRuntimeWorkspaceMaterializer>(
+            static sp => RuntimeWorkspaceMaterializer.CreateForRoot(
+                sp.GetRequiredService<AppDataLayout>().RuntimeDirectory));
+
+        services.AddSingleton<IRuntimeTransactionManager, RuntimeTransactionManager>();
+        services.AddSingleton<IRuntimeJobObjectProcessAssigner, RuntimeJobObjectProcessAssigner>();
+
+        services.AddSingleton<RuntimeProcessHost>(
+            static sp => new RuntimeProcessHost(
+                sp.GetRequiredService<RuntimeOwnershipMutex>(),
+                sp.GetRequiredService<RuntimeStaleLockRecovery>(),
+                sp.GetRequiredService<IRuntimeWorkspaceMaterializer>(),
+                sp.GetRequiredService<IRuntimeTransactionManager>(),
+                sp.GetRequiredService<IRuntimeJobObjectProcessAssigner>(),
+                sp.GetRequiredService<RuntimeLockFileStore>(),
+                sp.GetRequiredService<ILogger<RuntimeProcessHost>>(),
+                sp.GetRequiredService<RuntimeKernelWorker>()));
 
         return services;
     }
