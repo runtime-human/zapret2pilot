@@ -424,7 +424,7 @@ Problem:
 
 Decision:
 
-- Add a `RuntimeKernelWorker` that owns a single dedicated thread (or `LongRunning` task) and exposes `Enqueue(Func<CancellationToken, Task>)` and `Enqueue<T>(Func<CancellationToken, Task<T}>)`.
+- Add a `RuntimeKernelWorker` that owns a single dedicated thread (or `LongRunning` task) and exposes `Enqueue(Func<CancellationToken, Task>)` and `Enqueue<T>(Func<CancellationToken, Task<T>>)`.
 - UI and the Application layer enqueue kernel work asynchronously; the host never blocks the UI thread.
 - The worker is registered as an `IHostedService` in `0.0.19` and started/stopped by the Generic Host lifecycle.
 - `Program.cs` becomes `async Task<int>` so the host's `StartAsync` / `StopAsync` are awaited instead of `GetAwaiter().GetResult()`. (Resolved by `0.0.20` packet 3 and `DEC-0034`.)
