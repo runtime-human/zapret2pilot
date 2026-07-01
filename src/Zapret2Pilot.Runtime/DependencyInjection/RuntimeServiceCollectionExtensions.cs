@@ -95,7 +95,7 @@ public static class RuntimeServiceCollectionExtensions
         // Register the layout once as a singleton; every downstream
         // factory resolves it from the service provider so the
         // lambdas stay free of captured locals.
-        services.TryAddSingleton(AppDataPathProvider.GetDefaultLayout);
+        services.TryAddSingleton<AppDataLayout>(_ => AppDataPathProvider.GetDefaultLayout());
 
         services.AddSingleton<RuntimeOwnershipMutex>(
             static _ => new RuntimeOwnershipMutex(RuntimeOwnershipNames.GlobalMutexName));

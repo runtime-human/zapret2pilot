@@ -18,7 +18,7 @@ internal static class Program
 
         AppHost.SetCurrent(host);
 
-        await host.StartAsync().ConfigureAwait(false);
+        await host.StartAsync();
 
         try
         {
@@ -29,7 +29,7 @@ internal static class Program
         {
             using CancellationTokenSource shutdownTimeout = new(TimeSpan.FromSeconds(5));
 
-            await host.StopAsync(shutdownTimeout.Token).ConfigureAwait(false);
+            await host.StopAsync(shutdownTimeout.Token);
         }
     }
 
