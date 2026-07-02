@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Zapret2Pilot.Infrastructure.FileSystem;
+using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.Locking;
 using Zapret2Pilot.Runtime.Ownership;
@@ -125,6 +126,46 @@ public static class RuntimeServiceCollectionExtensions
                 sp.GetRequiredService<RuntimeLockFileStore>(),
                 sp.GetRequiredService<ILogger<RuntimeProcessHost>>(),
                 sp.GetRequiredService<RuntimeKernelWorker>()));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="RuntimeHealthMonitor"/> as a singleton
+    /// in the supplied <see cref="IServiceCollection"/>, both as
+    /// its concrete type, as <see cref="IRuntimeHealthMonitor"/>,
+    /// and as an <see cref="IHostedService"/>. All three
+    /// registrations resolve to the same singleton instance so the
+    /// Generic Host starts and stops the very same object the
+    /// Application layer can inject through
+    /// <see cref="IRuntimeHealthMonitor"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This extension depends on the singletons registered by
+    /// <see cref="AddRuntimeKernelStateStore"/>,
+    /// <see cref="AddRuntimeKernelWorker"/> and
+    /// <see cref="AddRuntimeProcessHost"/>. Callers MUST register
+    /// those extensions first; the method does not register the
+    /// state store, the worker or the process host.
+    /// </para>
+    /// <para>
+    /// Registration is pure: this method does not touch the
+    /// filesystem, does not start the monitor and does not depend
+    /// on any other extension beyond the ones above.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The service collection to add to.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
+    public static IServiceCollection AddRuntimeHealthMonitor(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<RuntimeHealthMonitor>();
+        services.AddSingleton<IRuntimeHealthMonitor>(
+            static sp => sp.GetRequiredService<RuntimeHealthMonitor>());
+        services.AddSingleton<IHostedService>(
+            static sp => sp.GetRequiredService<RuntimeHealthMonitor>());
 
         return services;
     }

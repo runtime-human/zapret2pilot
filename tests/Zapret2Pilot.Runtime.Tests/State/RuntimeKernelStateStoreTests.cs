@@ -6,6 +6,9 @@ using Zapret2Pilot.Runtime.State;
 
 namespace Zapret2Pilot.Runtime.Tests.State;
 
+// snake_case test method names; suppress CA1707 for this file.
+#pragma warning disable CA1707 // Identifiers should not contain underscores
+
 public sealed class RuntimeKernelStateStoreTests
 {
     [Fact]
@@ -210,4 +213,79 @@ public sealed class RuntimeKernelStateStoreTests
         Assert.NotEqual(first.Id.Value, second.Id.Value);
         Assert.NotEqual(first.StartedAtUtc, second.StartedAtUtc);
     }
+
+    [Fact]
+    public static void EndSessionWithFailedState_MarksSessionAsFailed()
+    {
+        using TemporarySqliteDatabase database = new();
+        database.Initialize();
+
+        RuntimeKernelStateStore store = new(database.CreateFactory());
+        RuntimeSessionRecord started = store.StartSession(
+            new ProfileId("profile-a"),
+            new RuntimePlanId("plan-a"),
+            new RuntimePlanCacheKey("a".PadRight(64, 'a')));
+
+        store.EndSession(started.Id, RuntimeSessionState.Failed);
+
+        Assert.Null(store.GetCurrentSession());
+
+        IReadOnlyList<RuntimeSessionRecord> history = store.GetRecentSessions(10);
+        RuntimeSessionRecord closed = Assert.Single(history);
+        Assert.Equal(started.Id, closed.Id);
+        Assert.Equal(RuntimeSessionState.Failed, closed.State);
+        Assert.NotNull(closed.EndedAtUtc);
+    }
+
+    [Fact]
+    public static void EndSessionWithFailedStateAndUnknownId_Throws()
+    {
+        using TemporarySqliteDatabase database = new();
+        database.Initialize();
+
+        RuntimeKernelStateStore store = new(database.CreateFactory());
+        RuntimeSessionId unknown = new(Guid.NewGuid().ToString("N"));
+
+        Assert.Throws<InvalidOperationException>(
+            () => store.EndSession(unknown, RuntimeSessionState.Failed));
+    }
+
+    [Fact]
+    public static void EndSessionWithFailedStateAndNullId_Throws()
+    {
+        using TemporarySqliteDatabase database = new();
+        database.Initialize();
+
+        RuntimeKernelStateStore store = new(database.CreateFactory());
+
+        Assert.Throws<ArgumentNullException>(
+            () => store.EndSession(null!, RuntimeSessionState.Failed));
+    }
+
+    [Fact]
+    public static void EndSessionWithActiveState_Throws()
+    {
+        using TemporarySqliteDatabase database = new();
+        database.Initialize();
+
+        RuntimeKernelStateStore store = new(database.CreateFactory());
+        RuntimeSessionRecord started = store.StartSession(
+            new ProfileId("profile-a"),
+            new RuntimePlanId("plan-a"),
+            new RuntimePlanCacheKey("a".PadRight(64, 'a')));
+
+        // Active is not a valid terminal state for EndSession;
+        // callers must supply Stopped or Failed.
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => store.EndSession(started.Id, RuntimeSessionState.Active));
+        Assert.Equal("finalState", exception.ParamName);
+
+        // The session must still be Active after the rejected call:
+        // the failed validation must not mutate the persisted state.
+        RuntimeSessionRecord? current = store.GetCurrentSession();
+        Assert.NotNull(current);
+        Assert.Equal(RuntimeSessionState.Active, current!.State);
+    }
 }
+
+#pragma warning restore CA1707 // Identifiers should not contain underscores

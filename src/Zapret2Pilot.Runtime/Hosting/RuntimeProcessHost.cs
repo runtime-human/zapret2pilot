@@ -112,6 +112,30 @@ public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
     private bool disposed;
 
     /// <summary>
+    /// The runtime <see cref="Process"/> currently owned by this
+    /// host, or <c>null</c> when the host is not running a process.
+    /// Exposed as <c>internal</c> so the
+    /// <see cref="Zapret2Pilot.Runtime.Health.RuntimeHealthMonitor"/>
+    /// can probe the live process from the dedicated
+    /// <see cref="RuntimeKernelWorker"/> thread without taking a
+    /// dependency on the private fields. The accessor takes the
+    /// host's <c>stateLock</c> so the read is thread-safe under
+    /// concurrent stop / dispose paths. The caller MUST NOT dispose
+    /// the returned <see cref="Process"/> — its lifetime is owned by
+    /// this host.
+    /// </summary>
+    internal Process? RunningProcess
+    {
+        get
+        {
+            lock (stateLock)
+            {
+                return process;
+            }
+        }
+    }
+
+    /// <summary>
     /// Creates a new <see cref="RuntimeProcessHost"/>.
     /// </summary>
     /// <param name="ownershipMutex">

@@ -49,8 +49,9 @@ public interface IRuntimeKernelStateStore
 
     /// <summary>
     /// Closes the session identified by <paramref name="sessionId"/>
-    /// and resets the singleton state row to
-    /// <c>is_running = 0</c>, <c>session_id = NULL</c>.
+    /// as <see cref="RuntimeSessionState.Stopped"/> and resets the
+    /// singleton state row to <c>is_running = 0</c>,
+    /// <c>session_id = NULL</c>.
     /// </summary>
     /// <param name="sessionId">Identifier of the session to close.</param>
     /// <exception cref="System.InvalidOperationException">
@@ -58,6 +59,29 @@ public interface IRuntimeKernelStateStore
     /// <paramref name="sessionId"/> exists.
     /// </exception>
     void EndSession(RuntimeSessionId sessionId);
+
+    /// <summary>
+    /// Closes the session identified by <paramref name="sessionId"/>
+    /// with the supplied terminal <paramref name="finalState"/> and
+    /// resets the singleton state row to <c>is_running = 0</c>,
+    /// <c>session_id = NULL</c>. Used by the health monitor to mark
+    /// a session as <see cref="RuntimeSessionState.Failed"/> on an
+    /// unexpected process exit; the single-argument overload closes
+    /// a session as <see cref="RuntimeSessionState.Stopped"/>.
+    /// </summary>
+    /// <param name="sessionId">Identifier of the session to close.</param>
+    /// <param name="finalState">Terminal state to record
+    /// (<see cref="RuntimeSessionState.Stopped"/> or
+    /// <see cref="RuntimeSessionState.Failed"/>).</param>
+    /// <exception cref="System.ArgumentException">
+    /// Thrown when <paramref name="finalState"/> is not a terminal
+    /// state (only <c>Stopped</c> and <c>Failed</c> are accepted).
+    /// </exception>
+    /// <exception cref="System.InvalidOperationException">
+    /// Thrown when no session with the given
+    /// <paramref name="sessionId"/> exists.
+    /// </exception>
+    void EndSession(RuntimeSessionId sessionId, RuntimeSessionState finalState);
 
     /// <summary>
     /// Returns the session currently tracked by the singleton

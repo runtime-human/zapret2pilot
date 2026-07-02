@@ -451,3 +451,131 @@ Notes:
 - Timestamps are stored as ISO-8601 (`O`) strings and parsed with `DateTimeStyles.RoundtripKind`.
 - No real `winws2` process is started, killed or assigned. The milestone only adds SQLite persistence and DI wiring.
 - No new NuGet packages were added to `Directory.Packages.props`; the only new package reference is `Microsoft.Extensions.Hosting`, which is already centrally managed.
+
+## 0.0.21 — Runtime Health Monitor Hosted Service
+
+Status: **planned**.
+
+Planned files and areas:
+
+- `src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj` — add
+  `System.Reactive` `PackageReference` (version 6.1.0 is already
+  managed centrally in `Directory.Packages.props`);
+- `src/Zapret2Pilot.Runtime/State/IRuntimeKernelStateStore.cs` —
+  new `EndSession(RuntimeSessionId, RuntimeSessionState)` overload;
+- `src/Zapret2Pilot.Runtime/State/RuntimeKernelStateStore.cs` —
+  implement the new overload, refactor the private `CloseSession`
+  helper to accept the terminal state;
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs` —
+  `internal Process? RunningProcess { get; }` accessor (thread-safe
+  under the existing `stateLock`);
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthState.cs` — new
+  `public enum` with `Unknown`, `Healthy`, `Exited`;
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthSnapshot.cs` —
+  new immutable `sealed record class`;
+- `src/Zapret2Pilot.Runtime/Health/IRuntimeHealthMonitor.cs` —
+  new public contract (`SnapshotChanged`, `LatestSnapshot`);
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthMonitor.cs` —
+  new `IHostedService`, `IRuntimeHealthMonitor`, `IDisposable`
+  implementation with a `System.Threading.Timer` that only
+  enqueues probes onto `RuntimeKernelWorker`;
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` —
+  new `AddRuntimeHealthMonitor(this IServiceCollection)` extension
+  registering the monitor as a singleton under three keys;
+- `src/Zapret2Pilot.App/Program.cs` — call
+  `services.AddRuntimeHealthMonitor();` after
+  `services.AddRuntimeProcessHost();` in `AppHost.Build`;
+- `VERSION = 0.0.21`;
+- `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs` — `AppVersion`
+  bumped from `v0.0.20` to `v0.0.21`;
+- `tests/Zapret2Pilot.App.ViewModelTests/MainWindowViewModelTests.cs`
+  — the matching `v0.0.21` test assertion;
+- `tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj` —
+  add `System.Reactive` `PackageReference`;
+- new xUnit tests:
+  - `tests/Zapret2Pilot.Runtime.Tests/State/RuntimeKernelStateStoreTests.cs` —
+    `EndSessionWithFailedState_MarksSessionAsFailed`,
+    `EndSessionWithFailedStateAndUnknownId_Throws`,
+    `EndSessionWithFailedStateAndNullId_Throws`,
+    `EndSessionWithActiveState_Throws`;
+  - `tests/Zapret2Pilot.Runtime.Tests/Health/RuntimeHealthSnapshotTests.cs` —
+    five contract tests (`Constructor_RejectsUnknownEnumValue`,
+    `Constructor_RejectsNonPositiveProcessId`,
+    `Constructor_AcceptsNullProcessId`, `RecordEquality_IsStructural`,
+    `RecordEquality_DiffersWhenAnyFieldDiffers`);
+  - `tests/Zapret2Pilot.Runtime.Tests/Health/RuntimeHealthMonitorTests.cs` —
+    seven integration tests against `FakeRuntime`
+    (`Constructor_InitialSnapshotIsUnknown`,
+    `StartAsync_BeforeAnyProcess_SnapshotRemainsUnknown`,
+    `Probe_AfterProcessStart_PublishesHealthySnapshot`,
+    `Probe_AfterProcessExit_PublishesExitedSnapshot`,
+    `Probe_TransitionToExited_MarksActiveSessionAsFailed`,
+    `StopAsync_DisposesTimerAndStopsPublishingSnapshots`,
+    `SnapshotChanged_SubscribersReceiveInitialAndTransitionSnapshots`);
+  - `tests/Zapret2Pilot.Runtime.Tests/DependencyInjection/RuntimeServiceCollectionExtensionsTests.cs` —
+    `AddRuntimeHealthMonitorRegistersMonitorAsHostedService`;
+  - `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessHostTests.cs` —
+    promoted to `partial` so the integration tests can reuse the
+    existing `HostFixture` via the new
+    `RuntimeProcessHostTests.TestHelpers.cs` partial file
+    (`HostFixture` is now `internal sealed class` so the sibling
+    test file can reach it);
+- `docs/Z2P-ROADMAP.md` — new `0.0.21` section;
+- `docs/Z2P-IMPLEMENTATION-STATUS.md` — this section.
+
+Validation commands to run locally once the implementation lands:
+
+```powershell
+dotnet --version
+dotnet restore Zapret2Pilot.slnx
+dotnet build src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj -c Release
+dotnet build src/Zapret2Pilot.App/Zapret2Pilot.App.csproj -c Release
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeKernelStateStoreTests"
+dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeHealthSnapshotTests"
+dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeHealthMonitorTests"
+dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeServiceCollectionExtensionsTests"
+dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release
+dotnet test tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj -c Release
+dotnet test Zapret2Pilot.slnx -c Release
+```
+
+Notes:
+
+- The milestone does not launch a real `winws2`; the
+  `Probe_AfterProcessStart_PublishesHealthySnapshot` and
+  `Probe_AfterProcessExit_PublishesExitedSnapshot` tests are
+  Windows-gated because `FakeRuntime` is a Windows process and the
+  host's job-object / mutex plumbing is platform-specific. The
+  cross-platform contract tests
+  (`Constructor_InitialSnapshotIsUnknown`,
+  `StartAsync_BeforeAnyProcess_SnapshotRemainsUnknown`,
+  `StopAsync_DisposesTimerAndStopsPublishingSnapshots`,
+  `Constructor_RejectsUnknownEnumValue`,
+  `Constructor_RejectsNonPositiveProcessId`,
+  `Constructor_AcceptsNullProcessId`,
+  `RecordEquality_IsStructural`,
+  `RecordEquality_DiffersWhenAnyFieldDiffers`,
+  and the four new state-store tests) run on every host.
+- The monitor's `Timer` is intentionally created and disposed
+  inside `IHostedService.StartAsync` / `StopAsync`; the Generic
+  Host owns the lifetime, so `AppHost.Build` does not need to
+  call `monitor.StartAsync` / `monitor.StopAsync` manually.
+- `IRuntimeHealthMonitor` is intentionally a separate abstraction
+  from the underlying `RuntimeProcessHost` so the future
+  presentation layer can subscribe to
+  `monitor.SnapshotChanged` without depending on the host itself.
+- The plan preserves the pre-existing pre-committed changes to
+  `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs`,
+  `tests/Zapret2Pilot.App.ViewModelTests/MainWindowViewModelTests.cs`,
+  `tests/Zapret2Pilot.Runtime.Tests/DependencyInjection/RuntimeServiceCollectionExtensionsTests.cs`
+  and
+  `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeKernelWorkerUiNonBlockingTests.cs`;
+  only the `v0.0.20` strings are bumped to `v0.0.21`.
+- No new NuGet package versions are added; the only new
+  `PackageReference` lines are `System.Reactive` on
+  `Zapret2Pilot.Runtime` and on the test project, both pulling
+  from the central `System.Reactive` 6.1.0 entry in
+  `Directory.Packages.props`.
+- No `global.json` change, no lock file change, no
+  `Zapret2Pilot.slnx` change.

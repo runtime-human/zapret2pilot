@@ -65,6 +65,7 @@ internal static class AppHost
                 services.AddRuntimeKernelStateStore(databasePath);
                 services.AddRuntimeKernelWorker();
                 services.AddRuntimeProcessHost();
+                services.AddRuntimeHealthMonitor();
                 services.AddSingleton<MainWindowViewModel>();
                 services.AddSingleton<MainWindow>();
             })

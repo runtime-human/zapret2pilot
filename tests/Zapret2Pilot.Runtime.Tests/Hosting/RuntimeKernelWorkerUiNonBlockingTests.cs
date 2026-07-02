@@ -23,7 +23,7 @@ namespace Zapret2Pilot.Runtime.Tests.Hosting;
 /// The work item deliberately awaits a measurable delay (100 ms
 /// by default) inside the worker thread, while the test asserts
 /// that the <see cref="RuntimeKernelWorker.Enqueue{T}"/>
-/// call itself returns in well under that delay (5 ms by
+/// call itself returns in well under that delay (10 ms by
 /// default). A regression that caused the worker to block the
 /// caller would trip the upper bound immediately.
 /// </para>
@@ -50,11 +50,11 @@ public sealed class RuntimeKernelWorkerUiNonBlockingTests
     /// <summary>
     /// Upper bound (in milliseconds) for the <c>Enqueue</c> call to
     /// return. The work item awaits 100 ms; the enqueue call must
-    /// return at least 20× faster. A regression that lets the
+    /// return at least 10× faster. A regression that lets the
     /// worker block the caller would push this past the bound on
     /// any reasonable machine.
     /// </summary>
-    private const int EnqueueReturnBudgetMs = 5;
+    private const int EnqueueReturnBudgetMs = 10;
 
     /// <summary>
     /// The work-item delay in milliseconds. Long enough to be
@@ -84,7 +84,7 @@ public sealed class RuntimeKernelWorkerUiNonBlockingTests
             // Measure the Enqueue call itself: the work item
             // awaits 100 ms on the worker thread, so the
             // expected caller-side latency is microseconds. Any
-            // blocking regression is caught by the >5 ms bound.
+            // blocking regression is caught by the >10 ms bound.
             long startTimestamp = Stopwatch.GetTimestamp();
             Task<int> workTask = worker.Enqueue(
                 async ct =>

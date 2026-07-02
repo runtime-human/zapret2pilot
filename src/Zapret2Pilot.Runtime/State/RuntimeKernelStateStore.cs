@@ -70,6 +70,25 @@ public sealed class RuntimeKernelStateStore : IRuntimeKernelStateStore
     {
         ArgumentNullException.ThrowIfNull(sessionId, nameof(sessionId));
 
+        EndSessionInternal(sessionId, StoppedState);
+    }
+
+    public void EndSession(RuntimeSessionId sessionId, RuntimeSessionState finalState)
+    {
+        ArgumentNullException.ThrowIfNull(sessionId, nameof(sessionId));
+
+        if (finalState is not (RuntimeSessionState.Stopped or RuntimeSessionState.Failed))
+        {
+            throw new ArgumentException(
+                $"EndSession final state must be Stopped or Failed; got '{finalState}'.",
+                nameof(finalState));
+        }
+
+        EndSessionInternal(sessionId, StateToText(finalState));
+    }
+
+    private void EndSessionInternal(RuntimeSessionId sessionId, string finalStateText)
+    {
         DateTimeOffset nowUtc = DateTimeOffset.UtcNow;
         string nowText = nowUtc.ToString("O", CultureInfo.InvariantCulture);
 
@@ -82,10 +101,23 @@ public sealed class RuntimeKernelStateStore : IRuntimeKernelStateStore
                 $"No runtime session with id '{sessionId.Value}' exists.");
         }
 
-        CloseSession(connection, transaction, sessionId.Value, nowText);
+        CloseSession(connection, transaction, sessionId.Value, nowText, finalStateText);
         ClearRuntimeState(connection, transaction, nowText);
 
         transaction.Commit();
+    }
+
+    private static string StateToText(RuntimeSessionState state)
+    {
+        return state switch
+        {
+            RuntimeSessionState.Active => ActiveState,
+            RuntimeSessionState.Stopped => StoppedState,
+            RuntimeSessionState.Failed => "Failed",
+            _ => throw new ArgumentException(
+                $"Unknown {nameof(RuntimeSessionState)} value: {state}.",
+                nameof(state)),
+        };
     }
 
     public RuntimeSessionRecord? GetCurrentSession()
@@ -239,7 +271,8 @@ public sealed class RuntimeKernelStateStore : IRuntimeKernelStateStore
         SqliteConnection connection,
         SqliteTransaction transaction,
         string sessionIdValue,
-        string endedUtcText)
+        string endedUtcText,
+        string state)
     {
         using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -251,7 +284,7 @@ public sealed class RuntimeKernelStateStore : IRuntimeKernelStateStore
             WHERE id = $id;
             """;
         command.Parameters.AddWithValue("$endedUtc", endedUtcText);
-        command.Parameters.AddWithValue("$state", StoppedState);
+        command.Parameters.AddWithValue("$state", state);
         command.Parameters.AddWithValue("$id", sessionIdValue);
 
         command.ExecuteNonQuery();

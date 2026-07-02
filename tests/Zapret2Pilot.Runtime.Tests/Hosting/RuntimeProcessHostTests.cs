@@ -36,7 +36,7 @@ namespace Zapret2Pilot.Runtime.Tests.Hosting;
 /// stays cross-platform-buildable.
 /// </para>
 /// </summary>
-public sealed class RuntimeProcessHostTests
+public sealed partial class RuntimeProcessHostTests
 {
     private const string FakeRuntimeExecutableName = "Zapret2Pilot.Testing.FakeRuntime.exe";
     private const string ManifestExecutableRelativePath = "bin/fake-runtime.exe";
@@ -647,7 +647,7 @@ public sealed class RuntimeProcessHostTests
     /// name. The host, the worker and the temp directory are disposed
     /// together.
     /// </summary>
-    private sealed class HostFixture : IDisposable
+    internal sealed class HostFixture : IDisposable
     {
         private readonly RuntimeKernelWorker worker;
         private readonly RuntimeProcessHost host;

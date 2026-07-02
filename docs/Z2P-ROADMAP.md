@@ -724,3 +724,186 @@ Reviewer focus:
 - confirm `AddRuntimeKernelWorker` is registered BEFORE `AddRuntimeProcessHost` in `AppHost.Build`, so the host's constructor resolves the same `RuntimeKernelWorker` instance that the Generic Host starts as an `IHostedService`;
 - confirm the new UI non-blocking test measures the `Enqueue` call only, not the work item, and that the test does not block the test thread waiting for the work item inside the enqueue call;
 - confirm `Z2P-CRITICAL-REVIEW.md` finding #29 (P0-7) is marked **Resolved** and that the live doc matches the implemented behaviour.
+
+## 0.0.21 — Runtime Health Monitor Hosted Service
+
+Status: planned.
+
+Follows 0.0.20. Adds the `RuntimeHealthMonitor` Generic-Host
+`IHostedService` that periodically probes the live runtime process,
+publishes immutable `RuntimeHealthSnapshot` values through an
+`IObservable<RuntimeHealthSnapshot>` and marks the active session as
+`Failed` on an unexpected process exit. Closes the observable gap
+between the kernel's `RuntimeProcessHost` and any future UI / event
+projection that needs to react to runtime state transitions, and
+removes the requirement for a future health milestone to add the
+"transitions into Exited → Failed" wiring.
+
+### Scope
+
+- `src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj` — add a
+  `PackageReference` to `System.Reactive` (version 6.1.0 is already
+  centrally managed in `Directory.Packages.props`);
+- `src/Zapret2Pilot.Runtime/State/IRuntimeKernelStateStore.cs` and
+  `src/Zapret2Pilot.Runtime/State/RuntimeKernelStateStore.cs` — new
+  `EndSession(RuntimeSessionId, RuntimeSessionState)` overload that
+  closes a session as `Stopped` or `Failed`; refactor the private
+  `CloseSession` helper to accept the final state;
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs` — new
+  `internal Process? RunningProcess { get; }` accessor (thread-safe
+  under the existing `stateLock`) so the monitor can read the live
+  process from the kernel worker thread without leaking the host's
+  private state;
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthState.cs` — new
+  `public enum RuntimeHealthState { Unknown, Healthy, Exited }`;
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthSnapshot.cs` — new
+  immutable `sealed record class` with constructor validation;
+- `src/Zapret2Pilot.Runtime/Health/IRuntimeHealthMonitor.cs` — new
+  public contract exposing `IObservable<RuntimeHealthSnapshot>
+  SnapshotChanged` and `RuntimeHealthSnapshot LatestSnapshot`;
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthMonitor.cs` — new
+  `IHostedService`, `IRuntimeHealthMonitor`, `IDisposable`
+  implementation:
+  - owns a `System.Threading.Timer` whose callback runs on a
+    `ThreadPool` thread but only enqueues a probe;
+  - the probe runs on the dedicated `RuntimeKernelWorker` thread;
+  - reads `RuntimeProcessHost.RunningProcess` on the worker thread;
+  - builds a snapshot (`Unknown` when no process, `Healthy` when
+    alive, `Exited` when `HasExited`);
+  - on a transition from `Healthy` / `Unknown` to `Exited` while
+    the state store has an active session, calls
+    `stateStore.EndSession(current.Id, RuntimeSessionState.Failed)`;
+  - publishes the snapshot through a
+    `BehaviorSubject<RuntimeHealthSnapshot>` exposed via
+    `AsObservable()`;
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` —
+  new `AddRuntimeHealthMonitor(this IServiceCollection)` extension
+  that registers the monitor as a singleton, as
+  `IRuntimeHealthMonitor`, and as `IHostedService`, all resolving
+  to the same instance;
+- `src/Zapret2Pilot.App/Program.cs` — call
+  `services.AddRuntimeHealthMonitor();` immediately after
+  `services.AddRuntimeProcessHost();` in `AppHost.Build`;
+- `VERSION` bumped to `0.0.21`;
+- `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs` — `AppVersion`
+  bumped from `v0.0.20` to `v0.0.21`;
+- `tests/Zapret2Pilot.App.ViewModelTests/MainWindowViewModelTests.cs`
+  — the existing assertion bumped from `v0.0.20` to `v0.0.21`;
+- `tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj`
+  — add a `System.Reactive` `PackageReference` so the health-monitor
+  tests can use `BehaviorSubject` / `IObservable` operators;
+- new xUnit tests:
+  - `tests/Zapret2Pilot.Runtime.Tests/State/RuntimeKernelStateStoreTests.cs`
+    — four new tests for the `EndSession(id, state)` overload
+    (`Failed` happy path, unknown id, null id, invalid `Active`
+    state);
+  - `tests/Zapret2Pilot.Runtime.Tests/Health/RuntimeHealthSnapshotTests.cs`
+    — five new contract tests for the snapshot record;
+  - `tests/Zapret2Pilot.Runtime.Tests/Health/RuntimeHealthMonitorTests.cs`
+    — seven new integration tests using `FakeRuntime` (initial
+    `Unknown`, `Healthy` after start, `Exited` after kill, `Failed`
+    session recorded, `StopAsync` stops publishing, observable
+    receives initial + transitions, and the `BehaviorSubject`
+    subscription test);
+  - `tests/Zapret2Pilot.Runtime.Tests/DependencyInjection/RuntimeServiceCollectionExtensionsTests.cs`
+    — one new DI test confirming `IRuntimeHealthMonitor` and
+    `IHostedService` resolve to the same singleton.
+
+### Acceptance
+
+- `dotnet restore Zapret2Pilot.slnx` passes;
+- `dotnet build Zapret2Pilot.slnx -c Release` passes on the whole
+  solution;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release`
+  passes (all 25+ runtime tests, including the new state-store
+  overload tests, the snapshot contract tests, the health-monitor
+  integration tests and the new DI test);
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj -c Release`
+  passes (the bumped `v0.0.21` assertion holds);
+- `dotnet test Zapret2Pilot.slnx -c Release` passes on the whole
+  solution;
+- `RuntimeHealthMonitor` is started and stopped by the Generic Host
+  (no manual lifecycle code in `AppHost.Build`);
+- the monitor's timer callback only enqueues work; every read of
+  the runtime process happens on the `RuntimeKernelWorker` thread;
+- a `Healthy → Exited` transition marks the active session as
+  `Failed` in `IRuntimeKernelStateStore`; a `Exited → Exited` repeat
+  probe does not re-record the session;
+- the new `EndSession(id, state)` overload rejects
+  `RuntimeSessionState.Active` with `ArgumentException` and does
+  not mutate the persisted state;
+- no real `winws2` process is launched; the integration tests use
+  `Zapret2Pilot.Testing.FakeRuntime` only;
+- no new NuGet package versions; the only `PackageReference`
+  additions are the already-centrally-managed `System.Reactive`
+  6.1.0 on `Zapret2Pilot.Runtime` and on the test project;
+- no Windows Service, IPC, VPN, proxy, MITM, per-URL router, or
+  `.bat` / `.cmd` wrapper is added.
+
+### Verification ladder
+
+- `dotnet restore Zapret2Pilot.slnx`;
+- `dotnet build src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj -c Release`;
+- `dotnet build src/Zapret2Pilot.App/Zapret2Pilot.App.csproj -c Release`;
+- `dotnet build Zapret2Pilot.slnx -c Release`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeKernelStateStoreTests"` (state-store overload tests);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeHealthSnapshotTests"` (snapshot contract tests);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeHealthMonitorTests"` (integration tests against `FakeRuntime`);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~RuntimeServiceCollectionExtensionsTests"` (DI integration test);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release` (whole runtime test suite);
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj -c Release` (App view-model tests);
+- `dotnet test Zapret2Pilot.slnx -c Release` (whole solution).
+
+### Out of scope for 0.0.21
+
+- launching a real `winws2` process; the monitor only observes the
+  process owned by `RuntimeProcessHost` and currently the host is
+  wired against `FakeRuntime`;
+- surfacing the `IObservable<RuntimeHealthSnapshot>` through the
+  Avalonia UI; this milestone only registers and tests the
+  observable, no `MainWindowViewModel` is wired to it;
+- changing the `RuntimeHealthSnapshot` payload; the snapshot carries
+  `State`, `ProcessId` and `ObservedAtUtc` only — richer fields
+  (uptime, last heartbeat, last command-line hash) are future
+  work;
+- promoting `IRuntimeHealthMonitor` to a multi-process health
+  aggregator; the monitor owns a single `RuntimeProcessHost`
+  reference and is intentionally not a multi-instance coordinator;
+- changing the `RuntimeHealthState` enum; only `Unknown`, `Healthy`
+  and `Exited` are defined, additional states (e.g. `Recovering`,
+  `Degraded`) are future work.
+
+### Reviewer focus
+
+- confirm that `RuntimeHealthMonitor.StartAsync` only creates a
+  `System.Threading.Timer` and `StopAsync` disposes it; the timer
+  callback MUST NOT touch `RuntimeProcessHost`, the state store or
+  the `BehaviorSubject` directly;
+- confirm that every read of `RuntimeProcessHost.RunningProcess`
+  happens inside a `worker.Enqueue` body so the read runs on the
+  dedicated `RuntimeKernelWorker` thread, not on a `ThreadPool`
+  thread;
+- confirm that the `BehaviorSubject` is constructed with an
+  initial `Unknown` snapshot and that `LatestSnapshot` returns that
+  value before `StartAsync` is called;
+- confirm that the `EndSession(id, state)` overload rejects
+  `RuntimeSessionState.Active` and that the existing
+  `EndSession(id)` overload is preserved unchanged;
+- confirm that the new `internal Process? RunningProcess { get; }`
+  accessor takes the host's `stateLock` and that the returned
+  `Process` reference MUST NOT be disposed by the caller;
+- confirm that `AddRuntimeHealthMonitor` registers the monitor as
+  the same singleton instance under three keys
+  (`RuntimeHealthMonitor`, `IRuntimeHealthMonitor`, `IHostedService`)
+  and that `Program.cs` calls it after `AddRuntimeProcessHost`;
+- confirm that the test fixture for `RuntimeHealthMonitorTests`
+  reuses the existing `HostFixture` from `RuntimeProcessHostTests`
+  via the new partial-class helper file, instead of duplicating
+  the wiring logic;
+- confirm that the integration test
+  `Probe_TransitionToExited_MarksActiveSessionAsFailed` actually
+  opens a session in the state store, observes the `Healthy`
+  snapshot, kills the FakeRuntime from outside the host, waits for
+  the `Exited` snapshot, and asserts the session is recorded as
+  `Failed` — the test is the load-bearing proof of the
+  health-monitor contract.
