@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 using Xunit;
 using Zapret2Pilot.Core.Primitives;
 using Zapret2Pilot.Core.Runtime;
+using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.State;
@@ -124,5 +125,27 @@ public sealed class RuntimeServiceCollectionExtensionsTests
         }
 
         SqliteConnection.ClearAllPools();
+    }
+
+    [Fact]
+    public static void AddCrashLoopGuardRegistersGuardAsSingletonAndNotAsHostedService()
+    {
+        using ServiceProvider provider = new ServiceCollection()
+            .AddCrashLoopGuard()
+            .BuildServiceProvider();
+
+        ICrashLoopGuard first = provider.GetRequiredService<ICrashLoopGuard>();
+        ICrashLoopGuard second = provider.GetRequiredService<ICrashLoopGuard>();
+
+        Assert.NotNull(first);
+        Assert.IsType<CrashLoopGuard>(first);
+        // Singleton lifetime: two resolutions must return the same instance.
+        Assert.Same(first, second);
+
+        // The guard is a passive in-memory primitive and must NOT be
+        // registered as an IHostedService — it owns no background
+        // timer and has no resources to dispose. A caller asking for
+        // the generic IHostedService service must get a null result.
+        Assert.Null(provider.GetService<IHostedService>());
     }
 }

@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Zapret2Pilot.Infrastructure.FileSystem;
+using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.Locking;
@@ -166,6 +167,47 @@ public static class RuntimeServiceCollectionExtensions
             static sp => sp.GetRequiredService<RuntimeHealthMonitor>());
         services.AddSingleton<IHostedService>(
             static sp => sp.GetRequiredService<RuntimeHealthMonitor>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the in-memory <see cref="CrashLoopGuard"/> as a
+    /// singleton in the supplied <see cref="IServiceCollection"/>,
+    /// both as its concrete type and as
+    /// <see cref="ICrashLoopGuard"/>. The guard uses
+    /// <see cref="CrashLoopGuardOptions"/> with the documented
+    /// defaults (2s base backoff, 5m cap, 60s stability window,
+    /// 10-failure lockout threshold).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Registration is pure: the guard is a pure in-memory
+    /// primitive, the extension does not touch the filesystem and
+    /// does not depend on any other extension. The default clock
+    /// (<see cref="DateTimeOffset.UtcNow"/>) is used; tests can
+    /// construct a guard directly with an injectable clock to
+    /// drive time deterministically.
+    /// </para>
+    /// <para>
+    /// This extension does NOT register the
+    /// <see cref="ICrashLoopGuard"/> as an
+    /// <see cref="IHostedService"/>: the guard is a passive
+    /// primitive that supervisors query on demand, it owns no
+    /// background timer and has no resources to dispose.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The service collection to add to.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
+    public static IServiceCollection AddCrashLoopGuard(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton(new CrashLoopGuardOptions());
+        services.AddSingleton<ICrashLoopGuard>(
+            static sp => new CrashLoopGuard(
+                sp.GetRequiredService<CrashLoopGuardOptions>(),
+                clock: null));
 
         return services;
     }

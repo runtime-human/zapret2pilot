@@ -727,7 +727,7 @@ Reviewer focus:
 
 ## 0.0.21 — Runtime Health Monitor Hosted Service
 
-Status: planned.
+Status: Implemented.
 
 Follows 0.0.20. Adds the `RuntimeHealthMonitor` Generic-Host
 `IHostedService` that periodically probes the live runtime process,
@@ -907,3 +907,204 @@ removes the requirement for a future health milestone to add the
   the `Exited` snapshot, and asserts the session is recorded as
   `Failed` — the test is the load-bearing proof of the
   health-monitor contract.
+
+## 0.0.22 — Runtime Crash Loop Guard
+
+Status: Implemented.
+
+Follows 0.0.21. Closes Critical Review finding #14 (P0) by
+introducing the pure in-memory `CrashLoopGuard` safety primitive
+that tracks consecutive runtime crash failures and enforces an
+exponential backoff before allowing a restart attempt. The guard
+is a passive primitive: it owns no I/O, no process and no
+P/Invoke, and is the only place where the runtime decides
+"do not restart yet" or "the runtime is irrecoverable, refuse
+every further restart".
+
+### Scope
+
+- `src/Zapret2Pilot.Runtime/Guard/CrashLoopGuardOptions.cs` —
+  public `sealed record` with constructor validation:
+  - `TimeSpan BaseBackoff` (default 2 seconds);
+  - `TimeSpan MaxBackoff` (default 5 minutes);
+  - `TimeSpan StabilityWindow` (default 60 seconds);
+  - `int MaxConsecutiveFailures` (default 10);
+  - rejects null options, zero/negative backoff values,
+    `MaxBackoff < BaseBackoff`, zero/negative stability window
+    and non-positive `MaxConsecutiveFailures`;
+- `src/Zapret2Pilot.Runtime/Guard/CrashLoopGuardResult.cs` —
+  public immutable `sealed record class` carrying
+  `IsAllowed`, `BackoffRemaining` (null when allowed or when
+  in permanent lockout) and the current
+  `ConsecutiveFailures` counter;
+- `src/Zapret2Pilot.Runtime/Guard/ICrashLoopGuard.cs` — public
+  contract with `Check`, `RecordFailure`, `RecordSuccess` and
+  `Reset`;
+- `src/Zapret2Pilot.Runtime/Guard/CrashLoopGuard.cs` — public
+  `sealed class` implementing the contract:
+  - thread-safe via a private monitor lock — every public
+    method takes the same lock;
+  - accepts the configuration record and an optional
+    `Func<DateTimeOffset>? clock` (defaulting to
+    `DateTimeOffset.UtcNow`) so tests can drive time
+    deterministically;
+  - backoff formula
+    `min(BaseBackoff * 2^(consecutiveFailures - 1), MaxBackoff)`,
+    with the doubling saturating at `MaxBackoff`;
+  - permanent lockout when
+    `consecutiveFailures > MaxConsecutiveFailures` (with the
+    default of 10, the 11th consecutive failure is the first
+    to be rejected as a permanent lockout rather than a
+    bounded backoff);
+  - stability window semantics: a successful start does not
+    immediately reset the counter; the next `Check` call that
+    runs at least `StabilityWindow` after the most recent
+    event (success or failure, whichever is later) clears the
+    counter and the failure timestamp;
+  - permanent lockout is sticky: time passing on its own
+    cannot escape it — only an explicit `Reset()` call does;
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` —
+  new `AddCrashLoopGuard(this IServiceCollection)` extension
+  that registers `CrashLoopGuardOptions` as a singleton with
+  the documented defaults and `ICrashLoopGuard` as a
+  singleton. The guard is intentionally NOT registered as an
+  `IHostedService`: it owns no background timer, no resources
+  to dispose and is a passive primitive that supervisors
+  query on demand;
+- `src/Zapret2Pilot.App/Program.cs` — call
+  `services.AddCrashLoopGuard();` immediately after
+  `services.AddRuntimeHealthMonitor();` in `AppHost.Build`;
+- `VERSION` bumped to `0.0.22`;
+- `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs` —
+  `AppVersion` bumped from `v0.0.21` to `v0.0.22`;
+- `tests/Zapret2Pilot.App.ViewModelTests/MainWindowViewModelTests.cs`
+  — the existing assertion bumped from `v0.0.21` to `v0.0.22`;
+- new xUnit tests in
+  `tests/Zapret2Pilot.Runtime.Tests/Guard/`:
+  - `CrashLoopGuardOptionsTests.cs` — 14 validation tests
+    (defaults, every rejection path, the equal-base/max edge
+    case, plus null-options rejection through the
+    `CrashLoopGuard` constructors);
+  - `CrashLoopGuardTests.cs` — 11 behavior tests
+    (`Check_InitiallyAllowed`,
+    `RecordFailure_SingleFailure_BackoffApplied`,
+    `RecordFailure_MultipleFailures_ExponentialBackoff`,
+    `RecordFailure_ExceedsMaxBackoff_CappedAtMax`,
+    `RecordFailure_ExceedsMaxConsecutiveFailures_PermanentLockout`,
+    `RecordSuccess_WithinStabilityWindow_DoesNotReset`,
+    `RecordSuccess_AfterStabilityWindow_ResetsCounter`,
+    `Reset_ClearsAllState`,
+    `Check_AfterBackoffElapses_Allowed`,
+    `ConcurrentRecordFailureAndCheck_StateRemainsConsistent`,
+    `CrashLoopGuardResult_RejectsNegativeConsecutiveFailures`);
+  - all tests use a deterministic `FakeClock` so they stay
+    fast, do not depend on real time and never sleep.
+
+### Out of scope for 0.0.22
+
+- wiring the guard into `RuntimeProcessHost`,
+  `RuntimeHealthMonitor`, `RuntimeKernelWorker` or any other
+  supervisor / restart flow. The 0.0.22 milestone is the
+  primitive itself; integrating it into a real restart loop is
+  a future milestone that will require its own design and
+  oracle review;
+- persisting the consecutive-failure counter in SQLite. The
+  guard is in-memory by design — persistence is a recovery
+  concern, not a guard concern, and belongs to a future
+  recovery / restart milestone;
+- UI / dashboard exposure of the guard verdict. Wiring the
+  guard's `Check` result into `MainWindowViewModel` (or any
+  other ReactiveUI surface) is future work;
+- launching a real `winws2.exe`. The guard makes no process
+  decisions; it is a passive primitive;
+- new NuGet packages, project file changes, lock file changes
+  or `global.json` / `Directory.Packages.props` edits.
+
+### Acceptance
+
+- `dotnet restore Zapret2Pilot.slnx` passes;
+- `dotnet build src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj -c Release`
+  passes;
+- `dotnet build src/Zapret2Pilot.App/Zapret2Pilot.App.csproj -c Release`
+  passes;
+- `dotnet build Zapret2Pilot.slnx -c Release` passes on the
+  whole solution;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~CrashLoopGuard"`
+  passes (all 25 new guard tests);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release`
+  passes (the whole runtime test suite stays green);
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj -c Release`
+  passes (the bumped `v0.0.22` assertion holds);
+- `dotnet test Zapret2Pilot.slnx -c Release` passes on the
+  whole solution;
+- `CrashLoopGuard` performs no I/O, no process work and no
+  P/Invoke; every public method is covered by the
+  concurrent-stress test that asserts the final
+  `ConsecutiveFailures` counter equals the number of recorded
+  failures with no torn writes;
+- exponential backoff doubles the wait up to `MaxBackoff` and
+  saturates there — `RecordFailure_ExceedsMaxBackoff_CappedAtMax`
+  proves the cap;
+- permanent lockout is sticky: even with 10 minutes of
+  simulated time passing after the 11th failure, the guard
+  still returns `IsAllowed = false` with
+  `BackoffRemaining = null`;
+- a successful start does not immediately reset the counter —
+  `RecordSuccess_WithinStabilityWindow_DoesNotReset` and
+  `RecordSuccess_AfterStabilityWindow_ResetsCounter` lock in
+  the documented timing;
+- `Reset()` clears every piece of state and a fresh failure
+  recorded after `Reset` starts a new backoff schedule from
+  the base backoff;
+- no new NuGet packages, no `global.json` change, no
+  `Directory.Packages.props` change, no lock file change, no
+  Windows Service, IPC, VPN, proxy, MITM, per-URL router, or
+  `.bat` / `.cmd` wrapper is added.
+
+### Verification ladder
+
+- `dotnet restore Zapret2Pilot.slnx`;
+- `dotnet build src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj -c Release`;
+- `dotnet build src/Zapret2Pilot.App/Zapret2Pilot.App.csproj -c Release`;
+- `dotnet build Zapret2Pilot.slnx -c Release`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release --filter "FullyQualifiedName~CrashLoopGuard"`
+  (the new guard tests);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests/Zapret2Pilot.Runtime.Tests.csproj -c Release`
+  (whole runtime test suite);
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj -c Release`
+  (App view-model tests);
+- `dotnet test Zapret2Pilot.slnx -c Release` (whole solution).
+
+### Reviewer focus
+
+- confirm `CrashLoopGuard` performs no I/O, no process and no
+  P/Invoke — it is a pure in-memory primitive;
+- confirm every public method (`Check`, `RecordFailure`,
+  `RecordSuccess`, `Reset`) takes the private monitor lock so
+  concurrent `RecordFailure` / `Check` callers cannot corrupt
+  the counter; the
+  `ConcurrentRecordFailureAndCheck_StateRemainsConsistent`
+  test is the load-bearing proof;
+- confirm the backoff formula
+  `min(BaseBackoff * 2^(n - 1), MaxBackoff)` doubles and
+  saturates correctly — the dedicated
+  `RecordFailure_ExceedsMaxBackoff_CappedAtMax` test is the
+  simplest way to observe the cap;
+- confirm the permanent-lockout rule uses strict `>` and is
+  sticky: with the default of 10, the 11th consecutive failure
+  is the first to be rejected as a permanent lockout, and
+  `Reset` is the only way to escape it;
+- confirm the stability window measures "time since the most
+  recent event (success or failure)" rather than "time since
+  the last success alone" — a fresh failure recorded after a
+  success must restart the stability window;
+- confirm `AddCrashLoopGuard` registers the guard as a
+  singleton under `ICrashLoopGuard` and that the guard is
+  intentionally NOT registered as an `IHostedService` because
+  it owns no background timer and no resources to dispose;
+- confirm `Program.cs` calls `AddCrashLoopGuard` immediately
+  after `AddRuntimeHealthMonitor` in `AppHost.Build` and does
+  NOT register the guard as an `IHostedService`;
+- confirm `docs/Z2P-CRITICAL-REVIEW.md` finding #14 is marked
+  **Resolved** and that the live doc matches the implemented
+  behaviour.

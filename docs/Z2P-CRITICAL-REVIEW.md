@@ -201,13 +201,17 @@ Decision:
 
 ## 14. Crash loop backoff
 
-Status: **Accepted / P0**
+Status: **Resolved** (resolved by 0.0.22).
 
 Decision:
 
 - Add CrashLoopGuard.
 - Use exponential backoff.
 - Reset crash counter only after stability window and successful health check.
+
+Resolution:
+
+- `Zapret2Pilot.Runtime.Guard.CrashLoopGuard` lands in `0.0.22` as a pure in-memory primitive with the documented defaults (`BaseBackoff = 2 seconds`, `MaxBackoff = 5 minutes`, `StabilityWindow = 60 seconds`, `MaxConsecutiveFailures = 10`). The backoff formula is `min(BaseBackoff * 2^(consecutiveFailures - 1), MaxBackoff)`. Permanent lockout uses a strict `>` comparison (the 11th consecutive failure is the first to be rejected) and is sticky: only an explicit `Reset()` call escapes it. The stability window measures "time since the most recent event (success or failure)" so a fresh failure always restarts the window. The guard is registered as a singleton through `AddCrashLoopGuard` in `AppHost.Build`, is intentionally NOT registered as an `IHostedService` (it owns no background timer / disposable resources) and is not yet consumed by any other runtime component. The integration with `RuntimeProcessHost` / `RuntimeHealthMonitor` / `RuntimeKernelWorker` is intentionally deferred to a future milestone that will require its own oracle review.
 
 ## 15. Global exception handling
 

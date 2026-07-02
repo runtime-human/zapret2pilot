@@ -88,7 +88,7 @@ public sealed class MainWindowViewModel : ReactiveObject
 
     public string AppName { get; } = "Zapret2Pilot";
 
-    public string AppVersion { get; } = "v0.0.21";
+    public string AppVersion { get; } = "v0.0.22";
 
     public string WindowTitle { get; } = "Zapret2Pilot";
 

@@ -593,3 +593,34 @@ Consequence:
 - A new xUnit test in `Zapret2Pilot.Runtime.Tests.Hosting.RuntimeKernelWorkerUiNonBlockingTests` enforces the non-blocking contract: a work item that awaits 100 ms inside the worker does not delay the `Enqueue` call on the caller thread by more than 5 ms.
 - `Program.Main` is `async Task<int>`; the Avalonia classic-desktop lifetime is started AFTER `host.StartAsync()` returns so the host services are live for the entire UI lifetime.
 - Critical Review #29 (P0-7) is marked **Resolved** in `docs/Z2P-CRITICAL-REVIEW.md`.
+
+## DEC-0035 — CrashLoopGuard
+
+Date: 2026-07
+
+Decision:
+
+- `Zapret2Pilot.Runtime.Guard.CrashLoopGuard` is a pure in-memory safety primitive that owns the "do not restart yet" / "the runtime is irrecoverable" decision for the Runtime Kernel.
+- The guard is a passive primitive: it owns no I/O, no process and no P/Invoke. A real restart supervisor (out-of-scope for `0.0.22`) is the only thing that may call into the guard.
+- `CrashLoopGuardOptions` is a `sealed record` with constructor validation. Defaults: `BaseBackoff = 2 seconds`, `MaxBackoff = 5 minutes`, `StabilityWindow = 60 seconds`, `MaxConsecutiveFailures = 10`.
+- The backoff formula is `min(BaseBackoff * 2^(consecutiveFailures - 1), MaxBackoff)`. The doubling saturates at `MaxBackoff` so the wait never exceeds the cap regardless of the failure count.
+- Permanent lockout uses a strict `>` comparison against `MaxConsecutiveFailures`. With the default of 10, the 11th consecutive failure is the first to be rejected as a permanent lockout rather than a bounded backoff. Time passing on its own cannot escape permanent lockout — only an explicit `Reset()` call does.
+- A successful start does not immediately reset the counter. The next `Check` call that runs at least `StabilityWindow` after the most recent event (success or failure, whichever is later) is the one that actually clears the counter and the failure timestamp. This is the "stability window" rule.
+- `CrashLoopGuard` is registered as a singleton through the new `AddCrashLoopGuard(this IServiceCollection)` extension in `Zapret2Pilot.Runtime.DependencyInjection.RuntimeServiceCollectionExtensions`. The guard is intentionally NOT registered as an `IHostedService`: it owns no background timer, no resources to dispose and is a passive primitive that supervisors query on demand.
+- `Program.cs` (`AppHost.Build`) calls `AddCrashLoopGuard` immediately after `AddRuntimeHealthMonitor` so the guard is part of the same composition root the rest of the Runtime Kernel uses.
+
+Rationale:
+
+- Critical Review finding #14 (P0) calls for a crash-loop backoff primitive that uses exponential backoff and resets the counter only after the runtime has been stable for a stability window. The decision codifies the rule and picks the exact rule for the boundary cases.
+- The guard is a primitive, not a supervisor. Wiring it into `RuntimeProcessHost`, `RuntimeHealthMonitor` or any other kernel component is a future decision that needs its own design (when should the supervisor query the guard, what to do on a permanent lockout, how to surface the verdict to the user, etc.). Bounding `0.0.22` to the primitive itself keeps the milestone reviewable and the safety contract explicit.
+- The "time since the most recent event" interpretation of the stability window (instead of the literal "time since the last success") is the only one that survives a `success → failure` interleaving without letting the system appear healthy just because a recent success exists. A fresh failure must always restart the stability window.
+- The strict `>` boundary on the permanent lockout is documented in `CrashLoopGuard`'s XML doc and is tested by `RecordFailure_ExceedsMaxConsecutiveFailures_PermanentLockout`. It is the conservative choice (one more retry past the threshold) and matches the typical "N retries before giving up" semantic.
+- The pure in-memory constraint (no I/O, no process, no P/Invoke) keeps the guard unit-testable, keeps the kernel free of hidden state machines and lets a future supervisor decide whether to persist the counter in SQLite as a separate concern.
+
+Consequence:
+
+- The 0.0.22 milestone adds `CrashLoopGuard` (and its `Options` / `Result` / `ICrashLoopGuard` companion types) under `Zapret2Pilot.Runtime.Guard`, registers it as a singleton, and provides a dedicated test suite (25 new tests in `tests/Zapret2Pilot.Runtime.Tests/Guard/`) that exercises every documented behavior including a concurrent stress test.
+- The guard is NOT consumed by any other runtime component in this milestone. No existing type (`RuntimeProcessHost`, `RuntimeHealthMonitor`, `RuntimeKernelWorker`, `RuntimeTransactionManager`, `RuntimeKernelStateStore`, `RuntimeOwnershipMutex`, etc.) is modified.
+- Critical Review finding #14 is marked **Resolved** in `docs/Z2P-CRITICAL-REVIEW.md`.
+- `docs/Z2P-ROADMAP.md` gains a new `0.0.22 — Runtime Crash Loop Guard` section.
+- A future milestone (not in scope for `0.0.22`) will design how the guard integrates with the rest of the Runtime Kernel — the integration itself, the supervisor restart loop, the SQLite persistence of the counter across restarts, the UI / dashboard exposure of the guard verdict and the user-facing recovery flow. That future milestone is gated on its own oracle review.
