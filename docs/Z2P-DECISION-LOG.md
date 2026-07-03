@@ -624,3 +624,37 @@ Consequence:
 - Critical Review finding #14 is marked **Resolved** in `docs/Z2P-CRITICAL-REVIEW.md`.
 - `docs/Z2P-ROADMAP.md` gains a new `0.0.22 — Runtime Crash Loop Guard` section.
 - A future milestone (not in scope for `0.0.22`) will design how the guard integrates with the rest of the Runtime Kernel — the integration itself, the supervisor restart loop, the SQLite persistence of the counter across restarts, the UI / dashboard exposure of the guard verdict and the user-facing recovery flow. That future milestone is gated on its own oracle review.
+
+## DEC-0036 — RuntimeSupervisor
+
+Date: 2026-07
+
+Decision:
+
+- Add the public contract `IRuntimeSupervisor` and the implementation `RuntimeSupervisor` under `Zapret2Pilot.Runtime.Supervisor` (`src/Zapret2Pilot.Runtime/Supervisor/`), together with the supporting types `RuntimeSupervisorState` (immutable snapshot) and `RuntimeSupervisorStatus` (the lifecycle enum: `Stopped`, `Starting`, `Running`, `Stopping`, `StartBlocked`).
+- `RuntimeSupervisor` owns the runtime start / stop state machine. It is the only component that calls `IRuntimeProcessHost.StartAsync` / `StopAsync` on behalf of the application. The UI / Application layer must not call `IRuntimeProcessHost` directly; it observes `IRuntimeSupervisor` instead.
+- `RuntimeSupervisor` implements `IHostedService` so the Generic Host starts and stops it together with the rest of the Runtime Kernel. The Generic Host owns the lifetime; the supervisor is a singleton.
+- Every `StartAsync` call is preceded by `ICrashLoopGuard.Check`. A guard block is surfaced as a `RuntimeSupervisorStatus.StartBlocked` snapshot with the `CrashLoopGuardResult` carried in `RuntimeSupervisorState.GuardResult` and a typed `Result.Failure` returned to the caller — `IRuntimeProcessHost` is not touched.
+- Failed starts call `ICrashLoopGuard.RecordFailure`. An `Exited` health snapshot (the load-bearing signal for an unexpected runtime crash) also calls `ICrashLoopGuard.RecordFailure` and triggers an automatic `StopAsync`.
+- A transition into `RuntimeHealthState.Healthy` (the load-bearing signal for a successful start) calls `ICrashLoopGuard.RecordSuccess`.
+- `RuntimeSupervisor` subscribes to `IRuntimeHealthMonitor.SnapshotChanged` on `IHostedService.StartAsync` and unsubscribes on `IHostedService.StopAsync`. The subscription is the single integration point with the health monitor.
+- `RuntimeSupervisor` publishes immutable `RuntimeSupervisorState` snapshots through `CurrentState` and through a hot `StateChanged` observable backed by a `BehaviorSubject<RuntimeSupervisorState>`, so subscribers always see the most recent value plus every subsequent transition.
+- `RuntimeSupervisor` is registered via the new `AddRuntimeSupervisor(this IServiceCollection)` extension in `Zapret2Pilot.Runtime.DependencyInjection.RuntimeServiceCollectionExtensions`. The extension registers `RuntimeSupervisor` as a singleton and the same instance under `IRuntimeSupervisor` and `IHostedService` (one instance, three service descriptors).
+- `Program.cs` (`AppHost.Build`) calls `AddRuntimeSupervisor` immediately after `AddCrashLoopGuard` so the supervisor can resolve the same singleton guard the rest of the kernel uses.
+- Start / stop calls are serialised on a private semaphore. A re-entrant `StartAsync` returns a typed `RuntimeSupervisorAlreadyRunning` failure rather than blocking or racing; an idle `StopAsync` is a successful no-op.
+- View-model integration: `MainWindowViewModel` subscribes to `IRuntimeSupervisor.StateChanged` on the UI scheduler and surfaces `StartBlocked` through `LastAction` so the Avalonia UI can show a "too many crashes, retry in N seconds" / "permanent lockout" message.
+
+Rationale:
+
+- This decision closes Critical Review finding #14 (P0) by integrating the `CrashLoopGuard` primitive into the actual start / stop / exit flow. The 0.0.22 decision delivered the guard; 0.0.23 wires it in.
+- A dedicated supervisor centralises the runtime lifecycle so the UI / Application layer interacts with a typed, observable contract instead of calling the process host directly. The Avalonia UI stays on the UI scheduler while the kernel runs on its dedicated worker thread; the observable is the bridge.
+- Serialising start / stop on a private semaphore keeps the state machine in a single, named thread of control. Concurrent callers get a typed failure result rather than blocking, which is the only safe answer for an `IHostedService` exposed to the UI.
+- The hot `StateChanged` observable (backed by `BehaviorSubject`) is the canonical place for any future feature (UI Start / Stop button, dashboard runtime card, automatic restart, Auto Doctor) to learn what the supervisor is doing without coupling to its private state.
+
+Consequence:
+
+- The UI / Application layer must not call `IRuntimeProcessHost` directly. It observes `IRuntimeSupervisor` and delegates all start / stop requests to it.
+- Future restart logic, automatic restart, apply-profile and any other lifecycle-triggering feature must be coordinated through the supervisor; ad-hoc `IRuntimeProcessHost` callers are forbidden.
+- `RuntimeSupervisor` does NOT launch a real `winws2` process in 0.0.23. The integration is exercised against fake `IRuntimeProcessHost` and `IRuntimeHealthMonitor` collaborators; a real launch is gated on an explicit, oracle-approved milestone.
+- The supervisor is covered by `tests/Zapret2Pilot.Runtime.Tests/Supervisor/RuntimeSupervisorTests.cs` (focused unit tests using a shared `FakeClock` for deterministic time), by the DI test `AddRuntimeSupervisorRegistersSupervisorAsHostedService` in `RuntimeServiceCollectionExtensionsTests`, and by the view-model test `StartBlocked_UpdatesLastAction` in `MainWindowViewModelTests` (using `FakeRuntimeSupervisor` in `tests/Zapret2Pilot.App.ViewModelTests/`).
+- `docs/Z2P-ROADMAP.md` and `docs/Z2P-IMPLEMENTATION-STATUS.md` gain the 0.0.23 `RuntimeSupervisor` bullets and the new focused-test commands.

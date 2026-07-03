@@ -1111,7 +1111,7 @@ every further restart".
 
 ## 0.0.23 — Runtime Kernel Correctness Hardening
 
-Status: In progress.
+Status: Implemented.
 
 Follows 0.0.22. Hardens the Runtime Kernel primitives that 0.0.20–0.0.22 introduced.
 
@@ -1131,10 +1131,17 @@ Follows 0.0.22. Hardens the Runtime Kernel primitives that 0.0.20–0.0.22 intro
 - `MainWindowViewModel.AppVersion` bumped to `v0.0.23`;
 - `MainWindowViewModelTests` assertion bumped to `v0.0.23`;
 - `README.md`, `docs/Z2P-IMPLEMENTATION-STATUS.md` and `docs/Z2P-CRITICAL-REVIEW.md` updated.
+- `src/Zapret2Pilot.Runtime/Supervisor/IRuntimeSupervisor.cs`, `RuntimeSupervisor.cs`, `RuntimeSupervisorState.cs`, `RuntimeSupervisorStatus.cs` — single owner of the runtime start / stop state machine; gates every `StartAsync` through `ICrashLoopGuard.Check`; records failures and successes against the guard; observes `IRuntimeHealthMonitor.SnapshotChanged`; publishes immutable `RuntimeSupervisorState` snapshots through `CurrentState` and a hot `StateChanged` observable backed by `BehaviorSubject<RuntimeSupervisorState>`.
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` — new `AddRuntimeSupervisor` extension registers `RuntimeSupervisor` as a singleton under the concrete type, `IRuntimeSupervisor` and `IHostedService` (same instance for all three service descriptors).
+- `src/Zapret2Pilot.App/Program.cs` — `AppHost.Build` calls `AddRuntimeSupervisor` immediately after `AddCrashLoopGuard` so the supervisor resolves the same singleton guard the rest of the kernel uses.
+- `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs` — subscribes to `IRuntimeSupervisor.StateChanged` on the UI scheduler and maps `StartBlocked` snapshots to `LastAction`.
+- Tests:
+  - `RuntimeSupervisorTests` (`tests/Zapret2Pilot.Runtime.Tests/Supervisor/`) — focused unit tests with hand-rolled fake `IRuntimeProcessHost` and `IRuntimeHealthMonitor`, a shared `FakeClock` driving the supervisor's `TimeProvider` and the guard's clock seam, and a real `CrashLoopGuard` configured with small, fast options; covers `Check`-gated start, blocked start, failed start → `RecordFailure`, `Healthy` transition → `RecordSuccess`, `Exited` snapshot → automatic stop → `RecordFailure`, idempotent `StopAsync`, re-entrant `StartAsync` → typed `RuntimeSupervisorAlreadyRunning`, semaphore serialisation and observable `StateChanged` semantics.
+  - `AddRuntimeSupervisorRegistersSupervisorAsHostedService` — DI test in `RuntimeServiceCollectionExtensionsTests` asserting the same singleton instance is resolvable as `RuntimeSupervisor`, `IRuntimeSupervisor` and `IHostedService`.
+  - `StartBlocked_UpdatesLastAction` — view-model test in `MainWindowViewModelTests` using `FakeRuntimeSupervisor` to drive a `StartBlocked` snapshot and assert `LastAction` reflects the block.
 
 ### Out of scope for the current 0.0.23 slice
 
-- `RuntimeSupervisor` — a future packet will introduce a single owner of the runtime state machine and wire `CrashLoopGuard.RecordFailure/RecordSuccess/Check` into the start/stop/exit flow. This requires oracle review.
 - `RuntimeKernelWorker` deeper lifecycle fixes (`Dispose` deadlock risk, async-continuation thread affinity, explicit queue-full semantics) — deferred to a future packet.
 - Real `winws2` launch, automatic restart, UI Start/Stop, Auto Doctor, runtime logs, tray control.
 
@@ -1144,7 +1151,9 @@ Follows 0.0.22. Hardens the Runtime Kernel primitives that 0.0.20–0.0.22 intro
 - `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeHealthMonitor"` passes;
 - `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeKernelStateStore"` passes;
 - `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~CrashLoopGuard"` passes;
-- `dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release` passes (the `v0.0.23` assertion holds);
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeSupervisorTests"` passes;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeServiceCollectionExtensionsTests"` passes;
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release` passes (the `v0.0.23` assertion holds, `StartBlocked_UpdatesLastAction` holds);
 - `dotnet test Zapret2Pilot.slnx -c Release` passes on the whole solution;
 - no new NuGet packages, no lock file changes, no Windows Service / IPC / VPN / proxy / MITM / per-URL router / `.bat` wrapper.
 
@@ -1154,6 +1163,8 @@ Follows 0.0.22. Hardens the Runtime Kernel primitives that 0.0.20–0.0.22 intro
 - `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeHealthMonitor"`;
 - `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeKernelStateStore"`;
 - `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~CrashLoopGuard"`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeSupervisorTests"`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeServiceCollectionExtensionsTests"`;
 - `dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release`;
 - `dotnet test Zapret2Pilot.slnx -c Release`.
 

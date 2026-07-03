@@ -625,7 +625,7 @@ Notes:
 
 ## 0.0.23 — Runtime Kernel Correctness Hardening
 
-Status: **in progress**.
+Status: **implemented**.
 
 Implemented slices:
 
@@ -641,10 +641,18 @@ Implemented slices:
 - `MainWindowViewModel.AppVersion` bumped to `v0.0.23`;
 - `MainWindowViewModelTests` assertion bumped to `v0.0.23`;
 - `README.md`, `docs/Z2P-ROADMAP.md` and `docs/Z2P-CRITICAL-REVIEW.md` updated.
+- `IRuntimeSupervisor` / `RuntimeSupervisor` (`src/Zapret2Pilot.Runtime/Supervisor/`) — single owner of the runtime start / stop state machine; implements `IHostedService`; gates every `StartAsync` through `ICrashLoopGuard.Check` and surfaces a `RuntimeSupervisorStatus.StartBlocked` snapshot with the `CrashLoopGuardResult` carried in `RuntimeSupervisorState.GuardResult`; records failures against the guard on failed starts and unexpected `Exited` health snapshots; records successes against the guard on `Healthy` transitions; subscribes to `IRuntimeHealthMonitor.SnapshotChanged` and triggers an automatic stop on `Exited`; publishes immutable `RuntimeSupervisorState` snapshots through `CurrentState` and a hot `StateChanged` observable backed by `BehaviorSubject<RuntimeSupervisorState>`; serialises start / stop on a private semaphore so re-entrant `StartAsync` returns a typed `RuntimeSupervisorAlreadyRunning` failure.
+- `AddRuntimeSupervisor` DI extension in `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` — registers the same singleton instance under `RuntimeSupervisor`, `IRuntimeSupervisor` and `IHostedService`. `Program.cs` (`AppHost.Build`) calls `AddRuntimeSupervisor` immediately after `AddCrashLoopGuard`.
+- `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs` — subscribes to `IRuntimeSupervisor.StateChanged` on the UI scheduler and maps `RuntimeSupervisorStatus.StartBlocked` snapshots to `LastAction` so the Avalonia UI can show a "too many crashes, retry in N seconds" / "permanent lockout" message.
+- New tests:
+  - `tests/Zapret2Pilot.Runtime.Tests/Testing/FakeClock.cs` — deterministic `TimeProvider` shared by supervisor and guard tests so scenarios stay fast and never sleep.
+  - `tests/Zapret2Pilot.Runtime.Tests/Supervisor/RuntimeSupervisorTests.cs` — focused unit tests with hand-rolled fake `IRuntimeProcessHost` and `IRuntimeHealthMonitor`, the shared `FakeClock`, and a real `CrashLoopGuard` configured with small, fast options; covers `Check`-gated start, blocked start, failed start → `RecordFailure`, `Healthy` transition → `RecordSuccess`, `Exited` snapshot → automatic stop → `RecordFailure`, idempotent `StopAsync`, re-entrant `StartAsync` → typed `RuntimeSupervisorAlreadyRunning`, semaphore serialisation and observable `StateChanged` semantics.
+  - `tests/Zapret2Pilot.App.ViewModelTests/FakeRuntimeSupervisor.cs` — in-memory `IRuntimeSupervisor` fake for view-model tests, backed by a `BehaviorSubject<RuntimeSupervisorState>` so tests can drive transitions synchronously.
+  - `StartBlocked_UpdatesLastAction` in `tests/Zapret2Pilot.App.ViewModelTests/MainWindowViewModelTests.cs` — asserts the view-model maps a `StartBlocked` snapshot to `LastAction`.
+  - `AddRuntimeSupervisorRegistersSupervisorAsHostedService` in `RuntimeServiceCollectionExtensionsTests` — asserts the same singleton instance is resolvable as `RuntimeSupervisor`, `IRuntimeSupervisor` and `IHostedService`.
 
 Deferred to future packets (gated on their own oracle reviews):
 
-- `RuntimeSupervisor` — a future packet will introduce a single owner of the runtime state machine and wire `CrashLoopGuard.RecordFailure/RecordSuccess/Check` into the start/stop/exit flow;
 - `RuntimeKernelWorker` deeper lifecycle fixes — `Dispose` deadlock risk, async-continuation thread affinity, explicit queue-full semantics;
 - Real `winws2` launch, automatic restart, UI Start/Stop, Auto Doctor, runtime logs, tray control.
 
@@ -655,6 +663,8 @@ dotnet build Zapret2Pilot.slnx -c Release
 dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeHealthMonitor"
 dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeKernelStateStore"
 dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~CrashLoopGuard"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeSupervisorTests"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeServiceCollectionExtensionsTests"
 dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release
 dotnet test Zapret2Pilot.slnx -c Release
 ```
