@@ -238,6 +238,30 @@ public sealed class CrashLoopGuardTests
     }
 
     [Fact]
+    public static void RecordFailure_NoSuccess_AfterStabilityWindow_DoesNotReset()
+    {
+        FakeClock clock = new();
+        CrashLoopGuard guard = CreateGuard(clock);
+
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        guard.RecordFailure();
+
+        // Wait well beyond the stability window without ever calling RecordSuccess.
+        // Note: in the default test config, BaseBackoff (20ms) is shorter than
+        // StabilityWindow (50ms), so by this point the backoff has already
+        // elapsed and the guard would allow a restart attempt — but the
+        // counter must still NOT be reset because no RecordSuccess was ever
+        // observed. That is the regression this test pins down.
+        clock.Advance(SmallStabilityWindow + TimeSpan.FromMilliseconds(10));
+
+        CrashLoopGuardResult result = guard.Check();
+
+        Assert.True(result.IsAllowed); // backoff has elapsed
+        Assert.Null(result.BackoffRemaining);
+        Assert.Equal(1, result.ConsecutiveFailures); // counter NOT reset (the bug fix)
+    }
+
+    [Fact]
     public static void Reset_ClearsAllState()
     {
         FakeClock clock = new();
@@ -303,9 +327,22 @@ public sealed class CrashLoopGuardTests
         // many other threads call Check. The guard must never
         // throw and the final counter must equal the number of
         // RecordFailure calls.
+        //
+        // The guard is built with a deliberately large
+        // MaxConsecutiveFailures so the new saturation behaviour
+        // (cap at MaxConsecutiveFailures + 1) does not kick in
+        // for the 2000 total failures in this scenario. The test
+        // is about the absence of torn writes, not about
+        // saturation — saturation has its own dedicated test
+        // (RecordFailure_SaturatesAtMaxConsecutiveFailuresPlusOne).
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         FakeClock clock = new();
-        CrashLoopGuard guard = CreateGuard(clock);
+        CrashLoopGuardOptions options = new(
+            baseBackoff: SmallBaseBackoff,
+            maxBackoff: SmallMaxBackoff,
+            stabilityWindow: SmallStabilityWindow,
+            maxConsecutiveFailures: 10_000);
+        CrashLoopGuard guard = new(options, clock.Now);
 
         const int writerThreads = 4;
         const int readerThreads = 4;
@@ -343,6 +380,28 @@ public sealed class CrashLoopGuardTests
         // failures, with no torn writes.
         CrashLoopGuardResult finalResult = guard.Check();
         Assert.Equal(writerThreads * failuresPerWriter, finalResult.ConsecutiveFailures);
+    }
+
+    [Fact]
+    public static void RecordFailure_SaturatesAtMaxConsecutiveFailuresPlusOne()
+    {
+        // Counter must saturate at MaxConsecutiveFailures + 1 to
+        // prevent integer overflow on a long-running crash loop,
+        // matching the permanent-lockout threshold.
+        FakeClock clock = new();
+        CrashLoopGuard guard = CreateGuard(clock);
+
+        // With SmallMaxFailures=3, the saturated value is 4.
+        // Push the counter well past the saturation point.
+        for (int i = 0; i < SmallMaxFailures * 10; i++)
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+            guard.RecordFailure();
+        }
+
+        CrashLoopGuardResult result = guard.Check();
+
+        Assert.Equal(SmallMaxFailures + 1, result.ConsecutiveFailures);
     }
 
     [Fact]

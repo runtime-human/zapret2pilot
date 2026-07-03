@@ -33,11 +33,18 @@ namespace Zapret2Pilot.Runtime.Guard;
 /// backoff.
 /// </para>
 /// <para>
-/// <b>Stability window.</b> A successful start does not reset the
-/// counter immediately. The next <see cref="Check"/> call that
-/// runs more than <see cref="CrashLoopGuardOptions.StabilityWindow"/>
-/// after the last failure (or the last success, whichever is
-/// later) is the one that actually clears the counter. This
+/// <b>Stability window.</b> The consecutive-failure counter is
+/// only cleared when BOTH conditions hold at the time of a
+/// <see cref="Check"/> call: a <see cref="RecordSuccess"/> has
+/// been observed, and at least
+/// <see cref="CrashLoopGuardOptions.StabilityWindow"/> has
+/// elapsed since that success. Additionally, the success must
+/// have been recorded at or after the most recent failure — a
+/// stale success recorded before a failure is not evidence of
+/// stability. Waiting around after a failure without ever
+/// calling <see cref="RecordSuccess"/> is explicitly NOT
+/// enough to clear the counter: the guard must see a real,
+/// post-failure success before it forgives the runtime. This
 /// keeps a "barely-survived" runtime from looking healthy.
 /// </para>
 /// <para>
@@ -117,20 +124,34 @@ public sealed class CrashLoopGuard : ICrashLoopGuard
                     consecutiveFailures: consecutiveFailures);
             }
 
-            // Reset the counter when the runtime has been stable
-            // long enough. The "last event" we measure against is
-            // whichever of (last failure, last success) is the most
-            // recent — a success recorded after a failure is the
-            // signal we want to honour. A failure recorded after a
-            // success restarts the stability window.
-            DateTimeOffset? lastEventUtc = LastEventUtcLocked();
+            // Reset the counter ONLY when the runtime has
+            // demonstrated a stable, failure-free window AND that
+            // window was actually observed by RecordSuccess(). All
+            // four conditions are required:
+            //   1. consecutiveFailures > 0  (nothing to reset otherwise)
+            //   2. lastSuccessUtc is set   (no success => no reset)
+            //   3. lastSuccessUtc >= lastFailureUtc
+            //      (the success must be at or after the most recent
+            //      failure — a stale success recorded before a
+            //      failure is not evidence of stability)
+            //   4. (now - lastSuccessUtc) >= options.StabilityWindow
+            //      (the success must be old enough to prove
+            //      stability)
+            // Waiting around after a failure without ever calling
+            // RecordSuccess() must NOT be enough to clear the
+            // counter — the counter represents a still-unproven
+            // runtime that may have crashed on its first attempt.
             if (consecutiveFailures > 0
-                && lastEventUtc is { } last
-                && (now - last) >= options.StabilityWindow)
+                && lastSuccessUtc is { } lastSuccess
+                && lastFailureUtc is { } lastFailure
+                && lastSuccess >= lastFailure
+                && (now - lastSuccess) >= options.StabilityWindow)
             {
                 consecutiveFailures = 0;
                 lastFailureUtc = null;
-                // lastSuccessUtc is intentionally preserved; it is older than any future failure and LastEventUtcLocked() will correctly prefer the newer timestamp.
+                // lastSuccessUtc is intentionally preserved: an
+                // older recorded success is still a recorded
+                // success and stays part of the guard's history.
             }
 
             if (consecutiveFailures == 0)
@@ -175,7 +196,16 @@ public sealed class CrashLoopGuard : ICrashLoopGuard
     {
         lock (syncRoot)
         {
-            consecutiveFailures++;
+            // Saturate the counter at MaxConsecutiveFailures + 1
+            // to defend against integer overflow on a long-running
+            // crash loop. The +1 boundary matches the permanent
+            // lockout threshold (strictly greater than
+            // MaxConsecutiveFailures), so any further failure
+            // beyond the cap keeps the guard in permanent lockout
+            // without the counter ever wrapping.
+            consecutiveFailures = Math.Min(
+                consecutiveFailures + 1,
+                options.MaxConsecutiveFailures + 1);
             lastFailureUtc = clock();
         }
     }
