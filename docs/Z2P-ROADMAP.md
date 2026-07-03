@@ -1108,3 +1108,52 @@ every further restart".
 - confirm `docs/Z2P-CRITICAL-REVIEW.md` finding #14 is marked
   **Resolved** and that the live doc matches the implemented
   behaviour.
+
+## 0.0.23 — Runtime Kernel Correctness Hardening
+
+Status: In progress.
+
+Follows 0.0.22. Hardens the Runtime Kernel primitives that 0.0.20–0.0.22 introduced.
+
+### Scope
+
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthMonitor.cs` — replace callback-based `System.Threading.Timer` with `PeriodicTimer` driven by an injected `TimeProvider`; coalesce health probes so only one probe is in flight at a time; publish snapshots from the monitor loop instead of the `RuntimeKernelWorker` thread; observe and log `worker.Enqueue` errors.
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs` — register `TimeProvider.System` so the monitor can be constructed by the Generic Host container.
+- `src/Zapret2Pilot.Runtime/State/RuntimeKernelStateStore.cs` — make `ClearRuntimeState` conditional on `runtime_state.session_id` matching the ended session, preventing a historical `EndSession` from clearing the singleton row of a newer active session.
+- `src/Zapret2Pilot.Runtime/State/IRuntimeKernelStateStore.cs` — document the conditional singleton reset.
+- `src/Zapret2Pilot.Runtime/Guard/CrashLoopGuard.cs` — reset the consecutive-failure counter only when `RecordSuccess()` has observed a stable, failure-free window; saturate the counter at `MaxConsecutiveFailures + 1`.
+- `src/Zapret2Pilot.Runtime/Guard/ICrashLoopGuard.cs` — document the new reset semantics.
+- Tests:
+  - `RuntimeHealthMonitorTests` — `StopAsync_DoesNotPublishAfterReturn`, `ThrowingSubscriber_DoesNotFaultKernelWorker`, `RepeatedTicks_CoalesceIntoOneProbe`;
+  - `RuntimeKernelStateStoreTests` — `EndHistoricalSession_DoesNotClearCurrentSession`, `EndHistoricalSessionWithFailedState_DoesNotClearCurrentSession`;
+  - `CrashLoopGuardTests` — `RecordFailure_NoSuccess_AfterStabilityWindow_DoesNotReset`, `RecordSuccess_BeforeFailure_AfterStabilityWindow_DoesNotReset`, `RecordFailure_SaturatesAtMaxConsecutiveFailuresPlusOne`.
+- `VERSION` bumped to `0.0.23`;
+- `MainWindowViewModel.AppVersion` bumped to `v0.0.23`;
+- `MainWindowViewModelTests` assertion bumped to `v0.0.23`;
+- `README.md`, `docs/Z2P-IMPLEMENTATION-STATUS.md` and `docs/Z2P-CRITICAL-REVIEW.md` updated.
+
+### Out of scope for the current 0.0.23 slice
+
+- `RuntimeSupervisor` — a future packet will introduce a single owner of the runtime state machine and wire `CrashLoopGuard.RecordFailure/RecordSuccess/Check` into the start/stop/exit flow. This requires oracle review.
+- `RuntimeKernelWorker` deeper lifecycle fixes (`Dispose` deadlock risk, async-continuation thread affinity, explicit queue-full semantics) — deferred to a future packet.
+- Real `winws2` launch, automatic restart, UI Start/Stop, Auto Doctor, runtime logs, tray control.
+
+### Acceptance
+
+- `dotnet build Zapret2Pilot.slnx -c Release` passes;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeHealthMonitor"` passes;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeKernelStateStore"` passes;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~CrashLoopGuard"` passes;
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release` passes (the `v0.0.23` assertion holds);
+- `dotnet test Zapret2Pilot.slnx -c Release` passes on the whole solution;
+- no new NuGet packages, no lock file changes, no Windows Service / IPC / VPN / proxy / MITM / per-URL router / `.bat` wrapper.
+
+### Verification ladder
+
+- `dotnet build Zapret2Pilot.slnx -c Release`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeHealthMonitor"`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeKernelStateStore"`;
+- `dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~CrashLoopGuard"`;
+- `dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release`;
+- `dotnet test Zapret2Pilot.slnx -c Release`.
+
