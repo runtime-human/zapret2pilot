@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Reactive;
+using Microsoft.Extensions.Logging;
 using ReactiveUI;
 using Zapret2Pilot.App.Navigation;
 using Zapret2Pilot.App.Threading;
+using Zapret2Pilot.Runtime.Supervisor;
 
 namespace Zapret2Pilot.App.Shell;
 
@@ -84,6 +86,90 @@ public sealed class MainWindowViewModel : ReactiveObject
         {
             LastAction = "Демо: детали профиля будут добавлены после ProfileDefinition.";
         });
+    }
+
+    /// <summary>
+    /// Full constructor used by the Generic Host composition root.
+    /// Subscribes to <see cref="IRuntimeSupervisor.StateChanged"/>
+    /// and surfaces the supervisor's status through
+    /// <see cref="LastAction"/> so the UI reflects the runtime's
+    /// current state. The subscription is intentionally
+    /// fire-and-forget: the view model is a singleton and the
+    /// supervisor owns the subscription lifecycle.
+    /// </summary>
+    /// <param name="navigationRouter">Navigation router shared with
+    /// the rest of the shell.</param>
+    /// <param name="uiScheduler">UI scheduler that marshals
+    /// supervisor-state updates onto the UI thread.</param>
+    /// <param name="supervisor">Optional runtime supervisor. When
+    /// <c>null</c>, the view model falls back to the
+    /// design-time defaults and never subscribes.</param>
+    /// <param name="logger">Optional logger that receives
+    /// structured warnings for the
+    /// <see cref="RuntimeSupervisorStatus.StartBlocked"/>
+    /// transition.</param>
+    public MainWindowViewModel(
+        NavigationRouter navigationRouter,
+        IUiScheduler uiScheduler,
+        IRuntimeSupervisor? supervisor,
+        ILogger<MainWindowViewModel>? logger)
+        : this(navigationRouter, uiScheduler)
+    {
+        if (supervisor is not null)
+        {
+            supervisor.StateChanged.Subscribe(state =>
+            {
+                uiScheduler.Schedule(() => HandleSupervisorState(state, logger));
+            });
+        }
+    }
+
+    private void HandleSupervisorState(
+        RuntimeSupervisorState state,
+        ILogger<MainWindowViewModel>? logger)
+    {
+        switch (state.Status)
+        {
+            case RuntimeSupervisorStatus.StartBlocked:
+                if (state.GuardResult?.BackoffRemaining is null)
+                {
+                    LastAction = "Запуск заблокирован: превышено число попыток. Перезапустите приложение.";
+                }
+                else
+                {
+                    TimeSpan remaining = state.GuardResult.BackoffRemaining.Value;
+                    LastAction = $"Запуск отложен: слишком много падений. Повтор через {remaining.TotalSeconds:F0} с.";
+                }
+
+                // CA1848: structured warning is only used in the rare
+                // StartBlocked transition; LoggerMessage source generator
+                // migration is tracked separately, matching the Runtime
+                // project's existing policy.
+#pragma warning disable CA1848
+                logger?.LogWarning(
+                    "RuntimeSupervisor: start blocked. Code={Code} ConsecutiveFailures={ConsecutiveFailures} BackoffSeconds={BackoffSeconds}",
+                    state.LastError?.Code,
+                    state.GuardResult?.ConsecutiveFailures ?? 0,
+                    state.GuardResult?.BackoffRemaining?.TotalSeconds ?? -1);
+#pragma warning restore CA1848
+                break;
+
+            case RuntimeSupervisorStatus.Running:
+                LastAction = "Обход активен.";
+                break;
+
+            case RuntimeSupervisorStatus.Stopped:
+                LastAction = "Обход остановлен.";
+                break;
+
+            case RuntimeSupervisorStatus.Starting:
+                LastAction = "Запуск обхода...";
+                break;
+
+            case RuntimeSupervisorStatus.Stopping:
+                LastAction = "Остановка обхода...";
+                break;
+        }
     }
 
     public string AppName { get; } = "Zapret2Pilot";
