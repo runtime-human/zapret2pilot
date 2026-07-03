@@ -238,6 +238,27 @@ public sealed class CrashLoopGuardTests
     }
 
     [Fact]
+    public static void RecordSuccess_BeforeFailure_AfterStabilityWindow_DoesNotReset()
+    {
+        FakeClock clock = new();
+        CrashLoopGuard guard = CreateGuard(clock);
+
+        // Record an early success, then a later failure.
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        guard.RecordSuccess();
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        guard.RecordFailure();
+
+        // Advance past the stability window since the success.
+        // Because the success predates the failure, it must NOT reset the counter.
+        clock.Advance(SmallStabilityWindow + TimeSpan.FromMilliseconds(10));
+
+        CrashLoopGuardResult result = guard.Check();
+
+        Assert.Equal(1, result.ConsecutiveFailures);
+    }
+
+    [Fact]
     public static void RecordFailure_NoSuccess_AfterStabilityWindow_DoesNotReset()
     {
         FakeClock clock = new();
