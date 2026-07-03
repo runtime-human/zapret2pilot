@@ -162,6 +162,14 @@ public static class RuntimeServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        // Register a default TimeProvider so the Generic Host's
+        // container can construct RuntimeHealthMonitor without the
+        // caller having to add the registration themselves. Tests
+        // that need a deterministic clock resolve the monitor
+        // directly with a custom TimeProvider and do not go
+        // through this extension.
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+
         services.AddSingleton<RuntimeHealthMonitor>();
         services.AddSingleton<IRuntimeHealthMonitor>(
             static sp => sp.GetRequiredService<RuntimeHealthMonitor>());

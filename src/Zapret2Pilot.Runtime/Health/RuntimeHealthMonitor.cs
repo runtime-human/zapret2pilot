@@ -15,22 +15,29 @@ namespace Zapret2Pilot.Runtime.Health;
 /// Generic-Host <see cref="IHostedService"/> that periodically
 /// probes the runtime process owned by <see cref="RuntimeProcessHost"/>
 /// and publishes immutable <see cref="RuntimeHealthSnapshot"/>
-/// values. The probe runs on the dedicated
+/// values. The probe body itself runs on the dedicated
 /// <see cref="RuntimeKernelWorker"/> thread so every read of the
 /// host's process state happens on the canonical kernel thread.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The monitor owns a <see cref="System.Threading.Timer"/> whose
-/// callback runs on a <c>ThreadPool</c> thread. The callback is
-/// intentionally minimal: it only enqueues a probe onto the worker.
-/// All kernel work — reading <c>RuntimeProcessHost.RunningProcess</c>,
-/// calling <c>IRuntimeKernelStateStore.EndSession</c> on a
-/// transition into <see cref="RuntimeHealthState.Exited"/>, and
-/// pushing the new snapshot through the
-/// <see cref="BehaviorSubject{T}"/> — happens on the worker
-/// thread. The <see cref="System.Threading.Timer"/> never blocks
-/// the UI thread.
+/// The monitor owns a <see cref="PeriodicTimer"/> driven by an
+/// injected <see cref="TimeProvider"/>. The loop runs on a
+/// dedicated <see cref="Task"/> scheduled via
+/// <see cref="Task.Run(Action)"/>; on every tick the loop enqueues
+/// a probe onto the worker, awaits the worker's task, and only then
+/// pushes the freshly computed snapshot through the
+/// <see cref="BehaviorSubject{T}"/>. Because the
+/// <c>OnNext</c> call happens on the monitor's loop task, a slow or
+/// throwing subscriber cannot fault the kernel worker.
+/// </para>
+/// <para>
+/// Probes are coalesced: only one probe is allowed to be in flight
+/// at a time. If a tick fires while a probe is pending, the loop
+/// drops the tick (it does not enqueue a second probe). The
+/// coalescing flag is manipulated via
+/// <see cref="Interlocked.CompareExchange(ref int, int, int)"/> so
+/// the loop is safe under any interleaving with the worker thread.
 /// </para>
 /// <para>
 /// A transition into <see cref="RuntimeHealthState.Exited"/> is
@@ -43,10 +50,12 @@ namespace Zapret2Pilot.Runtime.Health;
 /// state do not re-record the session.
 /// </para>
 /// <para>
-/// <see cref="StartAsync"/> starts the timer. <see cref="StopAsync"/>
-/// disposes the timer, marks the monitor as stopping, and awaits
-/// the worker's cancellation of any in-flight probe. <see cref="Dispose"/>
-/// is idempotent and forwards to <see cref="StopAsync"/>.
+/// <see cref="StartAsync"/> starts the loop. <see cref="StopAsync"/>
+/// cancels the loop, disposes the timer and awaits the loop task
+/// (using the caller's <see cref="CancellationToken"/> as an upper
+/// bound) so the monitor never publishes a snapshot after
+/// <see cref="StopAsync"/> returns. <see cref="Dispose"/> is
+/// idempotent and forwards to <see cref="StopAsync"/>.
 /// </para>
 /// </remarks>
 public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor, IDisposable
@@ -62,11 +71,21 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     private readonly RuntimeKernelWorker worker;
     private readonly IRuntimeKernelStateStore stateStore;
     private readonly ILogger<RuntimeHealthMonitor> logger;
+    private readonly TimeProvider timeProvider;
     private readonly TimeSpan probeInterval;
     private readonly BehaviorSubject<RuntimeHealthSnapshot> subject;
 
     private readonly object timerLock = new();
-    private Timer? timer;
+    private PeriodicTimer? timer;
+    private CancellationTokenSource? loopCts;
+    private Task? loopTask;
+    private int probePending; // 0 = idle, 1 = probe in flight
+
+    // Cross-thread handoff slot: the worker writes the freshly computed
+    // snapshot, the loop task reads it after `await probeTask`. The
+    // await provides the happens-before edge that makes the write
+    // visible to the read without an explicit lock or barrier.
+    private RuntimeHealthSnapshot? nextSnapshot;
     private int stoppingFlag;
     private bool disposed;
 
@@ -81,6 +100,9 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     /// to mark sessions as <c>Failed</c>.</param>
     /// <param name="logger">Logger that receives structured events
     /// for unexpected errors and state-store failures.</param>
+    /// <param name="timeProvider">Time provider that drives the
+    /// probe timer. Defaults to <see cref="TimeProvider.System"/>
+    /// when <c>null</c>.</param>
     /// <param name="probeInterval">Probe interval. Defaults to
     /// <see cref="DefaultProbeInterval"/> when <c>null</c>.</param>
     public RuntimeHealthMonitor(
@@ -88,6 +110,7 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
         RuntimeKernelWorker worker,
         IRuntimeKernelStateStore stateStore,
         ILogger<RuntimeHealthMonitor> logger,
+        TimeProvider? timeProvider = null,
         TimeSpan? probeInterval = null)
     {
         ArgumentNullException.ThrowIfNull(host, nameof(host));
@@ -108,6 +131,7 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
         this.worker = worker;
         this.stateStore = stateStore;
         this.logger = logger;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         this.probeInterval = effectiveInterval;
         this.subject = new BehaviorSubject<RuntimeHealthSnapshot>(
             new RuntimeHealthSnapshot(
@@ -123,11 +147,11 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     public RuntimeHealthSnapshot LatestSnapshot => subject.Value;
 
     /// <summary>
-    /// Starts the probe timer. Returns immediately; the first
+    /// Starts the probe loop. Returns immediately; the first
     /// scheduled probe fires after <see cref="probeInterval"/>.
     /// </summary>
-    /// <param name="cancellationToken">Observed before the timer is
-    /// created.</param>
+    /// <param name="cancellationToken">Observed before the loop
+    /// task is scheduled.</param>
     public Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -135,48 +159,66 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
 
         lock (timerLock)
         {
-            if (timer is not null)
+            if (loopTask is not null)
             {
                 return Task.CompletedTask;
             }
 
-            timer = new Timer(OnTimerTick, state: null, dueTime: probeInterval, period: probeInterval);
+            CancellationTokenSource newCts = new();
+            PeriodicTimer newTimer = new(probeInterval, timeProvider);
+            loopCts = newCts;
+            timer = newTimer;
+            loopTask = Task.Run(() => RunLoopAsync(newCts.Token), cancellationToken);
         }
 
         return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Stops the probe timer. Idempotent. Awaits the worker's
-    /// cancellation of any in-flight probe so the monitor never
-    /// publishes a snapshot after <see cref="StopAsync"/> returns.
+    /// Stops the probe loop. Idempotent. Cancels the loop's
+    /// <see cref="CancellationTokenSource"/>, disposes the
+    /// <see cref="PeriodicTimer"/> and awaits the loop task (using
+    /// the caller's <see cref="CancellationToken"/> as an upper
+    /// bound) so the monitor never publishes a snapshot after
+    /// <see cref="StopAsync"/> returns.
     /// </summary>
     /// <param name="cancellationToken">Observed while waiting for
-    /// the worker to drain.</param>
+    /// the loop task to complete.</param>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        Timer? toDispose;
+        CancellationTokenSource? toCancel;
+        PeriodicTimer? toDispose;
+        Task? toAwait;
+
         lock (timerLock)
         {
+            toCancel = loopCts;
             toDispose = timer;
+            toAwait = loopTask;
+            loopCts = null;
             timer = null;
+            loopTask = null;
         }
 
-        toDispose?.Dispose();
         Interlocked.Exchange(ref stoppingFlag, 1);
 
-        // Drain the worker so an in-flight probe is allowed to
-        // complete before Dispose() returns. The worker's channel
-        // already serialises probes, so awaiting the most recent
-        // enqueued work item is enough to guarantee no further
-        // OnNext happens on this monitor.
-        try
+        toCancel?.Cancel();
+        // Disposing the PeriodicTimer unblocks any in-flight
+        // WaitForNextTickAsync call by completing it with `false`,
+        // so the loop returns from the await and exits.
+        toDispose?.Dispose();
+
+        if (toAwait is not null)
         {
-            await worker.Enqueue(_ => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // expected when the host cancels shutdown
+            try
+            {
+                await Task.WhenAny(toAwait, Task.Delay(Timeout.Infinite, cancellationToken))
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // expected when the host cancels shutdown
+            }
         }
     }
 
@@ -209,32 +251,102 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
         }
     }
 
-    private void OnTimerTick(object? state)
+    /// <summary>
+    /// Probe-loop body. Runs on a dedicated task scheduled by
+    /// <see cref="StartAsync"/>; on every <see cref="PeriodicTimer"/>
+    /// tick it enqueues a probe onto the worker, awaits the
+    /// worker's task, and pushes the freshly computed snapshot
+    /// through the <see cref="BehaviorSubject{T}"/>.
+    /// </summary>
+    /// <param name="token">Cancellation token that combines the
+    /// monitor's internal <see cref="CancellationTokenSource"/>
+    /// with the caller's <see cref="StopAsync"/> token.</param>
+    private async Task RunLoopAsync(CancellationToken token)
     {
-        if (Volatile.Read(ref stoppingFlag) != 0)
+        PeriodicTimer? localTimer;
+        lock (timerLock)
+        {
+            localTimer = timer;
+        }
+
+        if (localTimer is null)
         {
             return;
         }
 
         try
         {
-            // Fire and forget: the probe body runs on the worker
-            // thread and the timer is intentionally not blocked
-            // waiting for it. Any failure inside the probe is
-            // logged and observed through the worker.
-            _ = worker.Enqueue(ProbeOnWorkerAsync, CancellationToken.None);
+            while (await localTimer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                if (Volatile.Read(ref stoppingFlag) != 0)
+                {
+                    break;
+                }
+
+                if (Interlocked.CompareExchange(ref probePending, 1, 0) != 0)
+                {
+                    // A probe is already in flight; coalesce this tick.
+                    continue;
+                }
+
+                // Clear any stale snapshot from a previous iteration
+                // before enqueuing the new probe. The probe will
+                // overwrite the field synchronously, and the await
+                // below provides the happens-before relationship
+                // that makes the write visible to this loop.
+                nextSnapshot = null;
+
+                try
+                {
+                    Task probeTask = worker.Enqueue(ProbeOnWorkerAsync, token);
+                    await probeTask.ConfigureAwait(false);
+
+                    RuntimeHealthSnapshot? snapshot = nextSnapshot;
+                    if (snapshot is not null)
+                    {
+                        subject.OnNext(snapshot);
+                    }
+                }
+                catch (OperationCanceledException) when (IsLoopCancellationRequested())
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(
+                        ex,
+                        "RuntimeHealthMonitor: probe enqueue or execution failed.");
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref probePending, 0);
+                }
+            }
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            logger.LogError(ex, "RuntimeHealthMonitor: failed to enqueue probe.");
+            // expected on shutdown
         }
     }
 
-    private async Task ProbeOnWorkerAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Probe body. Runs on the dedicated <see cref="RuntimeKernelWorker"/>
+    /// thread. Computes the snapshot synchronously and records a
+    /// failed session if the transition into <see cref="RuntimeHealthState.Exited"/>
+    /// is observed. The snapshot is stored in <see cref="nextSnapshot"/>
+    /// and the <c>OnNext</c> call is made by the monitor loop on its
+    /// own task so a slow or throwing subscriber cannot block the
+    /// worker.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token observed
+    /// by the probe body.</param>
+    /// <returns>A completed <see cref="Task"/>; the work is fully
+    /// synchronous, so the method is not <c>async</c>.</returns>
+    private Task ProbeOnWorkerAsync(CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         Process? process = host.RunningProcess;
@@ -279,7 +391,18 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
             TryMarkActiveSessionAsFailed();
         }
 
-        subject.OnNext(next);
+        nextSnapshot = next;
+        return Task.CompletedTask;
+    }
+
+    private bool IsLoopCancellationRequested()
+    {
+        CancellationTokenSource? captured;
+        lock (timerLock)
+        {
+            captured = loopCts;
+        }
+        return captured is null || captured.IsCancellationRequested;
     }
 
     private static bool ShouldRecordFailedSession(

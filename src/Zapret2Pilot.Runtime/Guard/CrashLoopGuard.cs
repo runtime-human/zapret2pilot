@@ -230,26 +230,6 @@ public sealed class CrashLoopGuard : ICrashLoopGuard
         }
     }
 
-    private DateTimeOffset? LastEventUtcLocked()
-    {
-        if (lastFailureUtc is null && lastSuccessUtc is null)
-        {
-            return null;
-        }
-
-        if (lastFailureUtc is null)
-        {
-            return lastSuccessUtc;
-        }
-
-        if (lastSuccessUtc is null)
-        {
-            return lastFailureUtc;
-        }
-
-        return lastFailureUtc > lastSuccessUtc ? lastFailureUtc : lastSuccessUtc;
-    }
-
     private static TimeSpan ComputeBackoff(in CrashLoopGuardOptions options, int consecutiveFailures)
     {
         if (consecutiveFailures <= 0)
