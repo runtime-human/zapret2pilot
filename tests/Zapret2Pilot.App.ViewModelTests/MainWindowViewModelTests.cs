@@ -3,8 +3,15 @@ using System.Reactive.Linq;
 using Xunit;
 using Zapret2Pilot.App.Navigation;
 using Zapret2Pilot.App.Shell;
+using Zapret2Pilot.App.Threading;
+using Zapret2Pilot.Runtime.Guard;
+using Zapret2Pilot.Runtime.Supervisor;
 
 namespace Zapret2Pilot.App.ViewModelTests;
+
+// Test method names deliberately use snake_case to make scenarios
+// readable in the test runner. Suppress CA1707 locally for this file.
+#pragma warning disable CA1707 // Identifiers should not contain underscores
 
 public sealed class MainWindowViewModelTests
 {
@@ -113,4 +120,31 @@ public sealed class MainWindowViewModelTests
 
         Assert.Equal("Демо: проверка сервисов использует mock-данные.", viewModel.LastAction);
     }
+
+    [Fact]
+    public static void StartBlocked_UpdatesLastAction()
+    {
+        NavigationRouter router = new(new NavigationPageFactory(), RouteId.Dashboard);
+        ImmediateUiScheduler scheduler = new();
+        using FakeRuntimeSupervisor fakeSupervisor = new();
+        MainWindowViewModel viewModel = new(router, scheduler, fakeSupervisor, logger: null);
+
+        RuntimeSupervisorState blockedState = new(
+            status: RuntimeSupervisorStatus.StartBlocked,
+            lastStartResult: null,
+            guardResult: new CrashLoopGuardResult(
+                isAllowed: false,
+                backoffRemaining: TimeSpan.FromSeconds(5),
+                consecutiveFailures: 1),
+            lastError: null,
+            timestamp: DateTimeOffset.UtcNow);
+
+        fakeSupervisor.Publish(blockedState);
+
+        Assert.Equal(
+            "Запуск отложен: слишком много падений. Повтор через 5 с.",
+            viewModel.LastAction);
+    }
 }
+
+#pragma warning restore CA1707 // Identifiers should not contain underscores
