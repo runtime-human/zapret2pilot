@@ -12,6 +12,7 @@ using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.State;
+using Zapret2Pilot.Runtime.Supervisor;
 
 namespace Zapret2Pilot.Runtime.Tests.DependencyInjection;
 
@@ -147,5 +148,47 @@ public sealed class RuntimeServiceCollectionExtensionsTests
         // timer and has no resources to dispose. A caller asking for
         // the generic IHostedService service must get a null result.
         Assert.Null(provider.GetService<IHostedService>());
+    }
+
+    [Fact]
+    public static async Task AddRuntimeSupervisorRegistersSupervisorAsHostedService()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+        using TemporaryDirectory directory = new();
+        string databasePath = Path.Combine(directory.DirectoryPath, "z2p.db");
+
+        using IHost host = Host.CreateDefaultBuilder()
+            .ConfigureServices(services =>
+            {
+                services.AddRuntimeKernelStateStore(databasePath);
+                services.AddRuntimeKernelWorker();
+                services.AddRuntimeProcessHost();
+                services.AddRuntimeHealthMonitor();
+                services.AddCrashLoopGuard();
+                services.AddRuntimeSupervisor();
+            })
+            .Build();
+
+        await host.StartAsync(cancellationToken);
+
+        try
+        {
+            IRuntimeSupervisor interfaceResolution = host.Services.GetRequiredService<IRuntimeSupervisor>();
+            RuntimeSupervisor concreteResolution = host.Services.GetRequiredService<RuntimeSupervisor>();
+
+            Assert.Same(interfaceResolution, concreteResolution);
+
+            System.Collections.Generic.IEnumerable<IHostedService> hostedServices =
+                host.Services.GetServices<IHostedService>();
+            IHostedService supervisorHosted = Assert.Single(hostedServices, s => s is RuntimeSupervisor);
+            Assert.Same(concreteResolution, supervisorHosted);
+        }
+        finally
+        {
+            await host.StopAsync(cancellationToken);
+        }
+
+        SqliteConnection.ClearAllPools();
     }
 }
