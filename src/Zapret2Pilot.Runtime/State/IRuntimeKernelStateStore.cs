@@ -49,9 +49,14 @@ public interface IRuntimeKernelStateStore
 
     /// <summary>
     /// Closes the session identified by <paramref name="sessionId"/>
-    /// as <see cref="RuntimeSessionState.Stopped"/> and resets the
-    /// singleton state row to <c>is_running = 0</c>,
-    /// <c>session_id = NULL</c>.
+    /// as <see cref="RuntimeSessionState.Stopped"/> and, only if the
+    /// singleton <c>runtime_state</c> row still points at that
+    /// session and is marked <c>is_running = 1</c>, resets it to
+    /// <c>is_running = 0</c>, <c>session_id = NULL</c>. The
+    /// conditional reset ensures that ending a historical session
+    /// (for example, a session that was already superseded by a
+    /// newer <see cref="StartSession"/>) does not clear the
+    /// currently active session from the singleton row.
     /// </summary>
     /// <param name="sessionId">Identifier of the session to close.</param>
     /// <exception cref="System.InvalidOperationException">
@@ -62,12 +67,18 @@ public interface IRuntimeKernelStateStore
 
     /// <summary>
     /// Closes the session identified by <paramref name="sessionId"/>
-    /// with the supplied terminal <paramref name="finalState"/> and
-    /// resets the singleton state row to <c>is_running = 0</c>,
-    /// <c>session_id = NULL</c>. Used by the health monitor to mark
-    /// a session as <see cref="RuntimeSessionState.Failed"/> on an
-    /// unexpected process exit; the single-argument overload closes
-    /// a session as <see cref="RuntimeSessionState.Stopped"/>.
+    /// with the supplied terminal <paramref name="finalState"/> and,
+    /// only if the singleton <c>runtime_state</c> row still points
+    /// at that session and is marked <c>is_running = 1</c>, resets
+    /// it to <c>is_running = 0</c>, <c>session_id = NULL</c>. The
+    /// conditional reset ensures that ending a historical session
+    /// (for example, a session that was already superseded by a
+    /// newer <see cref="StartSession"/>) does not clear the
+    /// currently active session from the singleton row. Used by the
+    /// health monitor to mark a session as
+    /// <see cref="RuntimeSessionState.Failed"/> on an unexpected
+    /// process exit; the single-argument overload closes a session
+    /// as <see cref="RuntimeSessionState.Stopped"/>.
     /// </summary>
     /// <param name="sessionId">Identifier of the session to close.</param>
     /// <param name="finalState">Terminal state to record

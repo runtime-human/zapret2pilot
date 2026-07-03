@@ -102,7 +102,7 @@ public sealed class RuntimeKernelStateStore : IRuntimeKernelStateStore
         }
 
         CloseSession(connection, transaction, sessionId.Value, nowText, finalStateText);
-        ClearRuntimeState(connection, transaction, nowText);
+        ClearRuntimeState(connection, transaction, sessionId.Value, nowText);
 
         transaction.Commit();
     }
@@ -293,6 +293,7 @@ public sealed class RuntimeKernelStateStore : IRuntimeKernelStateStore
     private static void ClearRuntimeState(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        string sessionIdValue,
         string updatedUtcText)
     {
         using SqliteCommand command = connection.CreateCommand();
@@ -303,8 +304,11 @@ public sealed class RuntimeKernelStateStore : IRuntimeKernelStateStore
             SET session_id = NULL,
                 is_running = 0,
                 updated_utc = $updatedUtc
-            WHERE id = 1;
+            WHERE id = 1
+              AND session_id = $sessionId
+              AND is_running = 1;
             """;
+        command.Parameters.AddWithValue("$sessionId", sessionIdValue);
         command.Parameters.AddWithValue("$updatedUtc", updatedUtcText);
 
         command.ExecuteNonQuery();

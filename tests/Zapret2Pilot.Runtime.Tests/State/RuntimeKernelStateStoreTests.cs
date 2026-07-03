@@ -286,6 +286,68 @@ public sealed class RuntimeKernelStateStoreTests
         Assert.NotNull(current);
         Assert.Equal(RuntimeSessionState.Active, current!.State);
     }
+
+    [Fact]
+    public static void EndHistoricalSession_DoesNotClearCurrentSession()
+    {
+        using TemporarySqliteDatabase database = new();
+        database.Initialize();
+
+        RuntimeKernelStateStore store = new(database.CreateFactory());
+        ProfileId profileId = new("profile-a");
+        RuntimePlanId firstPlan = new("plan-a");
+        RuntimePlanId secondPlan = new("plan-b");
+        RuntimePlanCacheKey firstKey = new("1".PadRight(64, '1'));
+        RuntimePlanCacheKey secondKey = new("2".PadRight(64, '2'));
+
+        RuntimeSessionRecord first = store.StartSession(profileId, firstPlan, firstKey);
+        RuntimeSessionRecord second = store.StartSession(profileId, secondPlan, secondKey);
+
+        // Starting the second session automatically ended the first.
+        // Ending the first session again must not clear runtime_state for second.
+        store.EndSession(first.Id);
+
+        RuntimeSessionRecord? current = store.GetCurrentSession();
+        Assert.NotNull(current);
+        Assert.Equal(second.Id, current!.Id);
+        Assert.Equal(RuntimeSessionState.Active, current.State);
+
+        IReadOnlyList<RuntimeSessionRecord> history = store.GetRecentSessions(10);
+        Assert.Equal(2, history.Count);
+        RuntimeSessionRecord firstStored = Assert.Single(history, r => r.Id == first.Id);
+        Assert.Equal(RuntimeSessionState.Stopped, firstStored.State);
+    }
+
+    [Fact]
+    public static void EndHistoricalSessionWithFailedState_DoesNotClearCurrentSession()
+    {
+        using TemporarySqliteDatabase database = new();
+        database.Initialize();
+
+        RuntimeKernelStateStore store = new(database.CreateFactory());
+        ProfileId profileId = new("profile-a");
+        RuntimePlanId firstPlan = new("plan-a");
+        RuntimePlanId secondPlan = new("plan-b");
+        RuntimePlanCacheKey firstKey = new("1".PadRight(64, '1'));
+        RuntimePlanCacheKey secondKey = new("2".PadRight(64, '2'));
+
+        RuntimeSessionRecord first = store.StartSession(profileId, firstPlan, firstKey);
+        RuntimeSessionRecord second = store.StartSession(profileId, secondPlan, secondKey);
+
+        // Ending an already-superseded historical session via the
+        // Failed overload must still leave the current session intact.
+        store.EndSession(first.Id, RuntimeSessionState.Failed);
+
+        RuntimeSessionRecord? current = store.GetCurrentSession();
+        Assert.NotNull(current);
+        Assert.Equal(second.Id, current!.Id);
+        Assert.Equal(RuntimeSessionState.Active, current.State);
+
+        IReadOnlyList<RuntimeSessionRecord> history = store.GetRecentSessions(10);
+        Assert.Equal(2, history.Count);
+        RuntimeSessionRecord firstStored = Assert.Single(history, r => r.Id == first.Id);
+        Assert.Equal(RuntimeSessionState.Failed, firstStored.State);
+    }
 }
 
 #pragma warning restore CA1707 // Identifiers should not contain underscores
