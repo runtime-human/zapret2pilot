@@ -76,7 +76,7 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// worker thread.
 /// </para>
 /// </remarks>
-public sealed class RuntimeProcessHost : IAsyncDisposable, IDisposable
+public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, IDisposable
 {
     /// <summary>
     /// Default <c>stopTimeout</c> applied when the caller does not

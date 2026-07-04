@@ -11,6 +11,7 @@ using Zapret2Pilot.Runtime.Locking;
 using Zapret2Pilot.Runtime.Ownership;
 using Zapret2Pilot.Runtime.Recovery;
 using Zapret2Pilot.Runtime.State;
+using Zapret2Pilot.Runtime.Supervisor;
 using Zapret2Pilot.Runtime.Transactions;
 using Zapret2Pilot.Runtime.Windows;
 using Zapret2Pilot.Runtime.Workspace;
@@ -128,6 +129,12 @@ public static class RuntimeServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<RuntimeProcessHost>>(),
                 sp.GetRequiredService<RuntimeKernelWorker>()));
 
+        // The supervisor depends on IRuntimeProcessHost, not on
+        // the concrete RuntimeProcessHost, so expose the same
+        // singleton under the abstraction as well.
+        services.AddSingleton<IRuntimeProcessHost>(
+            static sp => sp.GetRequiredService<RuntimeProcessHost>());
+
         return services;
     }
 
@@ -216,6 +223,46 @@ public static class RuntimeServiceCollectionExtensions
             static sp => new CrashLoopGuard(
                 sp.GetRequiredService<CrashLoopGuardOptions>(),
                 clock: null));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="RuntimeSupervisor"/> as a singleton in
+    /// the supplied <see cref="IServiceCollection"/>, both as its
+    /// concrete type, as <see cref="IRuntimeSupervisor"/> and as an
+    /// <see cref="IHostedService"/>. All three registrations resolve
+    /// to the same instance so the Generic Host starts and stops
+    /// the very same object the Application layer can inject
+    /// through <see cref="IRuntimeSupervisor"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This extension depends on the singletons registered by
+    /// <see cref="AddRuntimeProcessHost"/>,
+    /// <see cref="AddRuntimeHealthMonitor"/> and
+    /// <see cref="AddCrashLoopGuard"/>. Callers MUST register those
+    /// extensions first; the method does not register the process
+    /// host, the health monitor or the guard.
+    /// </para>
+    /// <para>
+    /// Registration is pure: the supervisor is constructed lazily
+    /// and the extension does not touch the filesystem, does not
+    /// start the supervisor and does not depend on any other
+    /// extension beyond the ones above.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The service collection to add to.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
+    public static IServiceCollection AddRuntimeSupervisor(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<RuntimeSupervisor>();
+        services.AddSingleton<IRuntimeSupervisor>(
+            static sp => sp.GetRequiredService<RuntimeSupervisor>());
+        services.AddSingleton<IHostedService>(
+            static sp => sp.GetRequiredService<RuntimeSupervisor>());
 
         return services;
     }

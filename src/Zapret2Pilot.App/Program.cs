@@ -67,6 +67,7 @@ internal static class AppHost
                 services.AddRuntimeProcessHost();
                 services.AddRuntimeHealthMonitor();
                 services.AddCrashLoopGuard();
+                services.AddRuntimeSupervisor();
                 services.AddSingleton<MainWindowViewModel>();
                 services.AddSingleton<MainWindow>();
             })
