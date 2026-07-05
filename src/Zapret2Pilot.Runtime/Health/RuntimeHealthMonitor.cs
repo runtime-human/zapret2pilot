@@ -15,29 +15,28 @@ namespace Zapret2Pilot.Runtime.Health;
 /// Generic-Host <see cref="IHostedService"/> that periodically
 /// probes the runtime process owned by <see cref="RuntimeProcessHost"/>
 /// and publishes immutable <see cref="RuntimeHealthSnapshot"/>
-/// values. The probe body itself runs on the dedicated
-/// <see cref="RuntimeKernelWorker"/> thread so every read of the
-/// host's process state happens on the canonical kernel thread.
+/// values.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The monitor owns a <see cref="PeriodicTimer"/> driven by an
 /// injected <see cref="TimeProvider"/>. The loop runs on a
 /// dedicated <see cref="Task"/> scheduled via
-/// <see cref="Task.Run(Action)"/>; on every tick the loop enqueues
-/// a probe onto the worker, awaits the worker's task, and only then
-/// pushes the freshly computed snapshot through the
-/// <see cref="BehaviorSubject{T}"/>. Because the
-/// <c>OnNext</c> call happens on the monitor's loop task, a slow or
-/// throwing subscriber cannot fault the kernel worker.
+/// <see cref="Task.Run(Action)"/>; on every tick the loop invokes
+/// the probe body, reads the freshly computed snapshot from
+/// <see cref="nextSnapshot"/>, and pushes it through the
+/// <see cref="BehaviorSubject{T}"/>. The probe body and the
+/// <c>OnNext</c> call happen on the monitor's loop task, so a slow
+/// or throwing subscriber cannot fault any other component and
+/// cannot influence the next probe tick.
 /// </para>
 /// <para>
 /// Probes are coalesced: only one probe is allowed to be in flight
 /// at a time. If a tick fires while a probe is pending, the loop
-/// drops the tick (it does not enqueue a second probe). The
-/// coalescing flag is manipulated via
+/// drops the tick (it does not run a second probe). The coalescing
+/// flag is manipulated via
 /// <see cref="Interlocked.CompareExchange(ref int, int, int)"/> so
-/// the loop is safe under any interleaving with the worker thread.
+/// the loop is safe under any interleaving.
 /// </para>
 /// <para>
 /// A transition into <see cref="RuntimeHealthState.Exited"/> is
@@ -68,7 +67,6 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     internal static readonly TimeSpan DefaultProbeInterval = TimeSpan.FromMilliseconds(500);
 
     private readonly RuntimeProcessHost host;
-    private readonly RuntimeKernelWorker worker;
     private readonly IRuntimeKernelStateStore stateStore;
     private readonly ILogger<RuntimeHealthMonitor> logger;
     private readonly TimeProvider timeProvider;
@@ -81,10 +79,14 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     private Task? loopTask;
     private int probePending; // 0 = idle, 1 = probe in flight
 
-    // Cross-thread handoff slot: the worker writes the freshly computed
-    // snapshot, the loop task reads it after `await probeTask`. The
-    // await provides the happens-before edge that makes the write
-    // visible to the read without an explicit lock or barrier.
+    // Cross-thread handoff slot: the probe body writes the freshly
+    // computed snapshot, the loop task reads it after the probe
+    // returns. The probe / OnNext sequencing guarantees the write
+    // is visible to the read on the same task without an explicit
+    // lock or barrier. Keeping the snapshot in a field (rather than
+    // publishing directly from the probe body) lets the
+    // <c>OnNext</c> call run on the loop task, so a throwing
+    // subscriber cannot influence the next probe tick.
     private RuntimeHealthSnapshot? nextSnapshot;
     private int stoppingFlag;
     private bool disposed;
@@ -94,8 +96,6 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     /// </summary>
     /// <param name="host">Runtime process host that owns the live
     /// process to probe.</param>
-    /// <param name="worker">Dedicated kernel worker thread used to
-    /// run the probe body.</param>
     /// <param name="stateStore">Persistent kernel state store used
     /// to mark sessions as <c>Failed</c>.</param>
     /// <param name="logger">Logger that receives structured events
@@ -107,14 +107,12 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     /// <see cref="DefaultProbeInterval"/> when <c>null</c>.</param>
     public RuntimeHealthMonitor(
         RuntimeProcessHost host,
-        RuntimeKernelWorker worker,
         IRuntimeKernelStateStore stateStore,
         ILogger<RuntimeHealthMonitor> logger,
         TimeProvider? timeProvider = null,
         TimeSpan? probeInterval = null)
     {
         ArgumentNullException.ThrowIfNull(host, nameof(host));
-        ArgumentNullException.ThrowIfNull(worker, nameof(worker));
         ArgumentNullException.ThrowIfNull(stateStore, nameof(stateStore));
         ArgumentNullException.ThrowIfNull(logger, nameof(logger));
 
@@ -128,7 +126,6 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
         }
 
         this.host = host;
-        this.worker = worker;
         this.stateStore = stateStore;
         this.logger = logger;
         this.timeProvider = timeProvider ?? TimeProvider.System;
@@ -254,9 +251,9 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     /// <summary>
     /// Probe-loop body. Runs on a dedicated task scheduled by
     /// <see cref="StartAsync"/>; on every <see cref="PeriodicTimer"/>
-    /// tick it enqueues a probe onto the worker, awaits the
-    /// worker's task, and pushes the freshly computed snapshot
-    /// through the <see cref="BehaviorSubject{T}"/>.
+    /// tick it invokes <see cref="ProbeBody"/>, reads the freshly
+    /// computed snapshot from <see cref="nextSnapshot"/>, and pushes
+    /// it through the <see cref="BehaviorSubject{T}"/>.
     /// </summary>
     /// <param name="token">Cancellation token that combines the
     /// monitor's internal <see cref="CancellationTokenSource"/>
@@ -290,16 +287,16 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
                 }
 
                 // Clear any stale snapshot from a previous iteration
-                // before enqueuing the new probe. The probe will
-                // overwrite the field synchronously, and the await
-                // below provides the happens-before relationship
-                // that makes the write visible to this loop.
+                // before running the new probe. The probe will
+                // overwrite the field synchronously, and the
+                // program-order on the loop task makes the write
+                // visible to the read below without an explicit
+                // barrier.
                 nextSnapshot = null;
 
                 try
                 {
-                    Task probeTask = worker.Enqueue(ProbeOnWorkerAsync, token);
-                    await probeTask.ConfigureAwait(false);
+                    ProbeBody(token);
 
                     RuntimeHealthSnapshot? snapshot = nextSnapshot;
                     if (snapshot is not null)
@@ -315,7 +312,7 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
                 {
                     logger.LogError(
                         ex,
-                        "RuntimeHealthMonitor: probe enqueue or execution failed.");
+                        "RuntimeHealthMonitor: probe body failed.");
                 }
                 finally
                 {
@@ -330,23 +327,21 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
     }
 
     /// <summary>
-    /// Probe body. Runs on the dedicated <see cref="RuntimeKernelWorker"/>
-    /// thread. Computes the snapshot synchronously and records a
-    /// failed session if the transition into <see cref="RuntimeHealthState.Exited"/>
-    /// is observed. The snapshot is stored in <see cref="nextSnapshot"/>
-    /// and the <c>OnNext</c> call is made by the monitor loop on its
-    /// own task so a slow or throwing subscriber cannot block the
-    /// worker.
+    /// Probe body. Runs synchronously on the monitor's loop task.
+    /// Computes the snapshot and records a failed session if the
+    /// transition into <see cref="RuntimeHealthState.Exited"/> is
+    /// observed. The snapshot is stored in <see cref="nextSnapshot"/>
+    /// and the <c>OnNext</c> call is made by the monitor loop after
+    /// the probe returns, so a slow or throwing subscriber cannot
+    /// block the probe.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token observed
     /// by the probe body.</param>
-    /// <returns>A completed <see cref="Task"/>; the work is fully
-    /// synchronous, so the method is not <c>async</c>.</returns>
-    private Task ProbeOnWorkerAsync(CancellationToken cancellationToken)
+    private void ProbeBody(CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         Process? process = host.RunningProcess;
@@ -392,7 +387,6 @@ public sealed class RuntimeHealthMonitor : IHostedService, IRuntimeHealthMonitor
         }
 
         nextSnapshot = next;
-        return Task.CompletedTask;
     }
 
     private bool IsLoopCancellationRequested()

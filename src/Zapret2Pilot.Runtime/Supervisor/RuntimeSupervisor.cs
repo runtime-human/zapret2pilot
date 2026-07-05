@@ -1,65 +1,64 @@
 using System;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Zapret2Pilot.Core.Results;
-using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
+using Zapret2Pilot.Runtime.Kernel;
 
 namespace Zapret2Pilot.Runtime.Supervisor;
 
 /// <summary>
-/// <see cref="IRuntimeSupervisor"/> implementation. Owns the
-/// runtime start / stop state machine, integrates
-/// <see cref="ICrashLoopGuard"/> with
-/// <see cref="IRuntimeProcessHost"/> and
-/// <see cref="IRuntimeHealthMonitor"/>, and publishes an immutable
-/// <see cref="RuntimeSupervisorState"/> on every transition through
-/// <see cref="StateChanged"/>.
+/// <see cref="IRuntimeSupervisor"/> implementation. As of milestone
+/// 0.0.24 the supervisor is a pure façade over
+/// <see cref="RuntimeKernelLoop"/>: the loop owns the state
+/// machine, the guard and the lifecycle command queue; the
+/// supervisor is a thin adapter that:
+/// <list type="bullet">
+///   <item>Translates the public <see cref="StartAsync"/> /
+///         <see cref="StopAsync"/> calls into
+///         <see cref="RuntimeKernelCommand"/>s and forwards them to
+///         the loop.</item>
+///   <item>Awaits the loop's projected
+///         <see cref="RuntimeKernelState"/> observable until the
+///         terminal status (<see cref="RuntimeSupervisorStatus.Running"/>,
+///         <see cref="RuntimeSupervisorStatus.Stopped"/> or
+///         <see cref="RuntimeSupervisorStatus.StartBlocked"/>) is
+///         reached and returns the mapped result.</item>
+///   <item>Implements <see cref="IHostedService"/> and bridges
+///         <see cref="IRuntimeHealthMonitor.SnapshotChanged"/> into
+///         <see cref="RuntimeKernelCommand.Observation"/> commands
+///         so the kernel can react to health transitions.</item>
+/// </list>
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>State machine.</b> The supervisor walks through
-/// <see cref="RuntimeSupervisorStatus"/> values as follows:
-/// <c>Stopped</c> → <c>Starting</c> → <c>Running</c> →
-/// <c>Stopping</c> → <c>Stopped</c>, with two off-path states:
-/// <c>StartBlocked</c> (the guard refused the restart) and
-/// <c>Stopping</c> triggered by a <see cref="RuntimeHealthState.Exited"/>
-/// health snapshot.
+/// <b>No own state machine.</b> The supervisor does not own a
+/// <c>BehaviorSubject</c> or any other in-process state machine
+/// of its own; every transition is sourced from the loop. The
+/// <see cref="StateChanged"/> observable is a projection of
+/// <see cref="RuntimeKernelLoop.StateChanged"/>.
 /// </para>
 /// <para>
-/// <b>Guard integration.</b> Every <see cref="StartAsync"/> call
-/// is preceded by <see cref="ICrashLoopGuard.Check"/>. A guard
-/// block returns a typed failure with a code of
-/// <c>RuntimePermanentLockout</c> or
-/// <c>RuntimeStartBlockedByCrashLoopGuard</c>. A failed start calls
-/// <see cref="ICrashLoopGuard.RecordFailure"/>. A transition into
-/// <see cref="RuntimeHealthState.Healthy"/> calls
-/// <see cref="ICrashLoopGuard.RecordSuccess"/>; a transition into
-/// <see cref="RuntimeHealthState.Exited"/> calls
-/// <see cref="ICrashLoopGuard.RecordFailure"/> and triggers an
-/// automatic <see cref="StopAsync"/>.
-/// </para>
-/// <para>
-/// <b>Concurrency.</b> The supervisor uses a
-/// <see cref="SemaphoreSlim"/> to serialise
-/// <see cref="StartAsync"/> and <see cref="StopAsync"/>. The health
-/// snapshot handler also takes the semaphore, briefly, before
-/// releasing it and (when needed) calling
-/// <see cref="StopAsync"/>. The semaphore is never held across an
-/// <c>await</c> of a public state-mutating method, which keeps
-/// deadlocks structurally impossible.
+/// <b>Concurrency.</b> The supervisor uses a private
+/// <see cref="SemaphoreSlim"/> to serialise concurrent
+/// <see cref="StartAsync"/> and <see cref="StopAsync"/> calls. The
+/// semaphore is never held across the call to the loop's blocking
+/// <c>await</c> on the projected observable, so the critical
+/// section is short and deadlocks are structurally impossible.
 /// </para>
 /// <para>
 /// <b>Hosted-service contract.</b> The supervisor implements
-/// <see cref="IHostedService"/>. <see cref="StartAsync"/>
-/// subscribes to <see cref="IRuntimeHealthMonitor.SnapshotChanged"/>;
-/// <see cref="StopAsync"/> unsubscribes and then performs a final
+/// <see cref="IHostedService"/>. <c>IHostedService.StartAsync</c>
+/// subscribes to <see cref="IRuntimeHealthMonitor.SnapshotChanged"/>
+/// and forwards every snapshot as an
+/// <see cref="RuntimeKernelCommand.Observation"/> command.
+/// <c>IHostedService.StopAsync</c> disposes the subscription and
+/// then performs a final
 /// <see cref="StopAsync(CancellationToken)"/>. <see cref="Dispose"/>
 /// is idempotent and tears down the supervisor even if the hosted
 /// service was never started.
@@ -67,34 +66,26 @@ namespace Zapret2Pilot.Runtime.Supervisor;
 /// </remarks>
 public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDisposable
 {
-    private readonly IRuntimeProcessHost host;
+    private readonly RuntimeKernelLoop loop;
     private readonly IRuntimeHealthMonitor healthMonitor;
-    private readonly ICrashLoopGuard guard;
     private readonly ILogger<RuntimeSupervisor> logger;
     private readonly TimeProvider timeProvider;
 
-    private readonly BehaviorSubject<RuntimeSupervisorState> stateSubject;
     private readonly SemaphoreSlim startStopLock = new(1, 1);
-    private readonly object subscriptionLock = new();
     private IDisposable? healthSubscription;
-    private RuntimeHealthState lastHealthState = RuntimeHealthState.Unknown;
-    private bool disposed;
+    private int disposed;
 
     /// <summary>
-    /// Creates a new <see cref="RuntimeSupervisor"/>.
+    /// Creates a new <see cref="RuntimeSupervisor"/> façade.
     /// </summary>
-    /// <param name="host">
-    /// Process host that performs the actual start / stop pipeline.
-    /// Must not be <c>null</c>.
+    /// <param name="loop">
+    /// Kernel loop that owns the lifecycle state machine, the
+    /// guard and the command queue. Must not be <c>null</c>.
     /// </param>
     /// <param name="healthMonitor">
     /// Health monitor whose <see cref="IRuntimeHealthMonitor.SnapshotChanged"/>
     /// observable drives the supervisor's automatic
     /// success / failure recording. Must not be <c>null</c>.
-    /// </param>
-    /// <param name="guard">
-    /// Crash-loop guard consulted on every <see cref="StartAsync"/>
-    /// call. Must not be <c>null</c>.
     /// </param>
     /// <param name="logger">
     /// Logger that receives structured events for guard blocks,
@@ -107,54 +98,42 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     /// <c>null</c>, <see cref="TimeProvider.System"/> is used.
     /// </param>
     /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="host"/>,
-    /// <paramref name="healthMonitor"/>, <paramref name="guard"/>
-    /// or <paramref name="logger"/> is <c>null</c>.
+    /// Thrown when <paramref name="loop"/>,
+    /// <paramref name="healthMonitor"/> or <paramref name="logger"/>
+    /// is <c>null</c>.
     /// </exception>
     public RuntimeSupervisor(
-        IRuntimeProcessHost host,
+        RuntimeKernelLoop loop,
         IRuntimeHealthMonitor healthMonitor,
-        ICrashLoopGuard guard,
         ILogger<RuntimeSupervisor> logger,
         TimeProvider? timeProvider = null)
     {
-        ArgumentNullException.ThrowIfNull(host, nameof(host));
+        ArgumentNullException.ThrowIfNull(loop, nameof(loop));
         ArgumentNullException.ThrowIfNull(healthMonitor, nameof(healthMonitor));
-        ArgumentNullException.ThrowIfNull(guard, nameof(guard));
         ArgumentNullException.ThrowIfNull(logger, nameof(logger));
 
-        this.host = host;
+        this.loop = loop;
         this.healthMonitor = healthMonitor;
-        this.guard = guard;
         this.logger = logger;
         this.timeProvider = timeProvider ?? TimeProvider.System;
-        this.stateSubject = new BehaviorSubject<RuntimeSupervisorState>(
-            new RuntimeSupervisorState(
-                status: RuntimeSupervisorStatus.Stopped,
-                lastStartResult: null,
-                guardResult: null,
-                lastError: null,
-                timestamp: this.timeProvider.GetUtcNow()));
     }
 
     /// <inheritdoc />
-    public RuntimeSupervisorState CurrentState => stateSubject.Value;
+    public RuntimeSupervisorState CurrentState => MapToSupervisorState(loop.CurrentState);
 
     /// <inheritdoc />
-    public IObservable<RuntimeSupervisorState> StateChanged => stateSubject.AsObservable();
+    public IObservable<RuntimeSupervisorState> StateChanged =>
+        loop.StateChanged.Select(MapToSupervisorState);
 
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
 
-        lock (subscriptionLock)
+        if (healthSubscription is null)
         {
-            if (healthSubscription is null)
-            {
-                healthSubscription = healthMonitor.SnapshotChanged.Subscribe(OnHealthSnapshot);
-            }
+            healthSubscription = healthMonitor.SnapshotChanged.Subscribe(OnHealthSnapshot);
         }
 
         return Task.CompletedTask;
@@ -176,14 +155,7 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     /// </param>
     async Task IHostedService.StopAsync(CancellationToken cancellationToken)
     {
-        IDisposable? subscription;
-        lock (subscriptionLock)
-        {
-            subscription = healthSubscription;
-            healthSubscription = null;
-        }
-
-        subscription?.Dispose();
+        DisposeHealthSubscription();
 
         try
         {
@@ -198,21 +170,12 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     /// <inheritdoc />
     public void Dispose()
     {
-        if (disposed)
+        if (Interlocked.Exchange(ref disposed, 1) != 0)
         {
             return;
         }
 
-        disposed = true;
-
-        IDisposable? subscription;
-        lock (subscriptionLock)
-        {
-            subscription = healthSubscription;
-            healthSubscription = null;
-        }
-
-        subscription?.Dispose();
+        DisposeHealthSubscription();
 
         try
         {
@@ -224,9 +187,8 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
         }
         finally
         {
+            loop.Dispose();
             startStopLock.Dispose();
-            stateSubject.OnCompleted();
-            stateSubject.Dispose();
         }
     }
 
@@ -235,14 +197,14 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
         RuntimeProcessStartContext context,
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         ArgumentNullException.ThrowIfNull(context, nameof(context));
 
         await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        bool lockHeld = true;
         try
         {
-            RuntimeSupervisorStatus current = CurrentState.Status;
+            RuntimeKernelState initial = loop.CurrentState;
+            RuntimeSupervisorStatus current = MapStatus(initial.Status);
             if (current is RuntimeSupervisorStatus.Running
                 or RuntimeSupervisorStatus.Starting
                 or RuntimeSupervisorStatus.Stopping)
@@ -255,314 +217,292 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
                 return Result.Failure<RuntimeProcessHostResult>(alreadyRunning);
             }
 
-            // Guard check: a guard block short-circuits the start
-            // before any work is forwarded to the process host. The
-            // published state carries the guard verdict so the UI
-            // can show the right message.
-            CrashLoopGuardResult guardResult = guard.Check();
-            if (!guardResult.IsAllowed)
+            bool accepted = await loop
+                .PostCommandAsync(
+                    new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!accepted)
             {
-                bool isPermanentLockout = guardResult.ConsecutiveFailures
-                    > CurrentGuardMaxConsecutiveFailures();
-                ErrorInfo guardError = isPermanentLockout
-                    ? new ErrorInfo(
-                        code: "RuntimePermanentLockout",
-                        message: "Permanent lockout: the runtime has crashed too many times. Restart the application to recover.",
-                        severity: ErrorSeverity.Error,
-                        category: ErrorCategory.Runtime)
-                    : new ErrorInfo(
-                        code: "RuntimeStartBlockedByCrashLoopGuard",
-                        message: guardResult.BackoffRemaining is { } backoff
-                            ? $"Start blocked by the crash-loop guard. Retry in {backoff.TotalSeconds:F0} s."
-                            : "Start blocked by the crash-loop guard.",
-                        severity: ErrorSeverity.Warning,
-                        category: ErrorCategory.Runtime);
-
-                logger.LogWarning(
-                    "RuntimeSupervisor: start blocked by the crash-loop guard. Code={Code} ConsecutiveFailures={ConsecutiveFailures} BackoffRemainingSeconds={BackoffSeconds}",
-                    guardError.Code,
-                    guardResult.ConsecutiveFailures,
-                    guardResult.BackoffRemaining?.TotalSeconds ?? -1);
-
-                PublishState(new RuntimeSupervisorState(
-                    status: RuntimeSupervisorStatus.StartBlocked,
-                    lastStartResult: CurrentState.LastStartResult,
-                    guardResult: guardResult,
-                    lastError: guardError,
-                    timestamp: timeProvider.GetUtcNow()));
-
-                return Result.Failure<RuntimeProcessHostResult>(guardError);
+                ErrorInfo error = new(
+                    code: "RuntimeKernelLoopNotAcceptingCommands",
+                    message: "The runtime kernel loop is not accepting new commands.",
+                    severity: ErrorSeverity.Error,
+                    category: ErrorCategory.Runtime);
+                return Result.Failure<RuntimeProcessHostResult>(error);
             }
 
-            // Move into Starting before releasing the lock. The
-            // actual host.StartAsync runs without the lock to keep
-            // the critical section short and to allow other
-            // observers (e.g. the health monitor) to see the
-            // transition into Starting promptly.
-            PublishState(new RuntimeSupervisorState(
-                status: RuntimeSupervisorStatus.Starting,
-                lastStartResult: CurrentState.LastStartResult,
-                guardResult: guardResult,
-                lastError: null,
-                timestamp: timeProvider.GetUtcNow()));
+            return await AwaitStartResultAsync(initial, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            if (lockHeld)
-            {
-                startStopLock.Release();
-                lockHeld = false;
-            }
-        }
-
-        // Outside the lock: the host call can take arbitrary time.
-        Result<RuntimeProcessHostResult> hostResult = await host
-            .StartAsync(context, cancellationToken)
-            .ConfigureAwait(false);
-
-        await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        lockHeld = true;
-        try
-        {
-            if (hostResult.IsFailure)
-            {
-                guard.RecordFailure();
-                ErrorInfo hostError = hostResult.Error;
-                logger.LogError(
-                    "RuntimeSupervisor: host start failed. Code={Code} Message={Message}",
-                    hostError.Code,
-                    hostError.Message);
-
-                PublishState(new RuntimeSupervisorState(
-                    status: RuntimeSupervisorStatus.Stopped,
-                    lastStartResult: null,
-                    guardResult: CurrentState.GuardResult,
-                    lastError: hostError,
-                    timestamp: timeProvider.GetUtcNow()));
-
-                return hostResult;
-            }
-
-            PublishState(new RuntimeSupervisorState(
-                status: RuntimeSupervisorStatus.Running,
-                lastStartResult: hostResult.Value,
-                guardResult: CurrentState.GuardResult,
-                lastError: null,
-                timestamp: timeProvider.GetUtcNow()));
-
-            return hostResult;
-        }
-        finally
-        {
-            if (lockHeld)
-            {
-                startStopLock.Release();
-            }
+            startStopLock.Release();
         }
     }
 
     /// <inheritdoc />
     public async Task<Result<Unit>> StopAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
 
         await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        bool lockHeld = true;
-        bool alreadyStopping = false;
-        ErrorInfo? preservedLastError = null;
-        RuntimeSupervisorStatus current;
         try
         {
-            current = CurrentState.Status;
+            RuntimeKernelState initial = loop.CurrentState;
+            RuntimeSupervisorStatus current = MapStatus(initial.Status);
             if (current is RuntimeSupervisorStatus.Stopped or RuntimeSupervisorStatus.StartBlocked)
             {
                 // Idempotent no-op for an idle / guard-blocked
-                // supervisor. The published state is re-asserted
-                // only when the carryover values changed.
-                RuntimeSupervisorState resolved = new(
-                    status: RuntimeSupervisorStatus.Stopped,
-                    lastStartResult: null,
-                    guardResult: CurrentState.GuardResult,
-                    lastError: null,
-                    timestamp: timeProvider.GetUtcNow());
-                PublishState(resolved);
+                // supervisor. The loop has already published the
+                // terminal Stopped snapshot.
                 return Result.Success(Unit.Instance);
             }
 
-            if (current is RuntimeSupervisorStatus.Stopping)
-            {
-                // The status is already Stopping — typically because
-                // the Exited health-snapshot handler published the
-                // transition and queued this StopAsync call. Do not
-                // re-publish Stopping and do not short-circuit: the
-                // host-stop pipeline and the terminal Stopped
-                // snapshot must still be driven so callers waiting
-                // for the final transition can complete. The
-                // startStopLock serialises concurrent callers, so
-                // by the time a second StopAsync acquires the
-                // semaphore the first one will have already
-                // published Stopped and the idempotent branch above
-                // will handle it.
-                alreadyStopping = true;
-                preservedLastError = CurrentState.LastError;
-            }
-            else
-            {
-                PublishState(new RuntimeSupervisorState(
-                    status: RuntimeSupervisorStatus.Stopping,
-                    lastStartResult: CurrentState.LastStartResult,
-                    guardResult: CurrentState.GuardResult,
-                    lastError: null,
-                    timestamp: timeProvider.GetUtcNow()));
-            }
-        }
-        finally
-        {
-            if (lockHeld)
-            {
-                startStopLock.Release();
-                lockHeld = false;
-            }
-        }
+            bool accepted = await loop
+                .PostCommandAsync(
+                    new RuntimeKernelCommand.Stop(
+                        RuntimeOperationId.New(),
+                        "User-initiated stop"),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-        Result<Unit> stopResult = await host.StopAsync(cancellationToken).ConfigureAwait(false);
-
-        await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        lockHeld = true;
-        try
-        {
-            // When the stop was initiated automatically from the
-            // Exited handler the Stopping snapshot already carried a
-            // meaningful LastError. Preserve it on the terminal
-            // Stopped publish so the reason for the unexpected
-            // exit is not lost. For user-initiated stops the normal
-            // host-stop result wins.
-            ErrorInfo? lastError = alreadyStopping && preservedLastError is not null
-                ? preservedLastError
-                : (stopResult.IsFailure ? stopResult.Error : null);
-            RuntimeSupervisorState resolved = new(
-                status: RuntimeSupervisorStatus.Stopped,
-                lastStartResult: null,
-                guardResult: CurrentState.GuardResult,
-                lastError: lastError,
-                timestamp: timeProvider.GetUtcNow());
-            PublishState(resolved);
-            return stopResult;
-        }
-        finally
-        {
-            if (lockHeld)
+            if (!accepted)
             {
-                startStopLock.Release();
-            }
-        }
-    }
-
-    /// <summary>
-    /// Health-snapshot handler. The handler runs on the
-    /// <see cref="IRuntimeHealthMonitor"/>'s publishing thread, so
-    /// the supervisor must serialise access to its own state and
-    /// release the lock before invoking <see cref="StopAsync"/>
-    /// (re-entering the semaphore would deadlock).
-    /// </summary>
-    /// <param name="snapshot">Newly published health snapshot.</param>
-    private void OnHealthSnapshot(RuntimeHealthSnapshot snapshot)
-    {
-        if (disposed)
-        {
-            return;
-        }
-
-        startStopLock.Wait();
-        try
-        {
-            RuntimeSupervisorState current = CurrentState;
-            RuntimeHealthState previous = lastHealthState;
-            lastHealthState = snapshot.State;
-
-            if (snapshot.State == RuntimeHealthState.Healthy
-                && previous != RuntimeHealthState.Healthy)
-            {
-                guard.RecordSuccess();
-                if (current.Status is RuntimeSupervisorStatus.Starting
-                    or RuntimeSupervisorStatus.Running)
-                {
-                    PublishState(current with
-                    {
-                        Status = RuntimeSupervisorStatus.Running,
-                        Timestamp = timeProvider.GetUtcNow(),
-                        LastError = null,
-                    });
-                }
-                return;
+                // The loop rejected the command (typically because
+                // it is being torn down). Treat this as a
+                // best-effort no-op.
+                return Result.Success(Unit.Instance);
             }
 
-            if (snapshot.State == RuntimeHealthState.Exited
-                && previous != RuntimeHealthState.Exited
-                && (current.Status is RuntimeSupervisorStatus.Running
-                    or RuntimeSupervisorStatus.Starting))
-            {
-                guard.RecordFailure();
-                logger.LogWarning(
-                    "RuntimeSupervisor: health monitor reported Exited; recording a failure and stopping the runtime.");
-
-                PublishState(current with
-                {
-                    Status = RuntimeSupervisorStatus.Stopping,
-                    Timestamp = timeProvider.GetUtcNow(),
-                    LastError = new ErrorInfo(
-                        code: "RuntimeProcessExitedUnexpectedly",
-                        message: "The runtime process exited unexpectedly.",
-                        severity: ErrorSeverity.Error,
-                        category: ErrorCategory.Runtime),
-                });
-            }
+            return await AwaitStopResultAsync(initial, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             startStopLock.Release();
         }
+    }
 
-        // After releasing the lock, drive the automatic stop when
-        // the health snapshot reported an unexpected exit. Calling
-        // StopAsync while holding the semaphore would deadlock, so
-        // the trigger is queued up here for execution outside the
-        // critical section.
-        if (!disposed && CurrentState.Status == RuntimeSupervisorStatus.Stopping)
+    /// <summary>
+    /// Health-snapshot handler. The handler runs on the
+    /// <see cref="IRuntimeHealthMonitor"/>'s publishing thread,
+    /// so the snapshot is forwarded to the loop as an
+    /// <see cref="RuntimeKernelCommand.Observation"/> for
+    /// processing on the kernel thread. The loop owns all
+    /// guard and state transitions; the supervisor's only
+    /// responsibility is to bridge the observable.
+    /// </summary>
+    /// <param name="snapshot">Newly published health snapshot.</param>
+    private void OnHealthSnapshot(RuntimeHealthSnapshot snapshot)
+    {
+        if (Volatile.Read(ref disposed) != 0)
         {
-            _ = StopAsync(CancellationToken.None);
+            return;
+        }
+
+        try
+        {
+            // Best-effort post: if the loop has stopped accepting
+            // commands we silently drop the snapshot. The kernel
+            // thread is the only state mutator, so we never
+            // attempt to mutate state from this thread directly.
+            // AsTask() converts the returned ValueTask to a Task
+            // so the discard satisfies CA2012; the operation
+            // itself still runs to completion on the kernel loop
+            // thread regardless of whether the Task is observed.
+            _ = loop.PostCommandAsync(
+                new RuntimeKernelCommand.Observation(RuntimeOperationId.New(), snapshot),
+                CancellationToken.None).AsTask();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "RuntimeSupervisor: failed to forward a health snapshot to the kernel loop.");
         }
     }
 
     /// <summary>
-    /// Publishes a new <see cref="RuntimeSupervisorState"/> snapshot
-    /// to subscribers. The publish is best-effort: a slow or
-    /// throwing subscriber cannot fault the supervisor, because the
-    /// <see cref="BehaviorSubject{T}"/> catches observer
-    /// exceptions in the same way every other Rx helper does.
+    /// Awaits the projected kernel observable until the
+    /// supervisor reaches one of the start terminal states
+    /// (<see cref="RuntimeSupervisorStatus.Running"/>,
+    /// <see cref="RuntimeSupervisorStatus.Stopped"/> or
+    /// <see cref="RuntimeSupervisorStatus.StartBlocked"/>) and
+    /// returns the mapped result.
     /// </summary>
-    /// <param name="state">Snapshot to publish.</param>
-    private void PublishState(RuntimeSupervisorState state)
+    /// <param name="initial">
+    /// State captured before the start command was posted; used
+    /// as the baseline so the projection does not race against
+    /// a stale in-flight terminal state.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    private async Task<Result<RuntimeProcessHostResult>> AwaitStartResultAsync(
+        RuntimeKernelState initial,
+        CancellationToken cancellationToken)
     {
-        stateSubject.OnNext(state);
+        TaskCompletionSource<RuntimeKernelState> tcs = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        // The kernel's StateChanged is backed by a BehaviorSubject
+        // observed on the task pool, so a new subscription
+        // immediately receives the latest published state. The
+        // initial state of a fresh loop is Stopped (which is in
+        // IsStartTerminal), so without the generation filter the
+        // subscription would resolve the TCS with the baseline
+        // snapshot before the kernel has even processed the
+        // Start command. Restricting to states with a strictly
+        // newer generation than the captured baseline makes the
+        // await deterministic.
+        using IDisposable subscription = loop.StateChanged
+            .Where(state =>
+                state.Generation.Value > initial.Generation.Value
+                && IsStartTerminal(state.Status))
+            .Subscribe(
+                state => tcs.TrySetResult(state),
+                ex => tcs.TrySetException(ex));
+
+        RuntimeKernelState terminal;
+        try
+        {
+            terminal = await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+
+        if (terminal.Status == RuntimeKernelStatus.Running)
+        {
+            if (terminal.LastStartResult is { } payload)
+            {
+                return Result.Success(payload);
+            }
+
+            // The reducer should always carry the start payload
+            // through to a Running state, but defend against a
+            // misshaped kernel state.
+            ErrorInfo error = new(
+                code: "RuntimeStartResultMissing",
+                message: "The runtime reached Running without an attached start result.",
+                severity: ErrorSeverity.Error,
+                category: ErrorCategory.Runtime);
+            return Result.Failure<RuntimeProcessHostResult>(error);
+        }
+
+        // StartBlocked or Stopped (host failure) — surface the
+        // kernel's LastError. The snapshot carries either a guard
+        // block message or a host failure message verbatim.
+        if (terminal.LastError is { } lastError)
+        {
+            return Result.Failure<RuntimeProcessHostResult>(lastError);
+        }
+
+        ErrorInfo unknown = new(
+            code: "RuntimeStartFailed",
+            message: "The runtime start did not reach Running and no error was reported.",
+            severity: ErrorSeverity.Error,
+            category: ErrorCategory.Runtime);
+        return Result.Failure<RuntimeProcessHostResult>(unknown);
     }
 
     /// <summary>
-    /// Returns the configured
-    /// <see cref="CrashLoopGuardOptions.MaxConsecutiveFailures"/>
-    /// when the guard exposes the option, or
-    /// <see cref="CrashLoopGuardOptions.DefaultMaxConsecutiveFailures"/>
-    /// as a safe fallback. Used to discriminate a temporary backoff
-    /// from a permanent lockout without having to introspect the
-    /// guard's private counter.
+    /// Awaits the projected kernel observable until the
+    /// supervisor reaches one of the stop terminal states
+    /// (<see cref="RuntimeSupervisorStatus.Stopped"/> or
+    /// <see cref="RuntimeSupervisorStatus.StartBlocked"/>) and
+    /// returns the mapped result.
     /// </summary>
-    private static int CurrentGuardMaxConsecutiveFailures()
+    /// <param name="initial">
+    /// State captured before the stop command was posted; used as
+    /// the generation baseline so the BehaviorSubject's replay of
+    /// the in-flight Stopping snapshot does not prematurely
+    /// resolve the await.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    private async Task<Result<Unit>> AwaitStopResultAsync(
+        RuntimeKernelState initial,
+        CancellationToken cancellationToken)
     {
-        // The guard interface deliberately does not expose
-        // MaxConsecutiveFailures, so the supervisor relies on the
-        // documented default. The CrashLoopGuardOptions type lives
-        // in the same assembly as the guard and is therefore
-        // available through this internal helper.
-        return CrashLoopGuardOptions.DefaultMaxConsecutiveFailures;
+        TaskCompletionSource<RuntimeKernelState> tcs = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using IDisposable subscription = loop.StateChanged
+            .Where(state =>
+                state.Generation.Value > initial.Generation.Value
+                && IsStopTerminal(state.Status))
+            .Subscribe(
+                state => tcs.TrySetResult(state),
+                ex => tcs.TrySetException(ex));
+
+        RuntimeKernelState terminal;
+        try
+        {
+            terminal = await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+
+        if (terminal.LastError is { } lastError)
+        {
+            return Result.Failure<Unit>(lastError);
+        }
+
+        return Result.Success(Unit.Instance);
+    }
+
+    private static bool IsStartTerminal(RuntimeKernelStatus status) =>
+        status is RuntimeKernelStatus.Running
+            or RuntimeKernelStatus.Stopped
+            or RuntimeKernelStatus.StartBlocked;
+
+    private static bool IsStopTerminal(RuntimeKernelStatus status) =>
+        status is RuntimeKernelStatus.Stopped
+            or RuntimeKernelStatus.StartBlocked;
+
+    /// <summary>
+    /// Projects a <see cref="RuntimeKernelState"/> snapshot onto
+    /// the <see cref="RuntimeSupervisorState"/> shape that the
+    /// public <see cref="IRuntimeSupervisor"/> contract exposes.
+    /// The mapping is a 1:1 lift of the status and a straight
+    /// copy of <c>LastStartResult</c>, <c>GuardResult</c>,
+    /// <c>LastError</c> and <c>Timestamp</c>.
+    /// </summary>
+    /// <param name="state">Kernel state to project.</param>
+    private static RuntimeSupervisorState MapToSupervisorState(RuntimeKernelState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        return new RuntimeSupervisorState(
+            status: MapStatus(state.Status),
+            lastStartResult: state.LastStartResult,
+            guardResult: state.GuardResult,
+            lastError: state.LastError,
+            timestamp: state.Timestamp);
+    }
+
+    /// <summary>
+    /// Maps a <see cref="RuntimeKernelStatus"/> to the equivalent
+    /// <see cref="RuntimeSupervisorStatus"/>. The two enums share
+    /// the same numeric layout, so a straight cast is sufficient
+    /// and the cast is documented here to keep the two enums
+    /// from drifting in future refactors.
+    /// </summary>
+    /// <param name="status">Kernel status to lift.</param>
+    private static RuntimeSupervisorStatus MapStatus(RuntimeKernelStatus status)
+    {
+        // The two enums are intentionally aligned; an
+        // (int)-based cast avoids an Enum.IsDefined check and
+        // keeps the mapping allocation-free.
+        return (RuntimeSupervisorStatus)(int)status;
+    }
+
+    /// <summary>
+    /// Disposes the health-monitor subscription exactly once and
+    /// detaches the local field. Safe to call from any thread.
+    /// </summary>
+    private void DisposeHealthSubscription()
+    {
+        IDisposable? subscription = Interlocked.Exchange(ref healthSubscription, null);
+        subscription?.Dispose();
     }
 }

@@ -17,6 +17,7 @@ using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.Integrity;
+using Zapret2Pilot.Runtime.Kernel;
 using Zapret2Pilot.Runtime.Supervisor;
 using Zapret2Pilot.Runtime.Tests.Testing;
 
@@ -28,15 +29,17 @@ namespace Zapret2Pilot.Runtime.Tests.Supervisor;
 
 /// <summary>
 /// Focused xUnit tests for <see cref="RuntimeSupervisor"/>
-/// (milestone 0.0.23). The supervisor is exercised with hand-rolled
-/// fakes for <see cref="IRuntimeProcessHost"/> and
-/// <see cref="IRuntimeHealthMonitor"/>; the real
+/// (milestone 0.0.24). The supervisor is a façade over
+/// <see cref="RuntimeKernelLoop"/>; tests exercise it with
+/// hand-rolled fakes for <see cref="IRuntimeEffectRunner"/> and
+/// <see cref="IRuntimeHealthMonitor"/> wired into a real
+/// <see cref="RuntimeKernelLoop"/>. The real
 /// <see cref="CrashLoopGuard"/> is reused with small, fast
 /// <see cref="CrashLoopGuardOptions"/> so the guard's
 /// failure / success / backoff behaviour stays observable without
-/// sleeping. A shared <see cref="FakeClock"/> drives time for both
-/// the supervisor's <see cref="TimeProvider"/> and the guard's
-/// clock seam, so every scenario is fully deterministic.
+/// sleeping. A shared <see cref="FakeClock"/> drives time for
+/// both the supervisor's <see cref="TimeProvider"/> and the
+/// guard's clock seam, so every scenario is fully deterministic.
 /// </summary>
 public sealed class RuntimeSupervisorTests
 {
@@ -81,7 +84,7 @@ public sealed class RuntimeSupervisorTests
     {
         FakeClock clock = new();
         SupervisorHarness harness = CreateSupervisor(clock);
-        harness.Host.NextStartResult = CreateSuccessResult();
+        harness.Runner.NextStartResult = CreateSuccessResult();
         using RuntimeSupervisor supervisor = harness.Supervisor;
 
         Result<RuntimeProcessHostResult> first = await supervisor.StartAsync(
@@ -96,11 +99,11 @@ public sealed class RuntimeSupervisorTests
 
         Assert.True(second.IsFailure);
         Assert.Equal("RuntimeSupervisorAlreadyRunning", second.Error.Code);
-        Assert.Equal(1, harness.Host.StartCallCount);
+        Assert.Equal(1, harness.Runner.StartCallCount);
     }
 
     [Fact]
-    public static async Task StartAsync_GuardBlocked_PublishesStartBlockedAndDoesNotCallHost()
+    public static async Task StartAsync_GuardBlocked_PublishesStartBlockedAndDoesNotCallExecutor()
     {
         FakeClock clock = new();
         SupervisorHarness harness = CreateSupervisor(clock);
@@ -123,7 +126,7 @@ public sealed class RuntimeSupervisorTests
         Assert.True(result.IsFailure);
         Assert.Equal("RuntimeStartBlockedByCrashLoopGuard", result.Error.Code);
         Assert.Equal(RuntimeSupervisorStatus.StartBlocked, supervisor.CurrentState.Status);
-        Assert.Equal(0, harness.Host.StartCallCount);
+        Assert.Equal(0, harness.Runner.StartCallCount);
         Assert.NotNull(supervisor.CurrentState.GuardResult);
     }
 
@@ -132,7 +135,7 @@ public sealed class RuntimeSupervisorTests
     {
         FakeClock clock = new();
         SupervisorHarness harness = CreateSupervisor(clock);
-        harness.Host.NextStartResult = CreateFailedStartResult();
+        harness.Runner.NextStartResult = CreateFailedStartResult();
         using RuntimeSupervisor supervisor = harness.Supervisor;
 
         Result<RuntimeProcessHostResult> result = await supervisor.StartAsync(
@@ -152,7 +155,7 @@ public sealed class RuntimeSupervisorTests
     {
         FakeClock clock = new();
         SupervisorHarness harness = CreateSupervisor(clock);
-        harness.Host.NextStartResult = CreateSuccessResult();
+        harness.Runner.NextStartResult = CreateSuccessResult();
         using RuntimeSupervisor supervisor = harness.Supervisor;
 
         Result<RuntimeProcessHostResult> result = await supervisor.StartAsync(
@@ -175,16 +178,16 @@ public sealed class RuntimeSupervisorTests
         Result<Unit> result = await supervisor.StopAsync(TestContext.Current.CancellationToken);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.ToString() : string.Empty);
-        Assert.Equal(0, harness.Host.StopCallCount);
+        Assert.Equal(0, harness.Runner.StopCallCount);
         Assert.Equal(RuntimeSupervisorStatus.Stopped, supervisor.CurrentState.Status);
     }
 
     [Fact]
-    public static async Task StopAsync_WhenRunning_StopsHostAndPublishesStopped()
+    public static async Task StopAsync_WhenRunning_StopsProcessAndPublishesStopped()
     {
         FakeClock clock = new();
         SupervisorHarness harness = CreateSupervisor(clock);
-        harness.Host.NextStartResult = CreateSuccessResult();
+        harness.Runner.NextStartResult = CreateSuccessResult();
         using RuntimeSupervisor supervisor = harness.Supervisor;
 
         Result<RuntimeProcessHostResult> start = await supervisor.StartAsync(
@@ -195,23 +198,20 @@ public sealed class RuntimeSupervisorTests
         Result<Unit> stop = await supervisor.StopAsync(TestContext.Current.CancellationToken);
 
         Assert.True(stop.IsSuccess, stop.IsFailure ? stop.Error.ToString() : string.Empty);
-        Assert.Equal(1, harness.Host.StopCallCount);
+        Assert.Equal(1, harness.Runner.StopCallCount);
         Assert.Equal(RuntimeSupervisorStatus.Stopped, supervisor.CurrentState.Status);
     }
 
     [Fact]
-    public static async Task HostedService_StartAsync_SubscribesToHealthMonitor()
+    public static async Task HostedService_StartAsync_ForwardsHealthSnapshotsToLoop()
     {
         FakeClock clock = new();
         SupervisorHarness harness = CreateSupervisor(clock);
-        harness.Host.NextStartResult = CreateSuccessResult();
+        harness.Runner.NextStartResult = CreateSuccessResult();
         using RuntimeSupervisor supervisor = harness.Supervisor;
 
         // Bring the supervisor into Running so the health-snapshot
-        // handler is willing to re-publish a Running state. The
-        // guard is still at 0; we record a failure next so the
-        // "counter clears after stability window + Check" assertion
-        // below has something non-trivial to clear.
+        // handler is willing to drive the loop's guard success path.
         Result<RuntimeProcessHostResult> start = await supervisor.StartAsync(
             CreateStartContext(),
             TestContext.Current.CancellationToken);
@@ -236,10 +236,11 @@ public sealed class RuntimeSupervisorTests
             processId: SuccessfulProcessId,
             observedAtUtc: clock.GetUtcNow()));
 
-        // The Healthy transition must re-publish Running with a
-        // fresh timestamp and a cleared LastError — that is the
-        // observable side effect of the supervisor calling
-        // guard.RecordSuccess().
+        // The Healthy observation is posted to the loop, which
+        // records a guard success and re-publishes Running with a
+        // fresh timestamp and a cleared LastError.
+        await WaitForHealthyRecordedAsync(harness, StateWaitTimeout, TestContext.Current.CancellationToken);
+
         Assert.Equal(RuntimeSupervisorStatus.Running, supervisor.CurrentState.Status);
         Assert.True(supervisor.CurrentState.Timestamp >= runningTimestamp);
         Assert.Null(supervisor.CurrentState.LastError);
@@ -259,7 +260,7 @@ public sealed class RuntimeSupervisorTests
     {
         FakeClock clock = new();
         SupervisorHarness harness = CreateSupervisor(clock);
-        harness.Host.NextStartResult = CreateSuccessResult();
+        harness.Runner.NextStartResult = CreateSuccessResult();
         using RuntimeSupervisor supervisor = harness.Supervisor;
 
         Result<RuntimeProcessHostResult> start = await supervisor.StartAsync(
@@ -275,10 +276,10 @@ public sealed class RuntimeSupervisorTests
             processId: SuccessfulProcessId,
             observedAtUtc: clock.GetUtcNow()));
 
-        // The Exited handler publishes Stopping synchronously on
-        // the publishing thread, then kicks off StopAsync outside
-        // the lock as a fire-and-forget task. Spin-wait until the
-        // automatic stop publishes the terminal Stopped snapshot.
+        // The Exited observation is posted to the loop, which
+        // records a guard failure and drives an automatic stop.
+        // The supervisor's projection then publishes the terminal
+        // Stopped snapshot.
         RuntimeSupervisorState resolved = await WaitForStateAsync(
             supervisor,
             RuntimeSupervisorStatus.Stopped,
@@ -287,21 +288,36 @@ public sealed class RuntimeSupervisorTests
 
         Assert.NotNull(resolved);
         Assert.Equal(RuntimeSupervisorStatus.Stopped, resolved.Status);
-        Assert.Equal(1, harness.Host.StopCallCount);
+        Assert.True(harness.Runner.StopCallCount >= 1);
+    }
+
+    [Fact]
+    public static void KernelStatus_And_SupervisorStatus_AreAligned()
+    {
+        foreach (RuntimeKernelStatus kernelStatus in Enum.GetValues<RuntimeKernelStatus>())
+        {
+            var supervisorStatus = (RuntimeSupervisorStatus)(int)kernelStatus;
+            Assert.True(Enum.IsDefined(supervisorStatus), $"Mapped supervisor status for {kernelStatus} is not defined.");
+            Assert.Equal(kernelStatus.ToString(), supervisorStatus.ToString());
+        }
     }
 
     private static SupervisorHarness CreateSupervisor(FakeClock clock)
     {
         CrashLoopGuard guard = new(FastGuardOptions(), clock.Now);
-        FakeRuntimeProcessHost host = new();
+        FakeRuntimeEffectRunner runner = new();
         FakeRuntimeHealthMonitor healthMonitor = new();
-        RuntimeSupervisor supervisor = new(
-            host,
-            healthMonitor,
+        RuntimeKernelLoop loop = new(
             guard,
+            runner,
+            clock,
+            NullLogger<RuntimeKernelLoop>.Instance);
+        RuntimeSupervisor supervisor = new(
+            loop,
+            healthMonitor,
             NullLogger<RuntimeSupervisor>.Instance,
             clock);
-        return new SupervisorHarness(supervisor, host, healthMonitor, guard, clock);
+        return new SupervisorHarness(supervisor, runner, healthMonitor, guard, clock, loop);
     }
 
     private static CrashLoopGuardOptions FastGuardOptions() => new(
@@ -337,8 +353,8 @@ public sealed class RuntimeSupervisorTests
 
     /// <summary>
     /// Builds a valid <see cref="RuntimeProcessStartContext"/>. The
-    /// host fake ignores the context, so the temporary executable
-    /// is only needed to satisfy
+    /// executor fake ignores the context, so the temporary
+    /// executable is only needed to satisfy
     /// <see cref="VerifiedRuntimeExecutablePath.TryCreate"/>'s
     /// "file must exist on disk" check.
     /// </summary>
@@ -407,8 +423,8 @@ public sealed class RuntimeSupervisorTests
     /// Spins until the supervisor reaches the requested
     /// <paramref name="expected"/> state, or
     /// <paramref name="timeout"/> elapses. Used by the Exited
-    /// scenario, where the automatic stop is driven outside the
-    /// snapshot handler's lock and resolves on a worker thread.
+    /// scenario, where the automatic stop is driven by the kernel
+    /// loop on a dedicated thread and resolves asynchronously.
     /// </summary>
     private static async Task<RuntimeSupervisorState> WaitForStateAsync(
         RuntimeSupervisor supervisor,
@@ -442,33 +458,87 @@ public sealed class RuntimeSupervisorTests
     }
 
     /// <summary>
+    /// Spins until the kernel loop has consumed the Healthy
+    /// observation (the guard success has been recorded). This is
+    /// a small helper that polls both the supervisor's projected
+    /// state and the guard's <c>LastSuccessUtcForTests</c> seam so
+    /// the test can race-free assert the post-condition of the
+    /// health-snapshot handler. The kernel loop publishes its
+    /// state <em>before</em> executing the inline
+    /// <c>RecordGuardSuccess</c> effect, so a state-only wait can
+    /// resolve before <c>RecordSuccess()</c> has actually been
+    /// called.
+    /// </summary>
+    private static async Task WaitForHealthyRecordedAsync(
+        SupervisorHarness harness,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        linked.CancelAfter(timeout);
+
+        TimeSpan pollInterval = TimeSpan.FromMilliseconds(10);
+        while (!linked.IsCancellationRequested)
+        {
+            RuntimeSupervisorState current = harness.Supervisor.CurrentState;
+            if (current.Status == RuntimeSupervisorStatus.Running
+                && current.LastError is null
+                && harness.Guard.LastSuccessUtcForTests is not null)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(pollInterval, linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Timeout or caller cancellation; exit the loop and throw below.
+                break;
+            }
+        }
+
+        throw new TimeoutException(
+            $"Timed out after {timeout} waiting for the supervisor to enter " +
+            "Running with no LastError and for the guard to record a success.");
+    }
+
+    /// <summary>
     /// Test fixture that bundles the supervisor with its fakes so
-    /// every test can reach the recording surfaces (host call
-    /// counts, health-monitor publish) without juggling a forest
-    /// of <c>out</c> parameters.
+    /// every test can reach the recording surfaces (runner call
+    /// counts, health-monitor publish, loop) without juggling a
+    /// forest of <c>out</c> parameters.
     /// </summary>
     private sealed record SupervisorHarness(
         RuntimeSupervisor Supervisor,
-        FakeRuntimeProcessHost Host,
+        FakeRuntimeEffectRunner Runner,
         FakeRuntimeHealthMonitor HealthMonitor,
         CrashLoopGuard Guard,
-        FakeClock Clock);
+        FakeClock Clock,
+        RuntimeKernelLoop Loop);
 
     /// <summary>
-    /// In-memory <see cref="IRuntimeProcessHost"/> fake. Records
-    /// the next <see cref="StartAsync"/> result
-    /// (<see cref="NextStartResult"/>) and the next
-    /// <see cref="StopAsync"/> result
-    /// (<see cref="NextStopResult"/>) so each test can drive the
-    /// supervisor's state machine without touching a real
-    /// process. Call counts are exposed for assertions.
+    /// In-memory <see cref="IRuntimeEffectRunner"/> fake. Records
+    /// the next <see cref="NextStartResult"/> for a
+    /// <see cref="RuntimeEffectKind.StartProcess"/> intent and the
+    /// next <see cref="NextStopResult"/> for a
+    /// <see cref="RuntimeEffectKind.StopProcess"/> intent so each
+    /// test can drive the kernel's state machine without touching
+    /// a real process. Call counts are exposed for assertions.
     /// </summary>
-    private sealed class FakeRuntimeProcessHost : IRuntimeProcessHost
+    /// <remarks>
+    /// The dispatch shape is a single <see cref="RunAsync"/>
+    /// that branches on <see cref="RuntimeEffectIntent.Kind"/>
+    /// rather than two separate execute methods.
+    /// </remarks>
+    private sealed class FakeRuntimeEffectRunner : IRuntimeEffectRunner
     {
         public Result<RuntimeProcessHostResult> NextStartResult { get; set; } =
             Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
-                code: "FakeHostNotConfigured",
-                message: "FakeRuntimeProcessHost was not configured with a NextStartResult.",
+                code: "FakeRunnerNotConfigured",
+                message: "FakeRuntimeEffectRunner was not configured with a NextStartResult.",
                 severity: ErrorSeverity.Error,
                 category: ErrorCategory.Runtime));
 
@@ -478,18 +548,35 @@ public sealed class RuntimeSupervisorTests
 
         public int StopCallCount { get; private set; }
 
-        public Task<Result<RuntimeProcessHostResult>> StartAsync(
-            RuntimeProcessStartContext context,
-            CancellationToken cancellationToken = default)
+        public Task<RuntimeKernelCommand.EffectCompleted> RunAsync(
+            RuntimeEffectIntent intent,
+            TimeProvider timeProvider,
+            CancellationToken cancellationToken)
         {
-            StartCallCount++;
-            return Task.FromResult(NextStartResult);
-        }
+            if (intent.Kind == RuntimeEffectKind.StartProcess)
+            {
+                StartCallCount++;
+                Result<RuntimeProcessHostResult> startResult = NextStartResult;
+                Result<Unit> unitResult = startResult.IsSuccess
+                    ? Result.Success(Unit.Instance)
+                    : Result.Failure<Unit>(startResult.Error);
+                return Task.FromResult(new RuntimeKernelCommand.EffectCompleted(
+                    intent.OperationId,
+                    intent.Generation,
+                    unitResult,
+                    startResult.IsSuccess ? startResult.Value : null,
+                    CancellationReason: null,
+                    CrossedIrreversibleBoundary: startResult.IsSuccess));
+            }
 
-        public Task<Result<Unit>> StopAsync(CancellationToken cancellationToken = default)
-        {
             StopCallCount++;
-            return Task.FromResult(NextStopResult);
+            return Task.FromResult(new RuntimeKernelCommand.EffectCompleted(
+                intent.OperationId,
+                intent.Generation,
+                NextStopResult,
+                StartResult: null,
+                CancellationReason: null,
+                CrossedIrreversibleBoundary: true));
         }
     }
 

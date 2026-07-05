@@ -3,17 +3,20 @@ using System.Threading;
 using System.Threading.Tasks;
 using Zapret2Pilot.Core.Results;
 using Zapret2Pilot.Runtime.Hosting;
+using Zapret2Pilot.Runtime.Kernel;
 
 namespace Zapret2Pilot.Runtime.Supervisor;
 
 /// <summary>
-/// Public contract for the <c>RuntimeSupervisor</c> — the single
-/// owner of the runtime start / stop state machine. The supervisor
-/// gates every start through <see cref="Guard.ICrashLoopGuard"/>,
-/// records failures and successes against the guard, observes
-/// <see cref="Health.IRuntimeHealthMonitor"/> transitions and
-/// publishes the resulting state through
-/// <see cref="StateChanged"/> so the UI can reflect it.
+/// Public contract for the <c>RuntimeSupervisor</c>. The
+/// supervisor is a façade over
+/// <see cref="Zapret2Pilot.Runtime.Kernel.RuntimeKernelLoop"/>: it
+/// translates the public start / stop calls into kernel commands,
+/// awaits the loop's projected state, and bridges
+/// <see cref="Health.IRuntimeHealthMonitor"/> snapshots into
+/// <see cref="RuntimeKernelCommand.Observation"/>s. All lifecycle
+/// state and guard bookkeeping lives in the loop; the supervisor
+/// itself owns no state machine.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,22 +29,16 @@ namespace Zapret2Pilot.Runtime.Supervisor;
 /// <b>Health observability.</b> The supervisor subscribes to
 /// <see cref="Health.IRuntimeHealthMonitor.SnapshotChanged"/> on
 /// <c>IHostedService.StartAsync</c> and unsubscribes on
-/// <c>IHostedService.StopAsync</c>. A transition into
-/// <see cref="Health.RuntimeHealthState.Healthy"/> is the
-/// load-bearing signal for a successful start; a transition into
-/// <see cref="Health.RuntimeHealthState.Exited"/> is the
-/// load-bearing signal for an unexpected runtime crash and
-/// triggers an automatic stop.
+/// <c>IHostedService.StopAsync</c>. Each snapshot is forwarded
+/// to the loop as an <see cref="RuntimeKernelCommand.Observation"/>;
+/// the loop decides how to react (record a guard success /
+/// failure and / or drive an automatic stop).
 /// </para>
 /// <para>
-/// <b>Crash-loop guard integration.</b> Every
-/// <see cref="StartAsync"/> call is preceded by a
-/// <see cref="Guard.ICrashLoopGuard.Check"/>. A failed start calls
-/// <see cref="Guard.ICrashLoopGuard.RecordFailure"/>. A successful
-/// <see cref="Health.RuntimeHealthState.Healthy"/> transition calls
-/// <see cref="Guard.ICrashLoopGuard.RecordSuccess"/>. The supervisor
-/// never reaches into the guard's private state; it only consumes
-/// the public surface of <see cref="Guard.ICrashLoopGuard"/>.
+/// <b>Crash-loop guard integration.</b> The guard is consulted
+/// inside the loop, not in the supervisor. A guard block surfaces
+/// as a <see cref="RuntimeSupervisorStatus.StartBlocked"/> snapshot
+/// and a typed failure result without any process being launched.
 /// </para>
 /// </remarks>
 public interface IRuntimeSupervisor
@@ -57,33 +54,31 @@ public interface IRuntimeSupervisor
     /// <summary>
     /// Hot observable that emits the current
     /// <see cref="RuntimeSupervisorState"/> on subscription and a
-    /// new snapshot on every transition. Backed by a
-    /// <c>BehaviorSubject&lt;RuntimeSupervisorState&gt;</c>, so
-    /// subscribers always see the most recent value plus every
-    /// subsequent transition.
+    /// new snapshot on every transition. Sourced from
+    /// <see cref="RuntimeKernelLoop.StateChanged"/>; subscribers
+    /// always see the most recent value plus every subsequent
+    /// transition.
     /// </summary>
     IObservable<RuntimeSupervisorState> StateChanged { get; }
 
     /// <summary>
-    /// Starts the runtime. The supervisor consults
-    /// <see cref="Guard.ICrashLoopGuard"/> first: a guard block
-    /// surfaces as a <see cref="RuntimeSupervisorStatus.StartBlocked"/>
-    /// snapshot and a typed failure result without touching
-    /// <see cref="IRuntimeProcessHost"/>. A successful guard check
-    /// delegates to <see cref="IRuntimeProcessHost.StartAsync"/> and
-    /// publishes <see cref="RuntimeSupervisorStatus.Running"/> on
-    /// success or <see cref="RuntimeSupervisorStatus.Stopped"/> on
-    /// failure (the failure also calls
-    /// <see cref="Guard.ICrashLoopGuard.RecordFailure"/>).
+    /// Starts the runtime. The supervisor posts a
+    /// <see cref="RuntimeKernelCommand.Start"/> to the loop and
+    /// awaits the projected state until the kernel reaches one of
+    /// the terminal statuses (<see cref="RuntimeSupervisorStatus.Running"/>,
+    /// <see cref="RuntimeSupervisorStatus.Stopped"/> or
+    /// <see cref="RuntimeSupervisorStatus.StartBlocked"/>). A
+    /// guard block surfaces as a
+    /// <see cref="RuntimeSupervisorStatus.StartBlocked"/> snapshot
+    /// and a typed failure result without launching the runtime.
     /// </summary>
     /// <param name="context">
-    /// Start context forwarded to
-    /// <see cref="IRuntimeProcessHost.StartAsync"/>. Must not be
+    /// Start context forwarded to the kernel loop. Must not be
     /// <c>null</c>.
     /// </param>
     /// <param name="cancellationToken">
     /// Cancellation token observed while the supervisor is
-    /// waiting for <see cref="IRuntimeProcessHost.StartAsync"/>.
+    /// waiting for the kernel to publish the terminal snapshot.
     /// </param>
     /// <returns>
     /// A <see cref="Result{T}"/> with a
@@ -104,7 +99,7 @@ public interface IRuntimeSupervisor
     /// </summary>
     /// <param name="cancellationToken">
     /// Cancellation token observed while the supervisor is
-    /// waiting for <see cref="IRuntimeProcessHost.StopAsync"/>.
+    /// waiting for the kernel to publish the terminal snapshot.
     /// </param>
     /// <returns>
     /// A <see cref="Result{T}"/> with <see cref="Unit.Instance"/> on

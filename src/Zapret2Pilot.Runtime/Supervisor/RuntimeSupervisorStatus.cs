@@ -2,8 +2,9 @@ namespace Zapret2Pilot.Runtime.Supervisor;
 
 /// <summary>
 /// Lifecycle states of the <c>RuntimeSupervisor</c>. The supervisor
-/// is the single owner of the runtime start / stop state machine;
-/// these states are the public projection of that state machine for
+/// is a façade; <see cref="Kernel.RuntimeKernelLoop"/> is the single
+/// owner of the runtime start / stop state machine. These states are
+/// the public projection of the kernel's lifecycle state machine for
 /// UI, logging and tests.
 /// </summary>
 /// <remarks>

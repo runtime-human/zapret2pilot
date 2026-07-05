@@ -192,8 +192,8 @@ public sealed class RuntimeHealthMonitorTests
                 state => state == RuntimeHealthState.Exited,
                 SnapshotWaitTimeout);
 
-            // Allow the EndSession call (which runs on the worker
-            // thread inside the probe) to commit.
+            // Allow the EndSession call (which runs on the probe
+            // loop task inside the probe body) to commit.
             RuntimeSessionRecord? current = null;
             for (int i = 0; i < 50; i++)
             {
@@ -306,34 +306,54 @@ public sealed class RuntimeHealthMonitorTests
 
     /// <summary>
     /// 0.0.23 contract: a subscriber that throws inside <c>OnNext</c>
-    /// must not fault the kernel worker. The work item is observed
-    /// on the monitor's loop task; the worker is a separate thread
-    /// and must remain responsive.
+    /// must not stop the probe loop. The throw is observed on the
+    /// monitor's loop task; the next <c>OnNext</c> call must still
+    /// fire and the loop must keep publishing snapshots.
     /// </summary>
     [Fact]
-    public static async Task ThrowingSubscriber_DoesNotFaultKernelWorker()
+    public static async Task ThrowingSubscriber_DoesNotStopProbeLoop()
     {
         using MonitorFixture fixture = MonitorFixture.Create();
 
-        // The BehaviorSubject emits the initial Unknown snapshot
-        // synchronously on subscription; subscribe on a background
-        // thread and wrap the OnNext body in a try/catch so the
-        // throw does not abort the subscribing thread.
-        IDisposable? subscription = null;
+        // A counting observer to verify the monitor keeps publishing
+        // snapshots after a peer observer throws in OnNext. The
+        // counting observer runs on the test thread; it accumulates
+        // every snapshot that the monitor's BehaviorSubject delivers.
+        System.Collections.Generic.List<RuntimeHealthSnapshot> received = new();
+        object receiveLock = new();
+        IDisposable countingSubscription = fixture.Monitor.SnapshotChanged.Subscribe(snapshot =>
+        {
+            lock (receiveLock)
+            {
+                received.Add(snapshot);
+            }
+        });
+
+        // The throwing subscriber is established on a background
+        // thread so the synchronous emission of the initial Unknown
+        // snapshot (and its subsequent re-throw) does not abort the
+        // test thread. The OnNext body intentionally re-throws
+        // without swallowing the exception: the contract under test
+        // is that the monitor's loop survives a throwing observer.
+        IDisposable? throwingSubscription = null;
+        Exception? subscribeError = null;
         Thread subscribeThread = new(() =>
         {
-            subscription = fixture.Monitor.SnapshotChanged.Subscribe(_ =>
+            try
             {
-                try
+                throwingSubscription = fixture.Monitor.SnapshotChanged.Subscribe(_ =>
                 {
                     throw new InvalidOperationException("subscriber boom");
-                }
-                catch
-                {
-                    // Swallow: the throw exists only to verify that
-                    // a faulty observer does not affect the worker.
-                }
-            });
+                });
+            }
+            catch (Exception ex)
+            {
+                // The initial snapshot's OnNext call propagates the
+                // throw out of Subscribe; the subscription is still
+                // established for the next snapshot. Capture and
+                // ignore — the throw is the path we want to exercise.
+                subscribeError = ex;
+            }
         })
         {
             IsBackground = true,
@@ -345,22 +365,33 @@ public sealed class RuntimeHealthMonitorTests
         {
             await fixture.Monitor.StartAsync(TestContext.Current.CancellationToken);
 
-            // Give the loop several probe intervals so multiple
-            // OnNext calls land on the throwing observer.
-            await Task.Delay(FastProbeInterval * 4, TestContext.Current.CancellationToken);
+            int baselineCount;
+            lock (receiveLock)
+            {
+                baselineCount = received.Count;
+            }
 
-            // Sentinel work item on the worker. If the throwing
-            // observer had faulted the worker, this enqueue would
-            // never complete.
-            Task sentinel = fixture.HostFixture.Worker.Enqueue(
-                _ => Task.CompletedTask,
-                TestContext.Current.CancellationToken);
+            // Give the loop several probe intervals. The throwing
+            // subscriber will throw on every snapshot it receives;
+            // the monitor's try/catch must isolate the throw and
+            // let the next probe tick proceed.
+            await Task.Delay(FastProbeInterval * 8, TestContext.Current.CancellationToken);
 
-            await sentinel.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            int finalCount;
+            lock (receiveLock)
+            {
+                finalCount = received.Count;
+            }
+
+            int newSnapshots = finalCount - baselineCount;
+            Assert.True(
+                newSnapshots >= 3,
+                $"Expected at least 3 new snapshots after a throwing subscriber was attached, got {newSnapshots}.");
         }
         finally
         {
-            subscription?.Dispose();
+            throwingSubscription?.Dispose();
+            countingSubscription.Dispose();
             subscribeThread.Join(TimeSpan.FromSeconds(2));
             await fixture.Monitor.StopAsync(TestContext.Current.CancellationToken);
         }
@@ -371,7 +402,7 @@ public sealed class RuntimeHealthMonitorTests
     /// monitor owns a single <c>probePending</c> flag toggled via
     /// <see cref="Interlocked.CompareExchange(ref int, int, int)"/>;
     /// while a probe is in flight, the loop drops subsequent ticks
-    /// rather than enqueueing overlapping probes onto the worker.
+    /// rather than running a second overlapping probe.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -497,11 +528,10 @@ public sealed class RuntimeHealthMonitorTests
     /// Per-test fixture that wires up a <see cref="TemporarySqliteDatabase"/>,
     /// a <see cref="RuntimeProcessHost"/> (via the existing
     /// <see cref="RuntimeProcessHostTests.HostFixture"/> helper), a
-    /// dedicated <see cref="RuntimeKernelWorker"/>, a
     /// <see cref="RuntimeHealthMonitor"/> with a 50 ms probe
     /// interval, and the matching <see cref="IRuntimeKernelStateStore"/>.
-    /// The monitor, the host, the worker and the temp directory
-    /// are disposed together in <see cref="Dispose"/>.
+    /// The monitor, the host and the temp directory are disposed
+    /// together in <see cref="Dispose"/>.
     /// </summary>
     private sealed class MonitorFixture : IDisposable
     {
@@ -539,7 +569,6 @@ public sealed class RuntimeHealthMonitorTests
 
             RuntimeHealthMonitor monitor = new(
                 host: hostFixture.Host,
-                worker: hostFixture.Worker,
                 stateStore: stateStore,
                 logger: NullLogger<RuntimeHealthMonitor>.Instance,
                 timeProvider: timeProvider ?? TimeProvider.System,

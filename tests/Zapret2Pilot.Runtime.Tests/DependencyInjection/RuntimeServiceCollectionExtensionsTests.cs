@@ -58,7 +58,6 @@ public sealed class RuntimeServiceCollectionExtensionsTests
         using IHost host = Host.CreateDefaultBuilder()
             .ConfigureServices(static services =>
             {
-                services.AddRuntimeKernelWorker();
                 services.AddRuntimeProcessHost();
             })
             .Build();
@@ -73,10 +72,8 @@ public sealed class RuntimeServiceCollectionExtensionsTests
             Assert.NotNull(host1);
             Assert.Same(host1, host2);
 
-            RuntimeKernelWorker worker = host.Services.GetRequiredService<RuntimeKernelWorker>();
-            IHostedService hostedService = host.Services.GetRequiredService<IHostedService>();
-
-            Assert.Same(worker, hostedService);
+            IRuntimeProcessHost abstraction1 = host.Services.GetRequiredService<IRuntimeProcessHost>();
+            Assert.Same(host1, abstraction1);
         }
         finally
         {
@@ -96,7 +93,6 @@ public sealed class RuntimeServiceCollectionExtensionsTests
             .ConfigureServices(services =>
             {
                 services.AddRuntimeKernelStateStore(databasePath);
-                services.AddRuntimeKernelWorker();
                 services.AddRuntimeProcessHost();
                 services.AddRuntimeHealthMonitor();
             })
@@ -163,7 +159,6 @@ public sealed class RuntimeServiceCollectionExtensionsTests
             .ConfigureServices(services =>
             {
                 services.AddRuntimeKernelStateStore(databasePath);
-                services.AddRuntimeKernelWorker();
                 services.AddRuntimeProcessHost();
                 services.AddRuntimeHealthMonitor();
                 services.AddCrashLoopGuard();
@@ -202,14 +197,14 @@ public sealed class RuntimeServiceCollectionExtensionsTests
         // The kernel loop and the process-host it depends on both
         // resolve ILogger<T> from the container, so the test must
         // use Host.CreateDefaultBuilder() rather than a bare
-        // ServiceCollection(). The loop is not itself an
-        // IHostedService (the supervisor owns the host lifetime),
-        // but AddRuntimeKernelWorker registers RuntimeKernelWorker
-        // as a hosted service, which requires the full IHost.
+        // ServiceCollection(). The loop and the process host are
+        // not registered as IHostedService themselves — the loop
+        // is driven by the supervisor, which IS a hosted service,
+        // so the full IHost is still required to start the
+        // supervisor and exercise StartAsync.
         using IHost host = Host.CreateDefaultBuilder()
             .ConfigureServices(static services =>
             {
-                services.AddRuntimeKernelWorker();
                 services.AddRuntimeProcessHost();
                 services.AddCrashLoopGuard();
                 services.AddRuntimeKernelLoop();
@@ -227,16 +222,16 @@ public sealed class RuntimeServiceCollectionExtensionsTests
             // Singleton lifetime: two resolutions must return the same instance.
             Assert.Same(first, second);
 
-            // The executor is exposed only as the internal
-            // IRuntimeEffectExecutor contract; the production
-            // binding resolves it to RuntimeProcessEffectExecutor
+            // The runner is exposed only as the internal
+            // IRuntimeEffectRunner contract; the production
+            // binding resolves it to RuntimeProcessEffectRunner
             // so the kernel loop stays free of any direct host
             // reference. The test project is whitelisted via
             // InternalsVisibleTo("Zapret2Pilot.Runtime.Tests"),
             // so the internal type is accessible here.
-            IRuntimeEffectExecutor executor = host.Services.GetRequiredService<IRuntimeEffectExecutor>();
-            Assert.NotNull(executor);
-            Assert.IsType<RuntimeProcessEffectExecutor>(executor);
+            IRuntimeEffectRunner runner = host.Services.GetRequiredService<IRuntimeEffectRunner>();
+            Assert.NotNull(runner);
+            Assert.IsType<RuntimeProcessEffectRunner>(runner);
         }
         finally
         {

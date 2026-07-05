@@ -63,10 +63,10 @@ internal static class AppHost
                     "Zapret2Pilot",
                     "z2p.db");
                 services.AddRuntimeKernelStateStore(databasePath);
-                services.AddRuntimeKernelWorker();
                 services.AddRuntimeProcessHost();
                 services.AddRuntimeHealthMonitor();
                 services.AddCrashLoopGuard();
+                services.AddRuntimeKernelLoop();
                 services.AddRuntimeSupervisor();
                 services.AddSingleton<MainWindowViewModel>();
                 services.AddSingleton<MainWindow>();

@@ -9,16 +9,16 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// surface to the rest of the system. The supervisor
 /// (<see cref="Zapret2Pilot.Runtime.Supervisor.IRuntimeSupervisor"/>)
 /// depends only on this abstraction so the host can be replaced by
-/// a fake in tests without spinning up the dedicated kernel
-/// worker, the ownership mutex, the lock file store or the Windows
-/// Job Object.
+/// a fake in tests without spinning up the ownership mutex, the
+/// lock file store or the Windows Job Object.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Implementations must be thread-safe: <see cref="StartAsync"/> and
-/// <see cref="StopAsync"/> may be called from any thread. The
-/// production <see cref="RuntimeProcessHost"/> enqueues its work
-/// onto the dedicated <c>RuntimeKernelWorker</c> thread, so the
+/// Implementations must be thread-safe: <see cref="StartAsync"/>,
+/// <see cref="StopAsync"/> and (where applicable)
+/// <see cref="IDisposable.Dispose"/> may be called from any thread.
+/// The production <see cref="RuntimeProcessHost"/> serialises its
+/// start, stop and dispose pipelines via an internal lock so the
 /// ownership-mutex and the Job Object lifetime are preserved
 /// regardless of the caller's thread.
 /// </para>
@@ -33,9 +33,9 @@ namespace Zapret2Pilot.Runtime.Hosting;
 public interface IRuntimeProcessHost
 {
     /// <summary>
-    /// Starts the runtime process. The actual launch is marshalled
-    /// onto the Runtime Kernel's dedicated worker thread inside the
-    /// production implementation; the call returns a
+    /// Starts the runtime process. The production implementation
+    /// runs the launch pipeline on the caller's thread under an
+    /// internal lock; the call returns a
     /// <see cref="Task{TResult}"/> the caller can await.
     /// </summary>
     /// <param name="context">
@@ -58,9 +58,9 @@ public interface IRuntimeProcessHost
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Stops the runtime process. The actual stop pipeline is
-    /// marshalled onto the dedicated kernel worker thread inside the
-    /// production implementation; the call returns a
+    /// Stops the runtime process. The production implementation
+    /// runs the stop pipeline on the caller's thread under an
+    /// internal lock; the call returns a
     /// <see cref="Task{TResult}"/> the caller can await.
     /// </summary>
     /// <param name="cancellationToken">

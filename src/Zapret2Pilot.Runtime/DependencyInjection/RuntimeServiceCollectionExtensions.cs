@@ -7,6 +7,7 @@ using Zapret2Pilot.Infrastructure.FileSystem;
 using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
+using Zapret2Pilot.Runtime.Kernel;
 using Zapret2Pilot.Runtime.Locking;
 using Zapret2Pilot.Runtime.Ownership;
 using Zapret2Pilot.Runtime.Recovery;
@@ -41,27 +42,6 @@ public static class RuntimeServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers <see cref="RuntimeKernelWorker"/> as a singleton
-    /// in the supplied <see cref="IServiceCollection"/>, both as
-    /// its concrete type and as an <see cref="IHostedService"/>
-    /// (which the Microsoft.Extensions.Hosting infrastructure will
-    /// start and stop alongside the rest of the host). The two
-    /// registrations resolve to the same instance.
-    /// </summary>
-    /// <param name="services">The service collection to add to.</param>
-    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
-    public static IServiceCollection AddRuntimeKernelWorker(this IServiceCollection services)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-
-        services.AddSingleton<RuntimeKernelWorker>();
-        services.AddSingleton<IHostedService>(
-            static sp => sp.GetRequiredService<RuntimeKernelWorker>());
-
-        return services;
-    }
-
-    /// <summary>
     /// Registers <see cref="RuntimeProcessHost"/> and every constructor
     /// dependency it needs as singletons in the supplied
     /// <see cref="IServiceCollection"/>. The runtime directory is
@@ -78,13 +58,6 @@ public static class RuntimeServiceCollectionExtensions
     /// <see cref="AppDataLayout.EnsureCreated"/>. Directory creation
     /// remains a kernel / host responsibility so DI resolution never
     /// touches the filesystem.
-    /// </para>
-    /// <para>
-    /// <see cref="RuntimeKernelWorker"/> is NOT registered here. The
-    /// worker is registered by <see cref="AddRuntimeKernelWorker"/>;
-    /// callers MUST register the worker before (or independently of)
-    /// this extension so the host resolves the same worker instance
-    /// that the process host depends on.
     /// </para>
     /// </remarks>
     /// <param name="services">The service collection to add to.</param>
@@ -126,8 +99,7 @@ public static class RuntimeServiceCollectionExtensions
                 sp.GetRequiredService<IRuntimeTransactionManager>(),
                 sp.GetRequiredService<IRuntimeJobObjectProcessAssigner>(),
                 sp.GetRequiredService<RuntimeLockFileStore>(),
-                sp.GetRequiredService<ILogger<RuntimeProcessHost>>(),
-                sp.GetRequiredService<RuntimeKernelWorker>()));
+                sp.GetRequiredService<ILogger<RuntimeProcessHost>>()));
 
         // The supervisor depends on IRuntimeProcessHost, not on
         // the concrete RuntimeProcessHost, so expose the same
@@ -151,11 +123,10 @@ public static class RuntimeServiceCollectionExtensions
     /// <remarks>
     /// <para>
     /// This extension depends on the singletons registered by
-    /// <see cref="AddRuntimeKernelStateStore"/>,
-    /// <see cref="AddRuntimeKernelWorker"/> and
+    /// <see cref="AddRuntimeKernelStateStore"/> and
     /// <see cref="AddRuntimeProcessHost"/>. Callers MUST register
     /// those extensions first; the method does not register the
-    /// state store, the worker or the process host.
+    /// state store or the process host.
     /// </para>
     /// <para>
     /// Registration is pure: this method does not touch the
@@ -228,6 +199,58 @@ public static class RuntimeServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Registers <see cref="RuntimeKernelLoop"/> and the internal
+    /// <see cref="IRuntimeEffectRunner"/> in the supplied
+    /// <see cref="IServiceCollection"/> as singletons. The loop
+    /// resolves the runner from the same provider, so the
+    /// extensions stay free of explicit ordering constraints.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This extension depends on the singletons registered by
+    /// <see cref="AddRuntimeProcessHost"/> and
+    /// <see cref="AddCrashLoopGuard"/>. Callers MUST register
+    /// those extensions first; the method does not register the
+    /// guard or the process host.
+    /// </para>
+    /// <para>
+    /// The loop is registered as a concrete
+    /// <see cref="RuntimeKernelLoop"/> only — it is NOT exposed as
+    /// an <see cref="IHostedService"/>. The host is started and
+    /// stopped indirectly through the supervisor, which is
+    /// registered by <see cref="AddRuntimeSupervisor"/>.
+    /// </para>
+    /// <para>
+    /// Registration is pure: the extension does not start the loop,
+    /// does not touch the filesystem and does not depend on any
+    /// extension beyond the crash-loop guard and the process host.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The service collection to add to.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
+    public static IServiceCollection AddRuntimeKernelLoop(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IRuntimeEffectRunner>(static sp =>
+        {
+            // The runner is resolved from the same provider, so
+            // the production RuntimeProcessEffectRunner can pull
+            // the IRuntimeProcessHost without the extension
+            // capturing a service provider in a closure.
+            return new RuntimeProcessEffectRunner(
+                sp.GetRequiredService<IRuntimeProcessHost>());
+        });
+
+        services.AddSingleton(static sp => new RuntimeKernelLoop(
+            sp.GetRequiredService<ICrashLoopGuard>(),
+            sp.GetRequiredService<IRuntimeEffectRunner>(),
+            logger: sp.GetRequiredService<ILogger<RuntimeKernelLoop>>()));
+
+        return services;
+    }
+
+    /// <summary>
     /// Registers <see cref="RuntimeSupervisor"/> as a singleton in
     /// the supplied <see cref="IServiceCollection"/>, both as its
     /// concrete type, as <see cref="IRuntimeSupervisor"/> and as an
@@ -240,10 +263,12 @@ public static class RuntimeServiceCollectionExtensions
     /// <para>
     /// This extension depends on the singletons registered by
     /// <see cref="AddRuntimeProcessHost"/>,
-    /// <see cref="AddRuntimeHealthMonitor"/> and
-    /// <see cref="AddCrashLoopGuard"/>. Callers MUST register those
-    /// extensions first; the method does not register the process
-    /// host, the health monitor or the guard.
+    /// <see cref="AddRuntimeHealthMonitor"/>,
+    /// <see cref="AddCrashLoopGuard"/> and
+    /// <see cref="AddRuntimeKernelLoop"/>. Callers MUST register
+    /// those extensions first; the method does not register the
+    /// process host, the health monitor, the guard or the kernel
+    /// loop.
     /// </para>
     /// <para>
     /// Registration is pure: the supervisor is constructed lazily

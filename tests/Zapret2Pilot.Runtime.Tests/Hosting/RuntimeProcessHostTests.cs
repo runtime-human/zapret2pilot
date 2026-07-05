@@ -188,9 +188,9 @@ public sealed partial class RuntimeProcessHostTests
     ///
     /// <para>
     /// Pre-fix behaviour: <see cref="RuntimeProcessHost.Dispose"/> set
-    /// the <c>disposed</c> flag and then enqueued
-    /// <c>StopOnWorkerAsync</c> on the dedicated kernel worker.
-    /// <c>StopOnWorkerAsync</c> checked the flag and returned a
+    /// the <c>disposed</c> flag and then enqueued the stop pipeline
+    /// through the stop entry point, which short-circuited on the
+    /// <c>disposed</c> check and returned a
     /// <c>RuntimeProcessHostDisposed</c> failure without touching the
     /// process, the job object, the lock file or the ownership lease.
     /// <see cref="RuntimeProcessHost.Dispose"/> ignored the returned
@@ -203,7 +203,7 @@ public sealed partial class RuntimeProcessHostTests
     /// </para>
     /// <para>
     /// Post-fix behaviour: <see cref="RuntimeProcessHost.Dispose"/>
-    /// enqueues a dedicated <c>CleanupOnWorkerAsync</c> entry point
+    /// routes through the <c>disposed</c>-agnostic cleanup entry point
     /// that performs the full stop pipeline without consulting the
     /// <c>disposed</c> flag. This test pins down the contract by
     /// asserting that, after <see cref="RuntimeProcessHost.Dispose"/>
@@ -242,11 +242,11 @@ public sealed partial class RuntimeProcessHostTests
             }
 
             // 2. Dispose the host. With the bug, this set disposed =
-            //    true and enqueued StopOnWorkerAsync, which
+            //    true and routed through the stop entry point, which
             //    short-circuited on the disposed check. With the
-            //    fix, Dispose enqueues CleanupOnWorkerAsync instead,
-            //    which performs the full stop pipeline regardless of
-            //    the disposed flag.
+            //    fix, Dispose routes through the disposed-agnostic
+            //    cleanup entry point, which performs the full stop
+            //    pipeline regardless of the disposed flag.
             fixture.Host.Dispose();
 
             // 3. Direct bug detectors: the process is gone and the
@@ -260,11 +260,11 @@ public sealed partial class RuntimeProcessHostTests
         finally
         {
             // 4. Tear down the first fixture: idempotent host
-            //    Dispose, worker shutdown and temp dir cleanup. With
-            //    the bug, the recursive temp dir delete may leave a
-            //    stray file because the fake runtime is still
-            //    running and holds the .exe open; the test still
-            //    reports cleanly via the assertion failures above.
+            //    Dispose and temp dir cleanup. With the bug, the
+            //    recursive temp dir delete may leave a stray file
+            //    because the fake runtime is still running and
+            //    holds the .exe open; the test still reports
+            //    cleanly via the assertion failures above.
             fixture.Dispose();
         }
 
@@ -467,158 +467,6 @@ public sealed partial class RuntimeProcessHostTests
     }
 
     /// <summary>
-    /// 0.0.20 contract: the start pipeline runs on the dedicated
-    /// <see cref="RuntimeKernelWorker"/> thread, not on the caller's
-    /// thread. This preserves the ownership-mutex thread affinity
-    /// required by <see cref="RuntimeOwnershipLease.Dispose"/>.
-    ///
-    /// <para>
-    /// The fixture is built with a custom
-    /// <see cref="IRuntimeWorkspaceMaterializer"/> that records
-    /// <see cref="Environment.CurrentManagedThreadId"/> when
-    /// <c>MaterializeAsync</c> is invoked, and then returns a
-    /// well-known failure result so the pipeline does not have to
-    /// actually launch a process to exercise the thread-affinity
-    /// check.
-    /// </para>
-    /// </summary>
-    [Fact]
-    public static void StartAsync_ExecutesOnWorkerThread()
-    {
-        RecordingMaterializer materializer = new();
-        HostFixture fixture = HostFixture.Create(materializer: materializer);
-
-        RuntimeProcessStartContext context = new(
-            plan: HostFixture.CreatePlanWithCacheKey(),
-            manifest: HostFixture.CreateMissingAssetManifest(),
-            workspaceDirectory: fixture.WorkspaceDirectory,
-            runtimeExecutablePath: fixture.CreatePlaceholderVerifiedPath());
-
-        int callerThreadId = Environment.CurrentManagedThreadId;
-        Result<RuntimeProcessHostResult> result = host_StartAsync(fixture.Host, context);
-
-        // The materializer is invoked on the worker thread, so the
-        // recorded id must match the worker's id and MUST NOT match
-        // the caller's id.
-        Assert.NotEqual(0, materializer.MaterializeThreadId);
-        Assert.Equal(fixture.Worker.WorkerThreadId, materializer.MaterializeThreadId);
-        Assert.NotEqual(callerThreadId, materializer.MaterializeThreadId);
-
-        // The materializer returns a failure result, so the start
-        // itself reports the wrapped materialization error.
-        Assert.True(result.IsFailure);
-        Assert.Equal("RuntimeWorkspaceMaterializationFailed", result.Error.Code);
-    }
-
-    /// <summary>
-    /// 0.0.20 contract: the stop pipeline runs on the dedicated
-    /// <see cref="RuntimeKernelWorker"/> thread, not on the caller's
-    /// thread. Uses a custom <see cref="IRuntimeTransactionManager"/>
-    /// decorator that records the thread id on
-    /// <c>BeginStop</c> and delegates to the real manager.
-    ///
-    /// <para>
-    /// The start must succeed so that the stop has state to clean
-    /// up; this requires the FakeRuntime to launch and the Windows
-    /// job object to be created, so the test is gated to Windows.
-    /// </para>
-    /// </summary>
-    [Fact]
-    public static void StopAsync_ExecutesOnWorkerThread()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        RecordingTransactionManager transactionManager = new(new RuntimeTransactionManager());
-        HostFixture fixture = HostFixture.Create(transactionManager: transactionManager);
-        fixture.PrepareFakeRuntimeInWorkspace();
-
-        RuntimeProcessStartContext context = fixture.CreateStartContextForFakeRuntime();
-
-        Result<RuntimeProcessHostResult> startResult = host_StartAsync(fixture.Host, context);
-        Assert.True(startResult.IsSuccess, startResult.IsFailure ? startResult.Error.ToString() : string.Empty);
-
-        try
-        {
-            int callerThreadId = Environment.CurrentManagedThreadId;
-            Result<Unit> stopResult = host_StopAsync(fixture.Host);
-            Assert.True(stopResult.IsSuccess, stopResult.IsFailure ? stopResult.Error.ToString() : string.Empty);
-
-            Assert.NotEqual(0, transactionManager.BeginStopThreadId);
-            Assert.Equal(fixture.Worker.WorkerThreadId, transactionManager.BeginStopThreadId);
-            Assert.NotEqual(callerThreadId, transactionManager.BeginStopThreadId);
-        }
-        finally
-        {
-            // The stop pipeline above already cleared the host
-            // state, so this is a defensive no-op safety net.
-            host_StopAsync(fixture.Host);
-        }
-    }
-
-    /// <summary>
-    /// Test fake <see cref="IRuntimeWorkspaceMaterializer"/> that
-    /// records the current managed thread id on every
-    /// <c>MaterializeAsync</c> invocation and then returns a
-    /// well-known failure result. Used by
-    /// <see cref="StartAsync_ExecutesOnWorkerThread"/> to verify
-    /// that the start pipeline runs on the kernel worker thread.
-    /// </summary>
-    private sealed class RecordingMaterializer : IRuntimeWorkspaceMaterializer
-    {
-        public int MaterializeThreadId;
-
-        public Task<Result<RuntimeWorkspaceMaterializeResult>> MaterializeAsync(
-            CompiledZapretPlan plan,
-            ZapretAssetManifest manifest,
-            string workspaceDirectory,
-            CancellationToken cancellationToken)
-        {
-            MaterializeThreadId = Environment.CurrentManagedThreadId;
-            return Task.FromResult(Result.Failure<RuntimeWorkspaceMaterializeResult>(new ErrorInfo(
-                code: "TestMaterializerRecorded",
-                message: "RecordingMaterializer recorded the worker thread id.",
-                severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime)));
-        }
-    }
-
-    /// <summary>
-    /// Decorator over <see cref="IRuntimeTransactionManager"/> that
-    /// records the current managed thread id on
-    /// <c>BeginStop</c> and delegates to the wrapped manager. Used
-    /// by <see cref="StopAsync_ExecutesOnWorkerThread"/> to verify
-    /// that the stop pipeline runs on the kernel worker thread.
-    /// </summary>
-    private sealed class RecordingTransactionManager : IRuntimeTransactionManager
-    {
-        private readonly IRuntimeTransactionManager inner;
-
-        public RecordingTransactionManager(IRuntimeTransactionManager inner)
-        {
-            this.inner = inner;
-        }
-
-        public int BeginStopThreadId;
-
-        public Result<RuntimeTransaction> BeginStart(CompiledZapretPlan plan) => inner.BeginStart(plan);
-
-        public Result<RuntimeTransaction> BeginStop()
-        {
-            BeginStopThreadId = Environment.CurrentManagedThreadId;
-            return inner.BeginStop();
-        }
-
-        public Result<RuntimeTransaction> BeginApply(CompiledZapretPlan newPlan) => inner.BeginApply(newPlan);
-
-        public Result<Unit> Commit(RuntimeTransaction transaction) => inner.Commit(transaction);
-
-        public Result<Unit> Rollback(RuntimeTransaction transaction) => inner.Rollback(transaction);
-    }
-
-    /// <summary>
     /// Returns <c>true</c> when the given PID is no longer an active
     /// process. Handles both "PID not found" and "process has exited"
     /// outcomes so the test is robust against PID reuse timing.
@@ -642,14 +490,12 @@ public sealed partial class RuntimeProcessHostTests
 
     /// <summary>
     /// Per-test fixture that owns a <see cref="TemporaryDirectory"/>, a
-    /// fully wired <see cref="RuntimeProcessHost"/>, a dedicated
-    /// <see cref="RuntimeKernelWorker"/>, and a unique ownership mutex
-    /// name. The host, the worker and the temp directory are disposed
-    /// together.
+    /// fully wired <see cref="RuntimeProcessHost"/>, and a unique
+    /// ownership mutex name. The host and the temp directory are
+    /// disposed together.
     /// </summary>
     internal sealed class HostFixture : IDisposable
     {
-        private readonly RuntimeKernelWorker worker;
         private readonly RuntimeProcessHost host;
         private bool disposed;
 
@@ -659,7 +505,6 @@ public sealed partial class RuntimeProcessHostTests
             string runtimeDirectory,
             RuntimeOwnershipMutex ownershipMutex,
             RuntimeLockFileStore lockFileStore,
-            RuntimeKernelWorker worker,
             RuntimeProcessHost host)
         {
             TempDir = tempDir;
@@ -667,7 +512,6 @@ public sealed partial class RuntimeProcessHostTests
             RuntimeDirectory = runtimeDirectory;
             OwnershipMutex = ownershipMutex;
             LockFileStore = lockFileStore;
-            this.worker = worker;
             this.host = host;
         }
 
@@ -680,8 +524,6 @@ public sealed partial class RuntimeProcessHostTests
         public RuntimeOwnershipMutex OwnershipMutex { get; }
 
         public RuntimeLockFileStore LockFileStore { get; }
-
-        public RuntimeKernelWorker Worker => worker;
 
         public RuntimeProcessHost Host => host;
 
@@ -704,9 +546,6 @@ public sealed partial class RuntimeProcessHostTests
                 ?? new RuntimeTransactionManager();
             IRuntimeJobObjectProcessAssigner jobObjectAssigner = new RuntimeJobObjectProcessAssigner();
 
-            RuntimeKernelWorker worker = new(NullLogger<RuntimeKernelWorker>.Instance);
-            worker.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-
             RuntimeProcessHost host = new(
                 ownershipMutex,
                 staleLockRecovery,
@@ -715,7 +554,6 @@ public sealed partial class RuntimeProcessHostTests
                 jobObjectAssigner,
                 lockFileStore,
                 NullLogger<RuntimeProcessHost>.Instance,
-                worker,
                 stopTimeout: TimeSpan.FromSeconds(5));
 
             return new HostFixture(
@@ -724,7 +562,6 @@ public sealed partial class RuntimeProcessHostTests
                 runtimeDirectory,
                 ownershipMutex,
                 lockFileStore,
-                worker,
                 host);
         }
 
@@ -898,8 +735,6 @@ public sealed partial class RuntimeProcessHostTests
             disposed = true;
 
             host.Dispose();
-            worker.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
-            worker.Dispose();
             TempDir.Dispose();
         }
 

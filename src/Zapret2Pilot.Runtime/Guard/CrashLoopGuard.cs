@@ -230,6 +230,29 @@ public sealed class CrashLoopGuard : ICrashLoopGuard
         }
     }
 
+    /// <summary>
+    /// Test-only observability seam. Returns the timestamp of the
+    /// most recent <see cref="RecordSuccess"/> call, or <c>null</c>
+    /// if <see cref="RecordSuccess"/> has never been called on this
+    /// guard. Exposed as <c>internal</c> so the
+    /// <see cref="ICrashLoopGuard"/> surface stays unchanged;
+    /// tests use it to wait for the success to actually be
+    /// recorded after the kernel loop has dispatched the
+    /// corresponding effect (the loop publishes its state before
+    /// executing the inline <c>RecordGuardSuccess</c> effect, so
+    /// a state-based wait is racy).
+    /// </summary>
+    internal DateTimeOffset? LastSuccessUtcForTests
+    {
+        get
+        {
+            lock (syncRoot)
+            {
+                return lastSuccessUtc;
+            }
+        }
+    }
+
     private static TimeSpan ComputeBackoff(in CrashLoopGuardOptions options, int consecutiveFailures)
     {
         if (consecutiveFailures <= 0)

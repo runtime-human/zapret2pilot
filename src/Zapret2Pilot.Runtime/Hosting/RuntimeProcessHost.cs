@@ -32,12 +32,20 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="StartAsync"/> and <see cref="StopAsync"/> may be called
-/// from any thread. Both enqueue their work onto the dedicated
-/// <see cref="RuntimeKernelWorker"/> thread, so the start and stop
-/// pipelines always execute on the same single kernel thread. This
-/// preserves the ownership-mutex thread affinity required by
-/// <see cref="RuntimeOwnershipLease"/>.
+/// <see cref="StartAsync"/>, <see cref="StopAsync"/> and
+/// <see cref="Dispose"/> may be called from any thread. The host
+/// serialises the start, stop and dispose pipelines internally via a
+/// private <c>operationLock</c>, so concurrent invocations are safe
+/// and can never interleave state mutations.
+/// </para>
+/// <para>
+/// The host no longer depends on a dedicated kernel worker thread.
+/// Single-thread affinity of the ownership lease is the
+/// <see cref="Kernel.RuntimeKernelLoop"/>'s responsibility: the loop
+/// drives the kernel state machine on a single, predictable thread
+/// and invokes <see cref="IRuntimeProcessHost"/> methods from that
+/// thread. The host itself runs the pipeline on the caller's thread
+/// and does not need to hop to a kernel worker.
 /// </para>
 /// <para>
 /// The start pipeline acquires the global ownership mutex, performs
@@ -68,13 +76,6 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// <c>Zapret2Pilot.Testing.FakeRuntime</c> test executable as a
 /// placeholder until <c>winws2</c> launch is approved by oracle.
 /// </para>
-/// <para>
-/// Serialisation of concurrent <see cref="StartAsync"/> and
-/// <see cref="StopAsync"/> calls is provided by the
-/// <see cref="RuntimeKernelWorker"/>'s single-reader dispatch loop,
-/// which executes the work items one at a time on the dedicated
-/// worker thread.
-/// </para>
 /// </remarks>
 public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, IDisposable
 {
@@ -101,11 +102,21 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     private readonly IRuntimeJobObjectProcessAssigner jobObjectAssigner;
     private readonly RuntimeLockFileStore lockFileStore;
     private readonly ILogger<RuntimeProcessHost> logger;
-    private readonly RuntimeKernelWorker worker;
     private readonly TimeSpan stopTimeout;
     private readonly string ownerInstanceId;
 
     private readonly object stateLock = new();
+
+    /// <summary>
+    /// Serialises the start, stop and dispose pipelines. The host no
+    /// longer relies on a dedicated worker thread for thread
+    /// affinity; instead, this lock guarantees that only one
+    /// <see cref="StartAsync"/>, <see cref="StopAsync"/> or
+    /// <see cref="Dispose"/> body runs at a time, and that the
+    /// pipelines never interleave state mutations.
+    /// </summary>
+    private readonly object operationLock = new();
+
     private RuntimeOwnershipLease? ownershipLease;
     private Process? process;
     private IRuntimeJobObject? jobObject;
@@ -116,13 +127,11 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// host, or <c>null</c> when the host is not running a process.
     /// Exposed as <c>internal</c> so the
     /// <see cref="Zapret2Pilot.Runtime.Health.RuntimeHealthMonitor"/>
-    /// can probe the live process from the dedicated
-    /// <see cref="RuntimeKernelWorker"/> thread without taking a
-    /// dependency on the private fields. The accessor takes the
-    /// host's <c>stateLock</c> so the read is thread-safe under
-    /// concurrent stop / dispose paths. The caller MUST NOT dispose
-    /// the returned <see cref="Process"/> — its lifetime is owned by
-    /// this host.
+    /// can probe the live process without taking a dependency on the
+    /// private fields. The accessor takes the host's <c>stateLock</c>
+    /// so the read is thread-safe under concurrent start / stop /
+    /// dispose paths. The caller MUST NOT dispose the returned
+    /// <see cref="Process"/> — its lifetime is owned by this host.
     /// </summary>
     internal Process? RunningProcess
     {
@@ -166,13 +175,6 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// Pass <see cref="NullLogger{T}.Instance"/> when the host is used
     /// outside of a hosted service (e.g. in unit tests).
     /// </param>
-    /// <param name="worker">
-    /// The dedicated kernel worker thread that serialises and runs
-    /// the start and stop pipelines. The host enqueues its work onto
-    /// this worker so the pipelines always run on the same thread,
-    /// preserving the ownership-mutex thread affinity required by
-    /// <see cref="RuntimeOwnershipLease.Dispose()"/>.
-    /// </param>
     /// <param name="stopTimeout">
     /// Maximum time to wait for the runtime process to exit after
     /// <see cref="StopAsync"/> requests termination. Defaults to 5
@@ -186,7 +188,6 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         IRuntimeJobObjectProcessAssigner jobObjectAssigner,
         RuntimeLockFileStore lockFileStore,
         ILogger<RuntimeProcessHost> logger,
-        RuntimeKernelWorker worker,
         TimeSpan? stopTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(ownershipMutex, nameof(ownershipMutex));
@@ -196,7 +197,6 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         ArgumentNullException.ThrowIfNull(jobObjectAssigner, nameof(jobObjectAssigner));
         ArgumentNullException.ThrowIfNull(lockFileStore, nameof(lockFileStore));
         ArgumentNullException.ThrowIfNull(logger, nameof(logger));
-        ArgumentNullException.ThrowIfNull(worker, nameof(worker));
 
         this.ownershipMutex = ownershipMutex;
         this.staleLockRecovery = staleLockRecovery;
@@ -205,16 +205,18 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         this.jobObjectAssigner = jobObjectAssigner;
         this.lockFileStore = lockFileStore;
         this.logger = logger;
-        this.worker = worker;
         this.stopTimeout = stopTimeout ?? DefaultStopTimeout;
         ownerInstanceId = Guid.NewGuid().ToString("N");
     }
 
     /// <summary>
     /// Starts the runtime process. This method may be called from any
-    /// thread; the actual start pipeline is marshalled onto the
-    /// dedicated <see cref="RuntimeKernelWorker"/> thread and runs
-    /// there to preserve ownership-mutex thread affinity.
+    /// thread. The actual start pipeline runs on the caller's thread
+    /// under the host's <c>operationLock</c>, which serialises it with
+    /// concurrent <see cref="StopAsync"/> and <see cref="Dispose"/>
+    /// invocations. Single-thread affinity of the ownership lease is
+    /// the <see cref="Kernel.RuntimeKernelLoop"/>'s responsibility, not
+    /// the host's.
     /// </summary>
     /// <param name="context">
     /// Start context carrying the compiled plan, asset manifest,
@@ -231,7 +233,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// <see cref="RuntimeProcessHostResult"/> describing the launched
     /// process on success, or a <see cref="ErrorInfo"/> on failure.
     /// </returns>
-    public async Task<Result<RuntimeProcessHostResult>> StartAsync(
+    public Task<Result<RuntimeProcessHostResult>> StartAsync(
         RuntimeProcessStartContext context,
         CancellationToken cancellationToken = default)
     {
@@ -243,30 +245,34 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         // to throw ArgumentException because planHash cannot be whitespace.
         if (context.Plan.CacheKey is null)
         {
-            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimePlanCacheKeyMissing",
                 message: "Cannot start the runtime: the compiled plan has no cache key.",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime));
+                category: ErrorCategory.Runtime)));
         }
 
-        return await worker.Enqueue(ct => StartOnWorkerAsync(context, ct), cancellationToken).ConfigureAwait(false);
+        lock (operationLock)
+        {
+            return StartPipeline(context, cancellationToken);
+        }
     }
 
     /// <summary>
-    /// Performs the start pipeline on the dedicated kernel worker
-    /// thread. This is the synchronous body of the old
-    /// <c>StartAsync</c>: argument validation, mutex acquisition,
-    /// stale lock recovery, workspace materialization, transaction
-    /// start, job object creation, process launch, readiness check,
-    /// lock file write and transaction commit. The async seams
-    /// (materializer and readiness checker) are unwrapped via
+    /// Performs the start pipeline on the calling thread. The
+    /// pipeline is the body of <see cref="StartAsync"/>: argument
+    /// validation, mutex acquisition, stale lock recovery, workspace
+    /// materialization, transaction start, job object creation,
+    /// process launch, readiness check, lock file write and
+    /// transaction commit. The async seams (materializer and
+    /// readiness checker) are unwrapped via
     /// <see cref="RunSync{T}(Task{T})"/> so the entire pipeline runs
-    /// on the calling worker thread, which is also the thread that
-    /// acquired the ownership mutex and must therefore dispose the
-    /// lease during cleanup paths.
+    /// on the caller's thread, which is also the thread that holds
+    /// the <c>operationLock</c> and (per the kernel-loop contract)
+    /// the thread that will eventually dispose the ownership lease
+    /// during cleanup paths.
     /// </summary>
-    private Task<Result<RuntimeProcessHostResult>> StartOnWorkerAsync(
+    private Task<Result<RuntimeProcessHostResult>> StartPipeline(
         RuntimeProcessStartContext context,
         CancellationToken cancellationToken)
     {
@@ -614,9 +620,13 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
 
     /// <summary>
     /// Stops the runtime process. This method may be called from any
-    /// thread; the actual stop pipeline is marshalled onto the
-    /// dedicated <see cref="RuntimeKernelWorker"/> thread and runs
-    /// there to preserve ownership-lease thread affinity.
+    /// thread. The actual stop pipeline runs on the caller's thread
+    /// under the host's <c>operationLock</c>, which serialises it
+    /// with concurrent <see cref="StartAsync"/> and
+    /// <see cref="Dispose"/> invocations. Single-thread affinity of
+    /// the ownership lease is the
+    /// <see cref="Kernel.RuntimeKernelLoop"/>'s responsibility, not
+    /// the host's.
     /// </summary>
     /// <param name="cancellationToken">
     /// Cancellation token observed before stopping.
@@ -625,23 +635,25 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// A <see cref="Result{T}"/> with <see cref="Unit.Instance"/> on
     /// success, or a <see cref="ErrorInfo"/> on failure.
     /// </returns>
-    public async Task<Result<Unit>> StopAsync(CancellationToken cancellationToken = default)
+    public Task<Result<Unit>> StopAsync(CancellationToken cancellationToken = default)
     {
-        return await worker.Enqueue(ct => StopOnWorkerAsync(ct), cancellationToken).ConfigureAwait(false);
+        lock (operationLock)
+        {
+            return StopPipeline(cancellationToken);
+        }
     }
 
     /// <summary>
-    /// Performs the stop pipeline on the dedicated kernel worker
-    /// thread. Rejects the call when the host is already disposed
-    /// (the public-facing <see cref="StopAsync"/> contract) and
-    /// also when the runtime is not running (the documented
-    /// <c>RuntimeNotRunning</c> failure). When the host is alive
-    /// AND the runtime is running, delegates the cleanup to
-    /// <see cref="CleanupOnWorkerAsync"/>, which is the
-    /// <c>disposed</c>-agnostic entry point also used by
+    /// Performs the stop pipeline on the calling thread. Rejects the
+    /// call when the host is already disposed (the public-facing
+    /// <see cref="StopAsync"/> contract) and also when the runtime
+    /// is not running (the documented <c>RuntimeNotRunning</c>
+    /// failure). When the host is alive AND the runtime is running,
+    /// delegates the cleanup to <see cref="CleanupPipeline"/>, which
+    /// is the <c>disposed</c>-agnostic entry point also used by
     /// <see cref="Dispose"/>.
     /// </summary>
-    private Task<Result<Unit>> StopOnWorkerAsync(CancellationToken cancellationToken)
+    private Task<Result<Unit>> StopPipeline(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -666,19 +678,18 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             }
         }
 
-        return CleanupOnWorkerAsync(cancellationToken);
+        return CleanupPipeline(cancellationToken);
     }
 
     /// <summary>
-    /// Performs the stop / cleanup pipeline on the dedicated kernel
-    /// worker thread without consulting the <c>disposed</c> flag.
-    /// This is the entry point used by both
-    /// <see cref="StopOnWorkerAsync"/> (after the <c>disposed</c>
-    /// check) and <see cref="Dispose"/>, so the same teardown logic
-    /// runs in both paths. The <c>disposed</c> flag is deliberately
-    /// ignored here because <see cref="Dispose"/> sets the flag
-    /// before enqueuing the cleanup work, and the cleanup still has
-    /// to run.
+    /// Performs the stop / cleanup pipeline on the calling thread
+    /// without consulting the <c>disposed</c> flag. This is the
+    /// entry point used by both <see cref="StopPipeline"/> (after the
+    /// <c>disposed</c> check) and <see cref="Dispose"/>, so the same
+    /// teardown logic runs in both paths. The <c>disposed</c> flag
+    /// is deliberately ignored here because <see cref="Dispose"/>
+    /// sets the flag before running the cleanup, and the cleanup
+    /// still has to run.
     ///
     /// <para>
     /// The method is idempotent: when there is no running process
@@ -690,7 +701,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// <c>RuntimeNotRunning</c> failure that
     /// <see cref="StopAsync"/> returns when called on a
     /// not-running host (that failure is produced by
-    /// <see cref="StopOnWorkerAsync"/>'s <c>disposed</c> guard, not
+    /// <see cref="StopPipeline"/>'s <c>disposed</c> guard, not
     /// here).
     /// </para>
     /// <para>
@@ -709,7 +720,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// starts. The token is not honoured while a non-cancellable
     /// kernel operation is in progress.
     /// </param>
-    private Task<Result<Unit>> CleanupOnWorkerAsync(CancellationToken cancellationToken)
+    private Task<Result<Unit>> CleanupPipeline(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -858,34 +869,34 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     }
 
     /// <summary>
-    /// Disposes the host. Sets the <c>disposed</c> flag and dispatches
-    /// the cleanup pipeline to the dedicated kernel worker thread so
-    /// the ownership lease is disposed on the thread that acquired
-    /// the mutex.
+    /// Disposes the host. Sets the <c>disposed</c> flag and runs
+    /// the cleanup pipeline on the calling thread under the host's
+    /// <c>operationLock</c>. Single-thread affinity of the ownership
+    /// lease is the <see cref="Kernel.RuntimeKernelLoop"/>'s
+    /// responsibility, not the host's: by the time the kernel loop
+    /// calls <see cref="Dispose"/>, the runtime process is already
+    /// stopped and the lease is no longer held on a kernel thread.
     ///
     /// <para>
-    /// The dispatched work is <see cref="CleanupOnWorkerAsync"/>,
-    /// NOT <see cref="StopOnWorkerAsync"/>. The two methods
-    /// share the same teardown body, but <see cref="StopOnWorkerAsync"/>
-    /// short-circuits when <c>disposed = true</c>, while
-    /// <see cref="CleanupOnWorkerAsync"/> does not consult the flag.
-    /// Routing <see cref="Dispose"/> through
-    /// <see cref="CleanupOnWorkerAsync"/> ensures the running
+    /// The cleanup work is <see cref="CleanupPipeline"/>, NOT
+    /// <see cref="StopPipeline"/>. The two methods share the same
+    /// teardown body, but <see cref="StopPipeline"/> short-circuits
+    /// when <c>disposed = true</c>, while <see cref="CleanupPipeline"/>
+    /// does not consult the flag. Routing <see cref="Dispose"/>
+    /// through <see cref="CleanupPipeline"/> ensures the running
     /// process, job object, lock file and ownership lease are
     /// actually torn down, instead of being silently leaked because
     /// the public-facing stop path rejected the call.
     /// </para>
     /// <para>
-    /// If the worker is unavailable or rejects the work item, the
-    /// catch falls back to <see cref="BestEffortDispose"/> which
-    /// performs the same cleanup on the calling thread (with the
-    /// caveat that the lease dispose becomes a no-op off-thread, so
-    /// the mutex is released by the OS instead). Idempotent.
+    /// If the pipeline throws, the catch falls back to
+    /// <see cref="BestEffortDispose"/> which performs the same
+    /// cleanup on the calling thread. Idempotent.
     /// </para>
     /// </summary>
     public void Dispose()
     {
-        lock (stateLock)
+        lock (operationLock)
         {
             if (disposed)
             {
@@ -893,16 +904,16 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             }
 
             disposed = true;
-        }
 
-        try
-        {
-            worker.Enqueue(ct => CleanupOnWorkerAsync(ct), CancellationToken.None).GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Dispose: failed to dispatch cleanup to worker; falling back to best-effort cleanup.");
-            BestEffortDispose();
+            try
+            {
+                CleanupPipeline(CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Dispose: cleanup pipeline failed; falling back to best-effort cleanup.");
+                BestEffortDispose();
+            }
         }
     }
 
@@ -917,8 +928,8 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// the mutex; the OS will release the mutex when the
     /// <see cref="RuntimeOwnershipLease"/> is eventually
     /// finalised. This is the same cleanup the host performed
-    /// pre-0.0.20 and is only used as a fallback when the kernel
-    /// worker is unavailable.
+    /// pre-0.0.20 and is only used as a fallback when the
+    /// <see cref="CleanupPipeline"/> call itself throws.
     /// </summary>
     private void BestEffortDispose()
     {
@@ -1164,7 +1175,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// <summary>
     /// Best-effort kill + dispose of a process that may not have
     /// been fully started or assigned to the job object. Used by the
-    /// failure paths in <see cref="StartOnWorkerAsync"/>.
+    /// failure paths in <see cref="StartPipeline"/>.
     /// </summary>
     /// <param name="processToDispose">The process to terminate and dispose.</param>
     private void BestEffortKillAndDispose(Process? processToDispose)
@@ -1179,7 +1190,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
 
     /// <summary>
     /// Best-effort lock file delete. Used by the failure paths in
-    /// <see cref="StartOnWorkerAsync"/> and <see cref="BestEffortDispose"/>.
+    /// <see cref="StartPipeline"/> and <see cref="BestEffortDispose"/>.
     /// </summary>
     private void BestEffortDeleteLock()
     {
@@ -1195,7 +1206,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
 
     /// <summary>
     /// Performs the standard partial-state cleanup for a
-    /// <see cref="StartOnWorkerAsync"/> failure path and returns the
+    /// <see cref="StartPipeline"/> failure path and returns the
     /// corresponding failure <see cref="Result{T}"/>. Kills and
     /// disposes the started process (if any), disposes the job
     /// object (if any), rolls the transaction back (if any) and
@@ -1268,7 +1279,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
 
     /// <summary>
     /// Tears down the partially-constructed state when
-    /// <see cref="StartOnWorkerAsync"/> fails. Rolls the transaction back (if
+    /// <see cref="StartPipeline"/> fails. Rolls the transaction back (if
     /// it was started and not yet committed), kills and disposes the
     /// process, disposes the job object, deletes the lock file (if
     /// it was written) and disposes the ownership lease. All steps
