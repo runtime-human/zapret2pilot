@@ -11,6 +11,7 @@ using Zapret2Pilot.Core.Runtime;
 using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
+using Zapret2Pilot.Runtime.Kernel;
 using Zapret2Pilot.Runtime.State;
 using Zapret2Pilot.Runtime.Supervisor;
 
@@ -166,6 +167,7 @@ public sealed class RuntimeServiceCollectionExtensionsTests
                 services.AddRuntimeProcessHost();
                 services.AddRuntimeHealthMonitor();
                 services.AddCrashLoopGuard();
+                services.AddRuntimeKernelLoop();
                 services.AddRuntimeSupervisor();
             })
             .Build();
@@ -190,5 +192,55 @@ public sealed class RuntimeServiceCollectionExtensionsTests
         }
 
         SqliteConnection.ClearAllPools();
+    }
+
+    [Fact]
+    public static async Task AddRuntimeKernelLoopRegistersLoopAndExecutor()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+        // The kernel loop and the process-host it depends on both
+        // resolve ILogger<T> from the container, so the test must
+        // use Host.CreateDefaultBuilder() rather than a bare
+        // ServiceCollection(). The loop is not itself an
+        // IHostedService (the supervisor owns the host lifetime),
+        // but AddRuntimeKernelWorker registers RuntimeKernelWorker
+        // as a hosted service, which requires the full IHost.
+        using IHost host = Host.CreateDefaultBuilder()
+            .ConfigureServices(static services =>
+            {
+                services.AddRuntimeKernelWorker();
+                services.AddRuntimeProcessHost();
+                services.AddCrashLoopGuard();
+                services.AddRuntimeKernelLoop();
+            })
+            .Build();
+
+        await host.StartAsync(cancellationToken);
+
+        try
+        {
+            RuntimeKernelLoop first = host.Services.GetRequiredService<RuntimeKernelLoop>();
+            RuntimeKernelLoop second = host.Services.GetRequiredService<RuntimeKernelLoop>();
+
+            Assert.NotNull(first);
+            // Singleton lifetime: two resolutions must return the same instance.
+            Assert.Same(first, second);
+
+            // The executor is exposed only as the internal
+            // IRuntimeEffectExecutor contract; the production
+            // binding resolves it to RuntimeProcessEffectExecutor
+            // so the kernel loop stays free of any direct host
+            // reference. The test project is whitelisted via
+            // InternalsVisibleTo("Zapret2Pilot.Runtime.Tests"),
+            // so the internal type is accessible here.
+            IRuntimeEffectExecutor executor = host.Services.GetRequiredService<IRuntimeEffectExecutor>();
+            Assert.NotNull(executor);
+            Assert.IsType<RuntimeProcessEffectExecutor>(executor);
+        }
+        finally
+        {
+            await host.StopAsync(cancellationToken);
+        }
     }
 }
