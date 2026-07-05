@@ -452,3 +452,110 @@ Tests:
 Roadmap alignment:
 
 - Implemented by `0.0.20` (worker: packet 1, worker-marshalled host: packet 2, host wiring + async Main: packet 3). Codifies `DEC-0033` and `DEC-0034`. The 0.0.18 milestone added the **decision** and the documentation; the worker and the host integration landed in 0.0.20.
+
+## 30. 0.0.24 — Runtime Kernel Lifecycle Closure
+
+Status: **Resolved** (milestone-level summary).
+
+Resolution:
+
+- `0.0.24 — Runtime Kernel Lifecycle Closure` ships
+  `RuntimeKernelLoop` as the single lifecycle authority of the
+  Runtime Kernel and deletes the pre-`0.0.24`
+  `RuntimeKernelWorker` channel. There is no dual
+  serialization authority: one bounded
+  `Channel<RuntimeKernelCommand>`, one reader, one dedicated
+  named thread, one pure `RuntimeKernelReducer`, one
+  `RuntimeStatePublisher`. The v6 §0.3 critical correction
+  C3 (codified as `DEC-0039`) is now satisfied in code; the
+  earlier "awaited delegates preserve dedicated-thread
+  affinity" claim is removed from the architecture document.
+- No invalid state transitions: the reducer is pure and
+  deterministic, every transition is committed on the loop
+  thread, and every effect completion is checked against the
+  dispatching `OperationId` / `Generation` before it is
+  allowed to mutate state. Stale completions are recorded as
+  `IgnoredStaleCompletion` and never touch current state.
+- Lifecycle mutations only via reducer / loop: the host, the
+  monitor and the supervisor are effects and observers around
+  the loop, not writers of the lifecycle. `IRuntimeSupervisor`
+  is a façade; `IRuntimeProcessHost` is an effect target;
+  `IRuntimeHealthMonitor` is a probe source. None of them
+  owns the lifecycle.
+- Observers off the kernel thread: `RuntimeStatePublisher`
+  publishes outside the kernel thread, coalesces
+  high-frequency observations, isolates throwing / slow
+  subscribers and replays the latest immutable snapshot to
+  late subscribers. No direct callback runs on the kernel
+  thread.
+- Orphan `FakeRuntime` prevented: the host's
+  mutex-acquire / Job-Object / kill-on-close containment is
+  preserved and is now invoked through the effect-runner
+  boundary. Repeated-exit scenarios converge to a single
+  cleanup path; cancellation after an irreversible boundary
+  is surfaced as `RollbackRequired` / `RecoveryRequired`
+  rather than as an ordinary `Cancelled`, and the
+  FakeRuntime process tree is reclaimed through the Job
+  Object on every documented exit path.
+- Worker removed: `RuntimeKernelWorker` is deleted, its tests
+  are deleted, the DI plumbing is cleaned up and the
+  `MainWindowViewModel` subscription contract
+  (`IRuntimeSupervisor.StateChanged`) continues to work
+  unchanged through the new supervisor façade.
+
+Files / classes:
+
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelLoop.cs`
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelReducer.cs`
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelState.cs`
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelCommand.cs`
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeStatePublisher.cs`
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeProcessEffectRunner.cs`
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs`
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthMonitor.cs`
+- `src/Zapret2Pilot.Runtime/Supervisor/RuntimeSupervisor.cs`
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeKernelWorker.cs`
+  (deleted)
+
+Tests:
+
+- `tests/Zapret2Pilot.Runtime.Tests/Kernel/RuntimeKernelLoopTests.cs`
+  — concurrent / faulted / cancelled loop, admission-after-shutdown
+  rejection, duplicate `OperationId` idempotency,
+  `LateStartCannotOverwriteStopped`,
+  `StopDuringStartSupersedesStart`,
+  `ExitedDuringStartCannotPublishRunning`,
+  `RepeatedExitTriggersOneCleanup`,
+  `ShutdownDuringEveryState`, `StaleCompletionIsIgnored`,
+  `SubscriberFailureDoesNotBreakKernel`,
+  `OverlappingAutomationOwnersRejected`,
+  `SecondProductionRuntimeRejected`,
+  `CancellationAfterIrreversibleBoundaryRequiresRecovery`,
+  `DisposeReleasesAllResources`;
+- `tests/Zapret2Pilot.Runtime.Tests/Kernel/RuntimeKernelReducerTests.cs`
+  — exhaustive state × command coverage and persisted-seed
+  generated sequences;
+- `tests/Zapret2Pilot.Runtime.Tests/Kernel/RuntimeProcessEffectRunnerTests.cs`
+  — identity propagation, stale-completion discard,
+  faulted-runner recovery;
+- `tests/Zapret2Pilot.Runtime.Tests/Kernel/RuntimeStatePublisherTests.cs`
+  — coalescing, slow-subscriber isolation, late-subscriber
+  replay, throwing-subscriber containment;
+- `tests/Zapret2Pilot.Runtime.Tests/Supervisor/RuntimeSupervisorTests.cs`
+  — drives the supervisor façade through the loop;
+- `tests/Zapret2Pilot.Runtime.Tests/Health/RuntimeHealthMonitorTests.cs`
+  — probes the host through the effect boundary and asserts
+  off-kernel publication;
+- `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessHostTests.cs`
+  — adapted to the effect-runner boundary;
+- `tests/Zapret2Pilot.Runtime.Tests/DependencyInjection/RuntimeServiceCollectionExtensionsTests.cs`
+  — asserts the loop is registered as the same instance under
+  `RuntimeKernelLoop`, `IRuntimeKernelLoop` and
+  `IHostedService`.
+
+Roadmap alignment:
+
+- Implements `0.0.24` per v6 §27 and codifies `DEC-0050`. The
+  pre-`0.0.24` "two authorities" / "no stale completion" /
+  "no orphan `FakeRuntime`" findings are closed by this
+  milestone.

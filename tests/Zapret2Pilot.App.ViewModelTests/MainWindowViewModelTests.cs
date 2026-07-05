@@ -21,7 +21,7 @@ public sealed class MainWindowViewModelTests
         MainWindowViewModel viewModel = new();
 
         Assert.Equal("Zapret2Pilot", viewModel.AppName);
-        Assert.Equal("v0.0.23", viewModel.AppVersion);
+        Assert.Equal("v0.0.24", viewModel.AppVersion);
         Assert.Equal("Zapret2Pilot", viewModel.WindowTitle);
         Assert.Equal("Главная", viewModel.PageTitle);
     }

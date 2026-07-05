@@ -701,20 +701,171 @@ is satisfied.
 
 ## 0.0.24 — Runtime Kernel Lifecycle Closure
 
-Status: **Not Started / Planned.**
+Status: **implemented**.
 
-- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §27.
-- Required outcome (v6 §26): one reducer-driven authority; no stale
-  completion; safe publication.
-- v6 §0.3 critical corrections applied here: C3
-  (RuntimeSupervisor and RuntimeKernelWorker merge into one
-  authority) and C10 (cancellation after an irreversible boundary
-  means rollback/recovery).
-- When this milestone is implemented, replace this block with the
-  standard status entry (Implemented files / areas, deferred bullets,
-  validation commands) following the same shape as the `0.0.23`
-  section above, and add the matching DEC entry to
-  `docs/Z2P-DECISION-LOG.md`.
+Implemented files and areas:
+
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelLoop.cs` — single
+  lifecycle authority: dedicated named thread, bounded
+  `Channel<RuntimeKernelCommand>`, single reader, reducer state
+  commit, effect intent dispatch, idempotent operation identity,
+  explicit `OperationId` / `Generation` correlation, cancellation
+  reason and irreversible-boundary semantics, idempotent
+  `StopCore` / `DisposeCore` with bounded effect drain and
+  terminal invariant report;
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelState.cs` and
+  `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelStatus.cs` — the
+  immutable state record and the lifecycle / automation-owner
+  status enum (replaces the previous `RuntimeSupervisorStatus`
+  dual-axis);
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelCommand.cs` and
+  `src/Zapret2Pilot.Runtime/Kernel/RuntimeKernelReducer.cs` — the
+  typed command surface and the pure deterministic reducer that
+  returns the next state, the `RuntimeEffectIntent`s, the public
+  events and the command outcome;
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeEffectIntent.cs`,
+  `RuntimeEffectKind.cs`, `RuntimeOperationId.cs`,
+  `RuntimeGeneration.cs`, `RuntimeTransition.cs`,
+  `RuntimeReducerResult.cs`, `RuntimeCancellationReason.cs`,
+  `AutomationOwner.cs` — the typed plumbing the reducer / loop
+  work with;
+- `src/Zapret2Pilot.Runtime/Kernel/RuntimeStatePublisher.cs` —
+  publishes the latest immutable snapshot outside the kernel
+  thread, coalesces high-frequency observations, isolates
+  throwing / slow subscribers, and replays the latest value to
+  late subscribers;
+- `src/Zapret2Pilot.Runtime/Kernel/IRuntimeEffectRunner.cs` and
+  `src/Zapret2Pilot.Runtime/Kernel/RuntimeProcessEffectRunner.cs`
+  — the new effect boundary. The runner executes process-host
+  effects under the `OperationId` / `Generation` identity of the
+  dispatching command, reports completions back to the loop,
+  and discards stale completions without mutating state;
+- `src/Zapret2Pilot.Runtime/Hosting/RuntimeKernelWorker.cs` —
+  **deleted** (its lifecycle state machine is folded into
+  `RuntimeKernelLoop` per v6 §0.3 critical correction C3 and
+  `DEC-0039`);
+- `src/Zapret2Pilot.Runtime/Hosting/IRuntimeProcessHost.cs` and
+  `src/Zapret2Pilot.Runtime/Hosting/RuntimeProcessHost.cs` —
+  adapted to the new effect-runner boundary; the host remains
+  the lock-secured, mutex-affine adapter and the sole owner of
+  the ownership-mutex lease, the Job Object handle and the
+  process handle. Its public surface stays source-compatible
+  with the v5-era `StartAsync` / `StopAsync` and
+  `RunningProcess` seam so that supervisor and view-model
+  collaborators continue to compile;
+- `src/Zapret2Pilot.Runtime/Health/RuntimeHealthMonitor.cs` —
+  adapted to probe `IRuntimeProcessHost` directly under its own
+  timer, publish snapshots through `RuntimeStatePublisher`
+  outside the kernel thread, and stop being a third lifecycle
+  authority;
+- `src/Zapret2Pilot.Runtime/Supervisor/IRuntimeSupervisor.cs`,
+  `RuntimeSupervisor.cs`, `RuntimeSupervisorStatus.cs` —
+  `RuntimeSupervisor` is now a thin façade over
+  `RuntimeKernelLoop`; the `SemaphoreSlim` lifecycle state
+  machine is removed and the supervisor exposes the same
+  `IRuntimeSupervisor` contract to the Application layer
+  (source-compatible);
+- `src/Zapret2Pilot.Runtime/DependencyInjection/RuntimeServiceCollectionExtensions.cs`
+  — DI cleanup: registers `RuntimeKernelLoop` as a singleton
+  hosted service, drops the now-obsolete
+  `AddRuntimeKernelWorker` / `AddRuntimeProcessHost` worker
+  plumbing, and updates `AddRuntimeSupervisor` to resolve the
+  loop singleton;
+- `src/Zapret2Pilot.App/Program.cs` — registers the new
+  `RuntimeKernelLoop` and no longer touches the worker;
+- new xUnit tests under `tests/Zapret2Pilot.Runtime.Tests/Kernel/`:
+  - `RuntimeKernelLoopTests.cs` — concurrent / faulted /
+    cancelled loop tests, admission-after-shutdown rejection,
+    duplicate `OperationId` idempotency, automation-owner
+    conflict, `StaleCompletionIsIgnored`,
+    `SubscriberFailureDoesNotBreakKernel`,
+    `DisposeReleasesAllResources`, `LateStartCannotOverwriteStopped`,
+    `StopDuringStartSupersedesStart`,
+    `ExitedDuringStartCannotPublishRunning`,
+    `RepeatedExitTriggersOneCleanup`, `ShutdownDuringEveryState`,
+    `OverlappingAutomationOwnersRejected`,
+    `SecondProductionRuntimeRejected`,
+    `CancellationAfterIrreversibleBoundaryRequiresRecovery`;
+  - `RuntimeKernelReducerTests.cs` — exhaustive state × command
+    table coverage and persisted-seed generated sequences;
+  - `RuntimeProcessEffectRunnerTests.cs` — effect runner
+    identity propagation, stale-completion discard and
+    faulted-runner recovery;
+  - `RuntimeStatePublisherTests.cs` — coalescing,
+    slow-subscriber isolation, late-subscriber replay and
+    throwing-subscriber containment;
+- updated xUnit tests:
+  - `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeProcessHostTests.cs`
+    — adapted to the effect-runner boundary (no worker
+    dependency);
+  - `tests/Zapret2Pilot.Runtime.Tests/Health/RuntimeHealthMonitorTests.cs`
+    — probes the `IRuntimeProcessHost` adapter directly and
+    asserts off-kernel publication;
+  - `tests/Zapret2Pilot.Runtime.Tests/Supervisor/RuntimeSupervisorTests.cs`
+    — drives the supervisor façade through the loop;
+  - `tests/Zapret2Pilot.Runtime.Tests/DependencyInjection/RuntimeServiceCollectionExtensionsTests.cs`
+    — asserts the loop is registered as the same instance
+    under `RuntimeKernelLoop`, `IRuntimeKernelLoop` and
+    `IHostedService`;
+  - `tests/Zapret2Pilot.Runtime.Tests/Hosting/RuntimeKernelWorkerTests.cs`
+    and `RuntimeKernelWorkerUiNonBlockingTests.cs` — **deleted**
+    together with the worker.
+- `VERSION = 0.0.24`;
+- `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs` —
+  `AppVersion` bumped from `v0.0.23` to `v0.0.24`;
+- `tests/Zapret2Pilot.App.ViewModelTests/MainWindowViewModelTests.cs`
+  — the matching `v0.0.24` test assertion;
+- `docs/Z2P-ROADMAP.md` — current `VERSION` set to `0.0.24`,
+  next milestone set to `0.0.25`, `0.0.24` moved from the
+  upcoming-milestone table to the historical / implemented
+  index;
+- `docs/Z2P-DECISION-LOG.md` — new `DEC-0050` records the
+  reducer-driven `RuntimeKernelLoop` as the single lifecycle
+  authority;
+- `docs/Z2P-CRITICAL-REVIEW.md` — `0.0.24` bullet added,
+  dual-authority / no-stale-completion / orphan-FakeRuntime
+  findings closed.
+
+Validation commands to run locally:
+
+```powershell
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeKernelLoop"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeKernelReducer"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeProcessEffectRunner"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeStatePublisher"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeSupervisor"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeHealthMonitor"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeProcessHost"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualifiedName~RuntimeServiceCollectionExtensions"
+dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release
+dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release
+dotnet test Zapret2Pilot.slnx -c Release
+```
+
+Notes:
+
+- This is the first milestone that ships `RuntimeKernelLoop` and
+  the first milestone after which a real `winws2` is allowed
+  (gated by `0.0.24`–`0.0.28` per v6 §26.1 and §32). Real
+  `winws2` launch remains forbidden in this milestone; the
+  new boundary is exercised end-to-end against
+  `Zapret2Pilot.Testing.FakeRuntime`.
+- The pre-`0.0.24` `RuntimeKernelWorker` and the supervisor
+  `SemaphoreSlim` design are *superseded*. The earlier
+  "awaited delegates preserve dedicated-thread affinity" claim
+  is removed from the architecture document; the kernel thread
+  is now an explicit, named entity owned by `RuntimeKernelLoop`.
+- `IRuntimeSupervisor` keeps its public surface; it is a façade
+  over the loop. Tests against the supervisor therefore remain
+  green without a sweeping rewrite, and the view-model
+  subscription contract (`StateChanged`) is unchanged.
+- No new NuGet packages, no `global.json` change, no
+  `Directory.Packages.props` change, no lock file change, no
+  `Zapret2Pilot.slnx` change. The new types live inside the
+  existing `Zapret2Pilot.Runtime` project and the new tests
+  live inside the existing `Zapret2Pilot.Runtime.Tests`
+  project.
 
 ## 0.0.25 — Bootstrap, Platform Boundaries & UI Composition
 

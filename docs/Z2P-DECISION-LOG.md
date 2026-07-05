@@ -1222,3 +1222,123 @@ Consequence:
   (Stable excludes the last). Overlapping automation intent
   is rejected.
 
+## DEC-0050 — RuntimeKernelLoop replaces RuntimeKernelWorker as the single lifecycle authority
+
+Date: 2026-07-05
+
+Decision:
+
+- `0.0.24 — Runtime Kernel Lifecycle Closure` ships
+  `Zapret2Pilot.Runtime.Kernel.RuntimeKernelLoop` as the single
+  lifecycle authority of the Runtime Kernel. The pre-`0.0.24`
+  dedicated worker channel (`RuntimeKernelWorker`,
+  `src/Zapret2Pilot.Runtime/Hosting/RuntimeKernelWorker.cs`) is
+  **deleted**; its job is folded into the loop.
+- `RuntimeKernelLoop` owns the bounded
+  `Channel<RuntimeKernelCommand>`, the single reader, the
+  dedicated named thread, the pure `RuntimeKernelReducer`,
+  the `RuntimeEffectIntent` dispatch, the
+  `OperationId` / `Generation` correlation, the cancellation /
+  deadline / irreversible-boundary semantics, the
+  `RuntimeStatePublisher` and the bounded effect drain on
+  `StopCore` / `DisposeCore`. There is no second lifecycle
+  state machine, no second semaphore and no second channel.
+- `IRuntimeProcessHost` and `RuntimeProcessHost` are adapted to
+  the new effect-runner boundary: the host becomes a
+  synchronous, lock-secured, mutex-affine adapter and the
+  sole owner of the ownership-mutex lease, the Job Object
+  handle and the process handle. The host does **not** own
+  the lifecycle anymore; it executes the effect the loop
+  hands it under the dispatching `OperationId` /
+  `Generation` and reports the completion back to the loop.
+- `IRuntimeHealthMonitor` and `RuntimeHealthMonitor` are
+  adapted to probe `IRuntimeProcessHost` directly through
+  the new effect boundary and to publish snapshots through
+  `RuntimeStatePublisher` outside the kernel thread. The
+  monitor is no longer a third lifecycle authority; it does
+  not enqueue work on a worker channel and it does not own
+  a `BehaviorSubject`.
+- `IRuntimeSupervisor` / `RuntimeSupervisor` become a thin
+  façade over `RuntimeKernelLoop`. The
+  `SemaphoreSlim`-backed lifecycle state machine is removed.
+  The supervisor's public contract (`StateChanged`,
+  `CurrentState`, `StartAsync`, `StopAsync`) stays
+  source-compatible; the Application layer (and the
+  `MainWindowViewModel` subscription) continues to work
+  without a sweeping rewrite.
+- Effect completion is correlation-checked. A completion
+  whose `OperationId` / `Generation` no longer matches the
+  loop's current in-flight operation is recorded as
+  `IgnoredStaleCompletion` and is **not** allowed to mutate
+  state. A throwing effect runner is contained: the loop
+  logs the failure and surfaces it as a typed
+  `Result.Failure`; the kernel does not fault.
+- `RuntimeServiceCollectionExtensions` registers
+  `RuntimeKernelLoop` as a singleton and as the same
+  instance under `IRuntimeKernelLoop` and `IHostedService`;
+  the obsolete worker / process-host DI extensions are
+  cleaned up; `AppHost.Build` calls `AddRuntimeKernelLoop`
+  in the position previously held by `AddRuntimeKernelWorker`.
+
+Rationale:
+
+- v6 §0.3 critical correction C3 (codified as `DEC-0039`)
+  requires `RuntimeSupervisor` and `RuntimeKernelWorker` to
+  merge into one authority. `0.0.24` is the milestone that
+  ships that merge in code: there is exactly one
+  serialization layer, the loop's reducer commits state and
+  there is no parallel semaphore / channel pair.
+- v6 §0.3 critical correction C10 (codified as `DEC-0046`)
+  requires cancellation / deadline / irreversible-boundary
+  semantics. The loop carries the typed
+  `RuntimeCancellationReason`, the monotonic deadline and
+  the irreversible-boundary marker; cancellation after an
+  irreversible boundary is surfaced as `RollbackRequired` /
+  `RecoveryRequired` and is **not** an ordinary `Cancelled`.
+- v6 §27 acceptance requires: no invalid state, no late
+  `Running`, no lifecycle mutation outside the loop, no
+  direct observer execution on the kernel thread, no orphan
+  `FakeRuntime`, no dual serialization authority. The new
+  shape satisfies every line: the reducer is pure, the loop
+  thread is the only writer, the publisher isolates
+  subscribers, the host is an effect target and the monitor
+  is a probe source. Tests
+  (`LateStartCannotOverwriteStopped`,
+  `StopDuringStartSupersedesStart`,
+  `ExitedDuringStartCannotPublishRunning`,
+  `RepeatedExitTriggersOneCleanup`,
+  `ShutdownDuringEveryState`, `StaleCompletionIsIgnored`,
+  `SubscriberFailureDoesNotBreakKernel`,
+  `QueueAdmissionAfterShutdownRejected`,
+  `DuplicateOperationIdIsIdempotent`,
+  `OverlappingAutomationOwnersRejected`,
+  `SecondProductionRuntimeRejected`,
+  `CancellationAfterIrreversibleBoundaryRequiresRecovery`,
+  `DisposeReleasesAllResources`) are the load-bearing
+  acceptance for this decision.
+
+Consequence:
+
+- The pre-`0.0.24` "awaited delegates preserve dedicated-thread
+  affinity" claim is removed from the architecture document.
+  The kernel thread is now an explicit, named entity owned by
+  `RuntimeKernelLoop`; effect completions that need the kernel
+  thread explicitly hand the result back through the loop,
+  not through an awaited delegate on the producer's
+  continuation.
+- `IRuntimeSupervisor` keeps its public surface for
+  source-compatibility. The internal
+  `SemaphoreSlim` / `BehaviorSubject<RuntimeSupervisorState>`
+  pair is gone; the supervisor subscribes to
+  `RuntimeStatePublisher` and forwards the loop's immutable
+  snapshots.
+- The 0.0.18 / 0.0.20 / 0.0.23 critical review findings
+  concerning "two authorities" / "no stale completion" /
+  "no orphan `FakeRuntime`" are marked **Resolved** in
+  `docs/Z2P-CRITICAL-REVIEW.md` under a new `0.0.24` bullet.
+- `docs/Z2P-ROADMAP.md` moves `0.0.24` from the v6 master
+  plan summary table to the historical / implemented index;
+  `docs/Z2P-IMPLEMENTATION-STATUS.md` gains a `0.0.24`
+  section with the implemented files, tests, validation
+  commands and notes.
+
