@@ -8,16 +8,22 @@ Current version: `0.0.23`.
 
 This repository is in early bootstrap stage.
 
+The master roadmap is **`docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md`**
+(Version 6, dated 2026-07-04). `docs/Z2P-ROADMAP.md` is the
+navigable roadmap entry point that points to the v6 file as the
+authoritative body and indexes the per-milestone implementation
+record in `docs/Z2P-IMPLEMENTATION-STATUS.md`.
+
 Current milestone:
 
 ```text
-0.0.23 — Runtime Kernel Correctness Hardening
+0.0.23 — Runtime Kernel Correctness Hardening (implemented)
 ```
 
-Current patch:
+Next planned milestone per the v6 master plan:
 
 ```text
-0.0.23 — Runtime Kernel Correctness Hardening
+0.0.24 — Runtime Kernel Lifecycle Closure (planned; v6 §27)
 ```
 
 ## Architecture baseline
@@ -109,7 +115,9 @@ Important documents:
 - `docs/Z2P-CANON.md`
 - `docs/Z2P-ARCHITECTURE.md`
 - `docs/Z2P-CRITICAL-REVIEW.md`
-- `docs/Z2P-ROADMAP.md`
+- `docs/Z2P-ROADMAP.md` — navigable roadmap entry point.
+- `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` — v6 master plan (authoritative body).
+- `docs/Z2P-IMPLEMENTATION-STATUS.md` — per-milestone implementation record.
 - `docs/Z2P-UI-DESIGN.md`
 - `docs/Z2P-CHATGPT-HANDOFF.md`
 - `docs/Z2P-DECISION-LOG.md`

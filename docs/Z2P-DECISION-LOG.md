@@ -658,3 +658,567 @@ Consequence:
 - `RuntimeSupervisor` does NOT launch a real `winws2` process in 0.0.23. The integration is exercised against fake `IRuntimeProcessHost` and `IRuntimeHealthMonitor` collaborators; a real launch is gated on an explicit, oracle-approved milestone.
 - The supervisor is covered by `tests/Zapret2Pilot.Runtime.Tests/Supervisor/RuntimeSupervisorTests.cs` (focused unit tests using a shared `FakeClock` for deterministic time), by the DI test `AddRuntimeSupervisorRegistersSupervisorAsHostedService` in `RuntimeServiceCollectionExtensionsTests`, and by the view-model test `StartBlocked_UpdatesLastAction` in `MainWindowViewModelTests` (using `FakeRuntimeSupervisor` in `tests/Zapret2Pilot.App.ViewModelTests/`).
 - `docs/Z2P-ROADMAP.md` and `docs/Z2P-IMPLEMENTATION-STATUS.md` gain the 0.0.23 `RuntimeSupervisor` bullets and the new focused-test commands.
+
+---
+
+## v6 master plan — accepted critical corrections
+
+The decisions below record the critical corrections accepted from
+`docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3 (v5 corrections adopted
+by v6) and one v6 §0.4 / §7 supporting decision. Each entry is
+intentionally concise: it pins the v6 reference, the corrected
+constraint and the immediate consequence for the next milestone.
+Per-milestone implementation details belong in
+`docs/Z2P-IMPLEMENTATION-STATUS.md`; this log records the *decision*
+and the corrected invariant, not the work breakdown.
+
+## DEC-0037 — SQLite native runtime is a P0 release blocker
+
+Date: 2026-07-04
+
+Decision:
+
+- Z2P must not ship with the deprecated/vulnerable native SQLite
+  package currently suppressed through `NuGetAuditSuppress`.
+- Storage migrates to `Microsoft.Data.Sqlite.Core` plus a
+  controlled, version-pinned native `sqlite3.dll` selected from
+  the latest officially fixed stable SQLite branch at the time of
+  the `0.0.27` implementation and re-verified before RC.
+- Production Z2P refuses to open the database for writes when the
+  resolved native SQLite version is unknown or below the recorded
+  minimum (current review baseline: `SQLite 3.51.3+` or an
+  officially maintained backport containing the same WAL-reset
+  corruption fix).
+- Startup verifies the actual native version via
+  `SELECT sqlite_version()`, `PRAGMA compile_options`,
+  `PRAGMA journal_mode`, `PRAGMA foreign_keys` and refuses to
+  continue on an unsafe result.
+- A dedicated `Z2P.STORAGE.SQLITE.UNSAFE_VERSION` error is
+  produced; `NuGetAuditSuppress` for this dependency is removed
+  before real-runtime approval.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 1 and §17.1.
+
+Consequence:
+
+- `0.0.27` cannot be marked `Implemented` while the
+  `NuGetAuditSuppress` for the current native SQLite package
+  remains. Removal of the suppression is part of that milestone.
+- The compiled native `sqlite3.dll` is shipped as a Z2P-controlled
+  native binary: name, version, source, archive hash, build
+  provenance, license and final shipped hash are recorded in the
+  release provenance (v6 §24.4).
+
+## DEC-0038 — Portable staging covers the whole elevated application
+
+Date: 2026-07-04
+
+Decision:
+
+- The portable package root is untrusted. A elevated managed
+  application cannot reliably verify its own portable directory
+  after the managed host has already loaded native/managed files
+  from it.
+- The portable production flow is:
+  untrusted portable folder → minimal signed bootstrapper →
+  complete app payload verification → protected versioned app
+  staging → re-verification by final handles → launch staged
+  elevated `z2p.exe` → runtime bundle verification / staging.
+- Staging `winws2` alone is insufficient; staging the whole
+  elevated `z2p.exe` payload is mandatory.
+- The public portable artifact is a ZIP with `z2p-portable.exe`
+  as the only supported entry point; `payload\z2p.exe` from the
+  ZIP root is not a supported entry point. Main app verifies the
+  bootstrap handoff / `AppPayloadId` and rejects unsafe direct
+  portable launch in Stable flavor.
+- Public portable ZIP is forbidden before `0.0.42` (v6 §52).
+  The `0.0.28` spike only proves the architecture; the public
+  artifact is produced in `0.0.42`.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 2, §10.4, §10.5, §10.6, §29 Scope J, §31
+Scope C, §45.
+
+Consequence:
+
+- `Zapret2Pilot.PortableBootstrapper` is a separate
+  NativeAOT-published, signed, single native executable and the
+  only portable entry point. It performs package-root detection,
+  embedded package identity check, manifest size / hash /
+  signature, full file inventory, DLL allowlist, UAC relaunch,
+  protected versioned staging, ACL setup, final staged file
+  identity verification and allowlisted bootstrap handoff.
+- The bootstrapper does not run `winws2`, does not open SQLite,
+  does not import profiles and does not load remote code.
+
+## DEC-0039 — Single Runtime authority: RuntimeKernelLoop
+
+Date: 2026-07-04
+
+Decision:
+
+- The current `RuntimeSupervisor.SemaphoreSlim` and the generic
+  `RuntimeKernelWorker.Channel` are merged into a single
+  lifecycle authority named `RuntimeKernelLoop`. There is exactly
+  one serialization layer; there is no separate semaphore /
+  channel state machine pair.
+- `RuntimeKernelLoop` owns: the bounded
+  `Channel<RuntimeKernelCommand>`, a single reader, a dedicated
+  named thread, the pure reducer and explicit effect intents.
+- `IRuntimeSupervisor` becomes an Application-facing façade over
+  the loop, not a second state machine.
+- Operations carry explicit `OperationId` / `Generation`; effects
+  return completions that are applied only when the operation id,
+  generation and current state still match. Stale completions are
+  recorded as `IgnoredStaleCompletion` events and do not mutate
+  state.
+- Cancellation before an irreversible boundary returns
+  `Cancelled`; cancellation after an irreversible boundary
+  produces `RollbackRequired` / `RecoveryRequired`, not an
+  ordinary `Cancelled`.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 3, §5, §7.4, §27.
+
+Consequence:
+
+- `0.0.24` is the first milestone that ships
+  `RuntimeKernelLoop` and the first milestone after which a
+  real `winws2` is allowed (gated by `0.0.24`–`0.0.28` per
+  v6 §26.1 and §32).
+- The pre-`0.0.24` `RuntimeSupervisor` and
+  `RuntimeKernelWorker` designs are marked *superseded*; the
+  earlier "awaited delegates preserve dedicated-thread affinity"
+  claim is removed from the architecture document.
+
+## DEC-0040 — Secure process creation is the only production launcher
+
+Date: 2026-07-04
+
+Decision:
+
+- Production runtime launch is the secure `STARTUPINFOEX` path:
+  `CreateJobObjectW` with
+  `SetInformationJobObject(KILL_ON_JOB_CLOSE)` →
+  `InitializeProcThreadAttributeList` →
+  `PROC_THREAD_ATTRIBUTE_JOB_LIST` (optionally
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) → `CreateProcessW` with
+  `EXTENDED_STARTUPINFO_PRESENT`, `CREATE_SUSPENDED` and
+  `CREATE_UNICODE_ENVIRONMENT` → validate returned process
+  identity → register process-handle wait → start bounded log
+  pumps → `ResumeThread`.
+- Fallback (`CREATE_SUSPENDED` → `AssignProcessToJobObject` →
+  verify assignment → `ResumeThread`) is allowed only after an
+  explicit compatibility decision and tests.
+- `Process.Start` → `AssignProcessToJobObject` after execution
+  began is forbidden. The production runtime launch path does
+  not use `System.Diagnostics.Process.Start`.
+- The launcher accepts only `VerifiedRuntimeBundle`, raw
+  argument tokens, a controlled working directory, a minimal
+  allowlisted environment block and an explicit `OperationId` /
+  `Generation` / `PlanHash` / `RuntimeSessionId`. It does not
+  accept an arbitrary environment dictionary or an unverified
+  path.
+- Windows command-line construction uses
+  `WindowsCommandLineEncoder`, `ArgsFileSerializer` and
+  `EnvironmentBlockBuilder`; `string.Join(" ", args)` is
+  forbidden.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 4, §14.
+
+Consequence:
+
+- `0.0.26` ships the secure launcher and the
+  `Zapret2Pilot.Platform.Windows` boundary. `0.0.29` is the first
+  milestone allowed to launch a real `winws2`, and only behind
+  the secure launcher.
+- The runtime/Windows architecture test in v6 §20.9 fails the
+  build if `Process.Start` appears in the production runtime
+  launch path or if P/Invoke appears outside the Windows
+  boundary.
+
+## DEC-0041 — Compiler cache contract: explicit version axes and typed canonical hash
+
+Date: 2026-07-04
+
+Decision:
+
+- The compiler cache key is computed from a typed
+  `CanonicalHashWriter` (length-prefixed UTF-8 / binary values,
+  deterministic ordering, explicit null/default semantics,
+  version header) and the cache input explicitly records:
+  `CanonicalizationVersion`, `CompilerCompatibilityVersion`,
+  `CompilerOptionsVersion`, `ProfileDocumentHash`,
+  `StrategyPackHashes`, `HostlistFingerprints` and
+  `RuntimeBundleManifestHash`.
+- Delimiter-based string concatenation of compiler inputs is
+  forbidden.
+- Compatibility between ProfileDocument, StrategyPack, Runtime
+  Bundle and compiler is decided by the explicit version axes,
+  not by the app informational version.
+- Profile / Strategy / Bundle / Compiler / Canonicalization
+  versions live in `Zapret2Pilot.Core` (or
+  `Engine.Zapret2` for the compiler) and are referenced by
+  every cache key, manifest and Evidence Pack.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 5, §11.3, §31 Scope E / F, §34 Scope E / F,
+§7.1.
+
+Consequence:
+
+- The current compiler placeholder behavior (delimiter-based
+  canonicalization, hostlist placeholder, executable path
+  placeholder, no documented compiler version in the cache key)
+  is marked *to be replaced* and is removed from the approved
+  runtime flow at the `0.0.31` milestone.
+
+## DEC-0042 — Restricted Generic Host configuration sources
+
+Date: 2026-07-04
+
+Decision:
+
+- Security-critical options (deployment flavor, application
+  staging root, runtime bundle root, runtime executable policy,
+  trusted TUF root, repository base URIs, signing publisher
+  policy, allowed Strategy Packs, developer runtime gate, driver
+  policy) are sourced only from compiled constants, signed
+  embedded resources, installer-created trusted machine
+  configuration and the verified staged app manifest.
+- Arbitrary environment variables, ordinary `appsettings`
+  overrides, user settings, imported profiles, untrusted CLI and
+  working-directory files cannot change these options.
+- The CLI is allowlisted (`--safe-mode`,
+  `--collect-diagnostics`, `--verify-runtime-bundle` in Stable
+  build). Unknown arguments produce a typed bootstrap error and
+  are not interpreted.
+- Security-critical options use sealed records / classes,
+  source-generated options validation and `ValidateOnStart`.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 6, §16.1, §16.2, §16.4, §16.5, §28
+Scope A.
+
+Consequence:
+
+- `0.0.25` migrates to `Host.CreateApplicationBuilder` and
+  builds the explicit configuration graph above. The
+  pre-`0.0.24` "environment variable can override runtime root"
+  and "user settings can override TUF root" patterns are
+  removed from the codebase and the documentation.
+
+## DEC-0043 — Windows-specific target framework split
+
+Date: 2026-07-04
+
+Decision:
+
+- `Zapret2Pilot.Core`, `Zapret2Pilot.Application`,
+  `Zapret2Pilot.Engine.Zapret2`, `Zapret2Pilot.Storage` and the
+  platform-neutral portion of `Zapret2Pilot.Infrastructure` keep
+  the generic `net10.0` target framework.
+- `Zapret2Pilot.Platform.Windows`, `Zapret2Pilot.Runtime` and
+  `Zapret2Pilot.App` use the explicit Windows target framework
+  `net10.0-windows10.0.26100.0`.
+- `Zapret2Pilot.PortableBootstrapper` ships as a Windows-specific
+  NativeAOT target.
+- Platform compatibility analyzer (CA1416) is enabled and
+  treated as a build-time gate.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 7, §13.1, §16.6, §28 Scope C.
+
+Consequence:
+
+- The architecture test "App references
+  `System.Diagnostics.Process`" and "PInvoke outside Windows
+  boundary" (v6 §13.4, §20.9) becomes a CI failure when
+  violated. The current `Runtime.Windows` namespace is treated
+  as a migration boundary until the dedicated
+  `Zapret2Pilot.Platform.Windows` project is extracted in
+  `0.0.26`.
+- If the final supported Windows baseline changes before
+  release, the TFM / minimum OS build is updated by DEC and
+  compatibility tests (v6 §16.6).
+
+## DEC-0044 — Typed feature facades replace the reflection CommandBus
+
+Date: 2026-07-04
+
+Decision:
+
+- The current reflection-based `CommandBus` is a temporary
+  bootstrap artifact. It is replaced by compile-time typed
+  feature facades:
+  `IRuntimeUseCases`, `IProfileUseCases`, `IRulesUseCases`,
+  `IAutoDoctorUseCases`, `IDiagnosticsUseCases`,
+  `IRuntimeUpdateUseCases`, `IDataManagementUseCases`, plus
+  `ICompatibilityUseCases` and `IDashboardQueries`.
+- Each use-case method returns `Task<Result<T>>` /
+  `Task<Result<Unit>>` with a typed request record, carries
+  `OperationId`, deadline and cancellation semantics, and is
+  decorated explicitly with validation, correlation, structured
+  logging, application operation policy, deadline and
+  authorization / trust classification.
+- No `IServiceProvider.GetService(Type)` and no
+  `MethodInfo.Invoke` in the runtime critical path. No MediatR
+  dependency in MVP.
+- Static `AppHost.Services` and `IServiceProvider` access from
+  `App` / `ViewModels` is removed. The composition graph is
+  validated in tests.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 8, §7.1, §7.2, §28 Scope D / E, §30
+DashboardSnapshot.
+
+Consequence:
+
+- `0.0.25` introduces the feature-facade surface and removes
+  the static service locator. `0.0.30` migrates the runtime
+  critical flow off the reflection `CommandBus` and is the
+  first milestone after which the runtime critical path
+  contains no `MethodInfo.Invoke`.
+
+## DEC-0045 — CI is a security boundary
+
+Date: 2026-07-04
+
+Decision:
+
+- CI is treated as a security boundary for the Z2P supply
+  chain, not just a build / test runner.
+- Every GitHub Action is pinned to a full commit SHA. Mutable
+  major tags are not accepted in the release workflow.
+- Each workflow job has minimal `permissions`, a concurrency
+  group that cancels stale PR runs, an explicit job timeout and
+  no secrets in untrusted PR jobs.
+- Release tags are protected / immutable by policy. The release
+  environment is protected.
+- Pull-request workflow runs (in this order) `dotnet format
+  --verify-no-changes`, `dotnet restore --locked-mode`, Release
+  build, unit tests, reducer / property tests, architecture
+  conformance, storage tests, FakeRuntime tests, headless UI,
+  NuGet audit, dependency review where available, CodeQL / SARIF
+  where available and evidence artifact upload.
+- CODEOWNERS cover Runtime, Windows, Storage, Updater,
+  Installer and workflows.
+- NuGet audit runs in `NuGetAuditMode=all` (or current
+  equivalent). Security-critical / native audit suppressions
+  cannot survive into Stable without a documented independent
+  risk acceptance; the current SQLite suppression is explicitly
+  not accepted for `0.1.0` (DEC-0037).
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 9, §23.2, §24.
+
+Consequence:
+
+- The pre-`v6` "actions referenced by mutable major tags" CI
+  posture is replaced in `0.0.25` (action pin + permissions +
+  format gate) and `0.0.27` (locked restore + audit hardening)
+  per the v6 §24 plan.
+- The architecture / policy / threat / attack-corpus tests in
+  v6 §20.8, §20.9, §20.10, §24.7 are the load-bearing
+  acceptance for this decision and are added milestone by
+  milestone.
+
+## DEC-0046 — Error, cancellation and deadline contracts are systemic
+
+Date: 2026-07-04
+
+Decision:
+
+- Every long-running operation has an `OperationId`, a
+  `RequestedAtUtc`, a monotonic `Deadline`, a
+  `CancellationReason` and an explicit `IrreversibleBoundary`.
+- Cancellation reasons are typed: `UserRequested`,
+  `HostShutdown`, `Timeout`, `Superseded`, `SafetyAbort`.
+- Cancellation before an irreversible boundary returns
+  `Cancelled`. Cancellation after an irreversible boundary
+  (process created, old runtime stopped, durable commit
+  partially performed) returns `RollbackRequired` /
+  `RecoveryRequired`, not an ordinary `Cancelled`.
+- Durations are measured through a monotonic `TimeProvider`
+  (`GetTimestamp`, `GetElapsedTime`). Wall-clock time is used
+  only for persistence and UI timestamps; `DateTime.Now` is
+  not used for duration logic.
+- Errors use a single central catalog
+  `Z2P.<AREA>.<SUBSYSTEM>.<CONDITION>` with typed descriptor
+  fields (`Code`, `Category`, `Severity`,
+  `UserMessageResourceKey`, `TechnicalDetail`, `CorrelationId`,
+  `RecoveryAction`, `Retryability`, `IsSecurityRelevant`).
+- Expected failures use `Result<T>`. Unexpected exceptions are
+  logged with a correlation ID and are not shown to the user as
+  raw `Exception.Message`; a state-integrity-unknown
+  exception moves the affected subsystem to a controlled
+  `Faulted` / `RecoveryRequired` state instead of continuing
+  blind.
+- Every mutating Application operation has an idempotency /
+  operation identity: a repeat request with the same
+  `OperationId` returns the persisted / in-flight outcome and
+  does not start a second process, transaction or activation.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 10, §7.3, §7.4, §7.5, §27 Scope G, §28
+Scope I.
+
+Consequence:
+
+- `0.0.24` introduces the `RuntimeKernelLoop` operation / generation /
+  irreversible-boundary semantics and the typed error catalog
+  foundation. `0.0.25` extends the catalog across Application
+  use cases.
+- The architecture / observable contracts above are added to the
+  global exception policy and to the
+  `ApplicationOperationCoordinator` (v6 §7.2) without
+  per-feature exception.
+
+## DEC-0047 — Runtime update uses explicit leases
+
+Date: 2026-07-04
+
+Decision:
+
+- Runtime bundles, runtime workspaces, downloaded artifacts and
+  app payloads are subject to explicit typed leases
+  (`RuntimeBundleLease`, `RuntimeWorkspaceLease`,
+  `DownloadedArtifactLease`, `AppPayloadLease`) carrying
+  `LeaseId`, `BundleId` / payload id, `LeaseKind`,
+  `OwnerOperationId`, `AcquiredAtUtc` and
+  `ExpiresAtUtc` / explicit release.
+- Lease kinds: `RunningRuntime`, `CandidateValidation`,
+  `Activation`, `Rollback`, `DiagnosticsExport`, `Recovery`.
+- The bundle / app / workspace garbage collector cannot delete
+  an artifact that still holds an active lease.
+- `Current` / `PreviousKnownGood` / `Candidate` / `Probation`
+  bundles cannot be deleted while they are in those roles or
+  while they are referenced by an active runtime process,
+  activation, rollback, recovery or diagnostics lease.
+- Runtime / activation / recovery leases are durable; a short
+  diagnostics lease may be in-memory if cleanup is safe after
+  crash. Startup recovery removes stale leases only after
+  reconciliation.
+- Deletion is a state machine
+  (`Retired → Deleting → Deleted`) with recheck, handle close
+  and absence verification; crash during deletion is reconciled
+  at startup. "Best effort directory delete" outside the
+  lifecycle state machine is forbidden.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 11, §11.7, §11.8, §12.16, §12.30, §41,
+§44.
+
+Consequence:
+
+- `0.0.40` introduces the typed lease model and the
+  garbage-collection protocol. `0.0.41` activates it across
+  download, extraction, activation, rollback and recovery.
+- The pre-`v6` "delete the old bundle once the new one is
+  unpacked" / "delete the staging folder on cancel" heuristics
+  are removed from the codebase and replaced by the explicit
+  lease / lifecycle machine.
+
+## DEC-0048 — TUF client is a separate security-critical subsystem
+
+Date: 2026-07-04
+
+Decision:
+
+- Runtime update trust protocol is the official TUF
+  specification `1.0.x` (current at v6 baseline: `1.0.34`)
+  through a documented Z2P Runtime Repository POUF. "Catalog
+  JSON + one signature" is not an acceptable substitute.
+- The Z2P POUF is recorded in
+  `docs/Z2P-RUNTIME-UPDATE-POUF.md` and explicitly defines the
+  supported specification version, metadata format /
+  canonicalization, accepted key types and curves, role
+  thresholds, consistent-snapshot naming, maximum metadata
+  sizes, maximum delegation depth, root rotation procedure,
+  trusted-time / high-water behavior, error handling and
+  repository / channel separation.
+- Stable client trusts only the stable repository root. The
+  development build embeds a separate development root and
+  cannot publish itself as Stable. Stable cannot select
+  Development root via setting, environment variable or CLI.
+- A .NET TUF client is implemented either as a maintained,
+  security-reviewed third-party .NET client evaluated against
+  the documented requirements or as a narrow Z2P-owned client
+  that follows the official detailed TUF client workflow
+  exactly for the documented POUF.
+- A custom client uses `System.Text.Json` source-generated DTOs
+  for bounded parsing, platform cryptography with fixed
+  accepted algorithms (`ECDsa`, ECDSA P-256), high-water
+  metadata persistence, threshold signature and length / hash
+  verification, sequential root rotation, and is exercised
+  against the official `python-tuf` test repository and the
+  rollback / freeze / mix-and-match / fast-forward /
+  malformed-metadata corpus. A custom client receives a
+  focused independent security review before Stable.
+- Release infrastructure may use the current pinned official
+  `python-tuf` reference tooling wrapped in a small Z2P-owned
+  layer; tooling upgrades are treated as a security-sensitive
+  change. User machines do not require Python.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §0.3
+critical correction 12, §12, §43, §44, §24.12.
+
+Consequence:
+
+- `0.0.40` ships the POUF document, the .NET TUF client and
+  the metadata check flow (no target download / activation in
+  this milestone; only catalog trust and compatibility
+  resolver). `0.0.41` adds target download, activation and
+  rollback.
+- The TUF client, key operations, repository operations and
+  update extraction / activation are listed in v6 §46 as
+  separate security review sign-offs for the release
+  candidate. Independent review of the canonicalization layer
+  is a Stable release gate.
+
+## DEC-0049 — ApplicationOperationCoordinator for use-case conflicts
+
+Date: 2026-07-04
+
+Decision:
+
+- An `ApplicationOperationCoordinator` is the single component
+  that resolves Application-level conflicts between competing
+  use cases. It is not a second Runtime Kernel and does not
+  own process state.
+- The coordinator classifies a requested use case as
+  `Allowed`, `Rejected`, `Queued`, `RequiresConfirmation` or
+  `CancelsExisting`, and issues a bounded
+  `ApplicationOperationLease`
+  (`OperationId`, `OperationKind`, `AcquiredAtUtc`,
+  `Deadline`).
+- Baseline conflict matrix (v6 §7.2):
+  `ApplyProfile` conflicts with `AutoDoctor`;
+  `RuntimeBundleActivation` conflicts with
+  `Running` / `Apply` / `Doctor`;
+  `DiagnosticsExport`, `ProfileImport` and
+  `KeyServicesCheck` are allowed while Running;
+  `DataCleanup` is blocked during export / runtime / update.
+- The coordinator works together with the Runtime Kernel
+  command types and the Update state machine. It never owns
+  process / job / mutex handles; those remain the Runtime
+  Kernel's responsibility.
+
+v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §7.2,
+§12.16, §27 Scope J, §35.
+
+Consequence:
+
+- The coordinator is introduced in `0.0.24` together with
+  `RuntimeKernelLoop`. Its lease is the bridge between
+  Application use cases (start / stop / apply / doctor /
+  diagnostics / data) and the runtime / update / data
+  lifecycle state machines.
+- Per the v6 §0.4 ecosystem optimization, the coordinator
+  enforces a single automation owner: `User`, `AutoDoctor`,
+  `Autopilot`, `Recovery` or `None` / `RuntimeInternalExperimental`
+  (Stable excludes the last). Overlapping automation intent
+  is rejected.
+

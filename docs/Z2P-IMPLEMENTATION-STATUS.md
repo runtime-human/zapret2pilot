@@ -1,5 +1,21 @@
 # Zapret2Pilot / Z2P — Implementation Status
 
+> **Master plan: Version 6, dated 2026-07-04.**
+>
+> The master plan that drives every implementation packet from
+> `0.0.24` onwards is `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md`. The
+> navigable roadmap entry point is `docs/Z2P-ROADMAP.md`. This file
+> continues the per-milestone implementation record started under the
+> earlier roadmap; per-milestone scope, tests, acceptance and
+> Evidence Pack requirements for `0.0.24`–`0.1.0` are defined in the
+> v6 master plan and are not duplicated here.
+>
+> The detailed record below is preserved verbatim for the
+> already-implemented milestones (`0.0.1`–`0.0.23`); the
+> `0.0.24`–`0.1.0` sections at the bottom are placeholders that
+> must be filled in as each milestone reaches the
+> `Implemented` status defined in v6 §21.3.
+
 ## 0.0.1-a — Build foundation
 
 Status: **implemented**.
@@ -668,4 +684,300 @@ dotnet test tests/Zapret2Pilot.Runtime.Tests -c Release --filter "FullyQualified
 dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release
 dotnet test Zapret2Pilot.slnx -c Release
 ```
+
+---
+
+# v6 master plan — 0.0.24+ milestone placeholders
+
+The sections below are placeholders for the v6 master plan milestones
+`0.0.24`–`0.1.0`. Each placeholder records the v6 reference, the
+milestone status as of the v6 baseline, the v6 §26 acceptance summary
+and a "What to add when this milestone reaches Implemented" reminder.
+Status is set to **Not Started / Planned** for every milestone; a
+milestone may be marked `Implemented` only when the v6 §21.3 rule
+("code merged; docs synced; acceptance green; evidence pack complete;
+unresolved findings explicitly downgraded/deferred with rationale")
+is satisfied.
+
+## 0.0.24 — Runtime Kernel Lifecycle Closure
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §27.
+- Required outcome (v6 §26): one reducer-driven authority; no stale
+  completion; safe publication.
+- v6 §0.3 critical corrections applied here: C3
+  (RuntimeSupervisor and RuntimeKernelWorker merge into one
+  authority) and C10 (cancellation after an irreversible boundary
+  means rollback/recovery).
+- When this milestone is implemented, replace this block with the
+  standard status entry (Implemented files / areas, deferred bullets,
+  validation commands) following the same shape as the `0.0.23`
+  section above, and add the matching DEC entry to
+  `docs/Z2P-DECISION-LOG.md`.
+
+## 0.0.25 — Bootstrap, Platform Boundaries & UI Composition
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §28.
+- Required outcome (v6 §26): trusted configuration, Windows TFMs,
+  no service locator, testable visual shell.
+- v6 §0.3 critical corrections applied here: C6 (Generic Host
+  defaults restricted), C7 (Windows-specific TFMs),
+  C8 (typed feature facades over reflection CommandBus).
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.26 — Privileged Boundary & Secure Process Launch
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §29.
+- Required outcome (v6 §26): STARTUPINFOEX/Job containment before
+  execution; exact argv/handles.
+- v6 §0.3 critical corrections applied here: C4 (secure process
+  creation is the only production launcher; no
+  `Process.Start → AssignProcessToJobObject` before the first real
+  winws2). Also includes the v6 §29 portable bootstrap spike.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.27 — Safe SQLite, Durable State & Recovery
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §30.
+- Required outcome (v6 §26): fixed controlled native SQLite, single
+  writer, online backup, journals.
+- v6 §0.3 critical corrections applied here: C1 (SQLite native
+  runtime is a P0 release blocker; deprecated/vulnerable
+  `SQLitePCLRaw.lib.e_sqlite3` is forbidden;
+  `Microsoft.Data.Sqlite.Core` + controlled native sqlite3 with
+  runtime version gate).
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry. The
+  `NuGetAuditSuppress` for the current native SQLite package must be
+  removed before this milestone can be marked `Implemented`.
+
+## 0.0.28 — Deployment Trust, Bundle Compatibility & Preflight
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §31.
+- Required outcome (v6 §26): installed/portable trust; whole-app
+  bootstrap spike; verified bundles.
+- v6 §0.3 critical corrections applied here: C2 (portable staging
+  covers the whole elevated application, not only winws2). Also
+  introduces `RuntimeCapabilityManifest` and `UpstreamPromotionState`
+  per v6 §0.4 / §11.9 / §11.10.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry. Public portable
+  ZIP remains forbidden before `0.0.42` (see v6 §52).
+
+## 0.0.29 — Real winws2 Developer Smoke
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §32.
+- Required outcome (v6 §26): first isolated controlled real-runtime
+  launch.
+- v6 hard prerequisite (v6 §32): Evidence Packs for `0.0.24`–`0.0.28`
+  complete (single Runtime authority, secure contained process
+  creation, safe SQLite native runtime, durable recovery, trusted
+  configuration, installed/portable app trust foundation, verified
+  compatible bundle, bounded stdout/stderr, global exception
+  policy).
+- Gate: Developer channel, explicit internal build capability,
+  isolated disposable Windows VM, verified exact Runtime Bundle,
+  approved fixed Strategy Pack / profile, no Stable/public UI Start
+  path, no ordinary shared CI runner.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.30 — Application Runtime UX & Dashboard SSoT
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §33.
+- Required outcome (v6 §26): compile-time typed use cases and honest
+  dashboard.
+- v6 §0.3 critical corrections applied here: C8 (typed feature
+  facades) and v6 §6 (four-dimensional health model with
+  `DashboardHeroPolicy`).
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.31 — Profiles, Rules & Deterministic Compiler
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §34.
+- Required outcome (v6 §26): real hostlists/config, versioned
+  canonical hash.
+- v6 §0.3 critical corrections applied here: C5 (compiler cache
+  contract: separate `CompilerCompatibilityVersion`,
+  `CompilerOptionsVersion`, `CanonicalizationVersion`; typed
+  length-prefixed canonical hash writer). Also introduces the
+  Traffic Impact Analyzer (v6 §34 Scope I) and the curated Strategy
+  Catalog (v6 §34 Scope J).
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.32 — Apply Profile, PlanDiff & Rollback
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §35.
+- Required outcome (v6 §26): durable crash-recoverable switching.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.33 — Observability & Network Hooks
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §36.
+- Required outcome (v6 §26): bounded output, LoggerMessage,
+  Activity/Meter, local logs.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.34 — Key Services Probe Engine
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §37.
+- Required outcome (v6 §26): versioned bounded efficacy checks.
+- v6 §0.4 corrections applied here: probe contexts
+  (`BaselineWithoutBypass`, `ProductionHealth`, `CandidateEvaluation`,
+  `ControlNetwork`) and the bounded service capability model
+  (`WebAccess`, `MediaDelivery`, `RealtimeUdp`, `NativeClient`).
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.35 — Auto Doctor Quick/Full
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §38.
+- Required outcome (v6 §26): isolated candidates and explainable
+  scoring.
+- v6 §0.4 corrections applied here: hard-gate + Pareto selection
+  (no auto-selecting the first perfect candidate; equally effective
+  scoped / safer / more stable / simpler strategies win).
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.36 — Autopilot & Network Binding
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §39.
+- Required outcome (v6 §26): stable automatic policy without
+  flapping.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.37 — Full MVP UI, Onboarding & Accessibility
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §40.
+- Required outcome (v6 §26): complete product UI and usability
+  preparation.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.38 — Tray & Desktop Lifecycle
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §41.
+- Required outcome (v6 §26): correct close/exit/shutdown/sleep
+  behavior.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.39 — Crash Recovery, Support Bundle & Data Management
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §42.
+- Required outcome (v6 §26): recovery UX, typed redaction, cleanup.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.40 — TUF Runtime Repository Trust & Catalog
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §43.
+- Required outcome (v6 §26): reviewed POUF, conformance-tested
+  metadata client.
+- v6 §0.3 critical corrections applied here: C12 (TUF client is a
+  separate security-critical subsystem; needs POUF, conformance
+  vectors, root rotation / rollback / freeze tests, independent
+  review).
+- Gate: no target download / activation in this milestone; only
+  metadata catalog and resolver. Stable cannot select Development
+  root.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.41 — Runtime Download, Activation & Rollback
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §44.
+- Required outcome (v6 §26): resilient download, safe extraction,
+  leases, candidate activation.
+- v6 §0.3 critical corrections applied here: C11 (runtime update
+  uses explicit leases; Current / Candidate / Previous bundles
+  cannot be deleted while leased).
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.42 — MSI + Secure Portable Packaging, Signing & Upgrade
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §45.
+- Required outcome (v6 §26): WiX MSI and signed NativeAOT
+  whole-app portable bootstrapper.
+- v6 §0.3 critical corrections applied here: C2 (whole-app
+  portable staging). The portable bootstrapper becomes the public
+  production entry point and the v6 §10.4 NativeAOT design becomes
+  the production architecture (was a spike in `0.0.28`).
+- Gate (v6 §52): public portable ZIP is forbidden before this
+  milestone.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.0.43 — Release Candidate Hardening
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §46.
+- Required outcome (v6 §26): security/soak/usability/provenance
+  freeze. Feature freeze; only P0/P1 correctness/security fixes,
+  performance regressions, documentation/evidence and release
+  tooling fixes.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
+
+## 0.1.0 — Full MVP
+
+Status: **Not Started / Planned.**
+
+- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §47.
+- Required outcome (v6 §26): stable installer + portable release.
+- Final release gate (v6 §47): all P0 blockers closed, no
+  vulnerable / suppressed SQLite native dependency, portable
+  whole-app staging approved, TUF conformance / security review
+  approved, real-runtime soak passed, installer/portable
+  signatures verified, canonical docs synced, exact source tag
+  and provenance published.
+- When this milestone is implemented, replace this block with the
+  standard status entry and the matching DEC entry.
 
