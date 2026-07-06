@@ -66,6 +66,43 @@ namespace Zapret2Pilot.Runtime.Supervisor;
 /// </remarks>
 public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDisposable
 {
+    /// <summary>
+    /// Private lifecycle state machine. The supervisor is a
+    /// façade over <see cref="RuntimeKernelLoop"/>; the loop owns
+    /// the start / stop transition state. The supervisor's own
+    /// state machine is the disposal gate: it tracks whether the
+    /// supervisor is still serving requests
+    /// (<see cref="LifecycleState.Active"/>), in the middle of
+    /// teardown (<see cref="LifecycleState.Disposing"/>) or fully
+    /// torn down (<see cref="LifecycleState.Disposed"/>). The
+    /// three-state design lets <see cref="Dispose"/> perform a
+    /// graceful stop (the previous binary
+    /// <c>int disposed</c> flag forced the stop path to observe
+    /// itself and short-circuit with
+    /// <see cref="ObjectDisposedException"/>).
+    /// </summary>
+    private enum LifecycleState
+    {
+        /// <summary>
+        /// The supervisor is fully operational.
+        /// </summary>
+        Active = 0,
+
+        /// <summary>
+        /// A single <see cref="Dispose"/> call is in the middle
+        /// of tearing the supervisor down. The stop pipeline is
+        /// still expected to run.
+        /// </summary>
+        Disposing = 1,
+
+        /// <summary>
+        /// The supervisor has been fully torn down. Any future
+        /// <c>StartAsync</c> or <c>StopAsync</c> call must throw
+        /// <see cref="ObjectDisposedException"/>.
+        /// </summary>
+        Disposed = 2,
+    }
+
     private readonly RuntimeKernelLoop loop;
     private readonly IRuntimeHealthMonitor healthMonitor;
     private readonly ILogger<RuntimeSupervisor> logger;
@@ -73,7 +110,7 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
 
     private readonly SemaphoreSlim startStopLock = new(1, 1);
     private IDisposable? healthSubscription;
-    private int disposed;
+    private int lifecycleState; // stores a LifecycleState value
 
     /// <summary>
     /// Creates a new <see cref="RuntimeSupervisor"/> façade.
@@ -128,7 +165,7 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref lifecycleState) != (int)LifecycleState.Active, this);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (healthSubscription is null)
@@ -170,7 +207,15 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     /// <inheritdoc />
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        // Atomic transition Active -> Disposing. The first
+        // caller wins; concurrent Dispose calls observe a
+        // non-Active state and return immediately so the
+        // teardown sequence runs exactly once.
+        if (Interlocked.CompareExchange(
+                ref lifecycleState,
+                (int)LifecycleState.Disposing,
+                (int)LifecycleState.Active)
+            != (int)LifecycleState.Active)
         {
             return;
         }
@@ -179,7 +224,16 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
 
         try
         {
-            StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+            // ignoreDisposed: true — the supervisor IS being
+            // disposed, but the in-flight stop pipeline must
+            // still run to completion. The previous binary
+            // `int disposed` flag forced this call to short
+            // -circuit with ObjectDisposedException, which made
+            // Dispose a logged failure rather than a graceful
+            // shutdown.
+            StopCoreAsync(ignoreDisposed: true, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
         }
         catch (Exception ex)
         {
@@ -187,8 +241,28 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
         }
         finally
         {
-            loop.Dispose();
-            startStopLock.Dispose();
+            try
+            {
+                loop.Dispose();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "RuntimeSupervisor: loop disposal failed.");
+            }
+
+            try
+            {
+                startStopLock.Dispose();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "RuntimeSupervisor: startStopLock disposal failed.");
+            }
+
+            // The teardown sequence is complete. Subsequent
+            // StartAsync / StopAsync callers must observe
+            // ObjectDisposedException.
+            Volatile.Write(ref lifecycleState, (int)LifecycleState.Disposed);
         }
     }
 
@@ -197,7 +271,7 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
         RuntimeProcessStartContext context,
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref lifecycleState) != (int)LifecycleState.Active, this);
         ArgumentNullException.ThrowIfNull(context, nameof(context));
 
         await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -242,9 +316,54 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     }
 
     /// <inheritdoc />
-    public async Task<Result<Unit>> StopAsync(CancellationToken cancellationToken = default)
+    public Task<Result<Unit>> StopAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        return StopCoreAsync(ignoreDisposed: false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Core stop pipeline shared by the public
+    /// <see cref="StopAsync"/> entry point and the
+    /// <see cref="IDisposable.Dispose"/> fallback. The
+    /// <paramref name="ignoreDisposed"/> flag distinguishes the
+    /// two callers:
+    /// <list type="bullet">
+    ///   <item>The public <c>StopAsync</c> passes
+    ///         <c>false</c> and throws
+    ///         <see cref="ObjectDisposedException"/> when the
+    ///         supervisor is already torn down (lifecycle state
+    ///         <see cref="LifecycleState.Disposed"/>).</item>
+    ///   <item>The <see cref="IDisposable.Dispose"/> path
+    ///         passes <c>true</c>: the supervisor IS being
+    ///         disposed (lifecycle state
+    ///         <see cref="LifecycleState.Disposing"/>), but the
+    ///         stop pipeline must still run to completion so the
+    ///         runtime is left in the terminal
+    ///         <see cref="RuntimeSupervisorStatus.Stopped"/>
+    ///         state.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="ignoreDisposed">
+    /// When <c>true</c>, the disposed-state check is skipped so
+    /// the stop pipeline can run during disposal. When
+    /// <c>false</c>, the disposed-state check is enforced and
+    /// an <see cref="ObjectDisposedException"/> is raised if
+    /// the supervisor is fully torn down.
+    /// </param>
+    /// <param name="cancellationToken">
+    /// Cancellation token observed while waiting for the
+    /// in-flight stop pipeline to complete.
+    /// </param>
+    private async Task<Result<Unit>> StopCoreAsync(
+        bool ignoreDisposed,
+        CancellationToken cancellationToken)
+    {
+        if (!ignoreDisposed)
+        {
+            ObjectDisposedException.ThrowIf(
+                Volatile.Read(ref lifecycleState) == (int)LifecycleState.Disposed,
+                this);
+        }
 
         await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -295,7 +414,7 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     /// <param name="snapshot">Newly published health snapshot.</param>
     private void OnHealthSnapshot(RuntimeHealthSnapshot snapshot)
     {
-        if (Volatile.Read(ref disposed) != 0)
+        if (Volatile.Read(ref lifecycleState) != (int)LifecycleState.Active)
         {
             return;
         }

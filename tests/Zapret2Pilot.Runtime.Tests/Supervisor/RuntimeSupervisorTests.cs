@@ -302,6 +302,156 @@ public sealed class RuntimeSupervisorTests
         }
     }
 
+    [Fact]
+    public static async Task Dispose_WhenRunning_PerformsGracefulStopAndDoesNotThrow()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        RuntimeSupervisor supervisor = harness.Supervisor;
+
+        Result<RuntimeProcessHostResult> start = await supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        Assert.True(start.IsSuccess, start.IsFailure ? start.Error.ToString() : string.Empty);
+        Assert.Equal(RuntimeSupervisorStatus.Running, supervisor.CurrentState.Status);
+
+        // Observe the projected stop transition so the test
+        // validates the state reached the terminal Stopped
+        // snapshot before Dispose returns. The observer is
+        // detached once the stop fires so the test does not
+        // observe the post-Dispose disposal of the publisher.
+        TaskCompletionSource<RuntimeSupervisorState> stopObserved = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        IDisposable stopSubscription = supervisor.StateChanged
+            .Where(state => state.Status == RuntimeSupervisorStatus.Stopped)
+            .Take(1)
+            .Subscribe(state => stopObserved.TrySetResult(state));
+
+        try
+        {
+            // Dispose must not throw. The graceful stop path must
+            // be reached even though the supervisor is being torn
+            // down, so the runner's stop is invoked at least once.
+            Exception? thrown = Record.Exception(() => supervisor.Dispose());
+            Assert.Null(thrown);
+
+            // The graceful stop transition must complete before
+            // Dispose returns, and the runner's stop must have
+            // been invoked. Accessing CurrentState after Dispose
+            // is intentionally not exercised here: the underlying
+            // publisher is disposed by the loop, which is the
+            // documented pre-Disposal contract.
+            RuntimeSupervisorState resolved = await stopObserved.Task.WaitAsync(
+                TimeSpan.FromSeconds(2),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(RuntimeSupervisorStatus.Stopped, resolved.Status);
+        }
+        finally
+        {
+            stopSubscription.Dispose();
+        }
+
+        Assert.True(harness.Runner.StopCallCount >= 1);
+    }
+
+    [Fact]
+    public static void Dispose_IsIdempotent()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        RuntimeSupervisor supervisor = harness.Supervisor;
+
+        Exception? first = Record.Exception(() => supervisor.Dispose());
+        Exception? second = Record.Exception(() => supervisor.Dispose());
+        Exception? third = Record.Exception(() => supervisor.Dispose());
+
+        Assert.Null(first);
+        Assert.Null(second);
+        Assert.Null(third);
+    }
+
+    [Fact]
+    public static async Task StopAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        RuntimeSupervisor supervisor = harness.Supervisor;
+
+        Result<RuntimeProcessHostResult> start = await supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        Assert.True(start.IsSuccess, start.IsFailure ? start.Error.ToString() : string.Empty);
+
+        supervisor.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => supervisor.StopAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public static async Task StartAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        RuntimeSupervisor supervisor = harness.Supervisor;
+
+        supervisor.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => supervisor.StartAsync(
+                CreateStartContext(),
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public static async Task HostedService_StopAsync_FollowedByDispose_DoesNotThrow()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        RuntimeSupervisor supervisor = harness.Supervisor;
+
+        Result<RuntimeProcessHostResult> start = await supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        Assert.True(start.IsSuccess, start.IsFailure ? start.Error.ToString() : string.Empty);
+
+        await ((IHostedService)supervisor).StartAsync(TestContext.Current.CancellationToken);
+        await ((IHostedService)supervisor).StopAsync(TestContext.Current.CancellationToken);
+
+        // The hosted-service StopAsync path drove the kernel to
+        // the terminal Stopped state. We can read it through
+        // CurrentState BEFORE Dispose because the publisher is
+        // still alive at this point.
+        Assert.Equal(RuntimeSupervisorStatus.Stopped, supervisor.CurrentState.Status);
+
+        Exception? thrown = Record.Exception(() => supervisor.Dispose());
+        Assert.Null(thrown);
+    }
+
+    [Fact]
+    public static void HostedService_StartAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        RuntimeSupervisor supervisor = harness.Supervisor;
+
+        supervisor.Dispose();
+
+        // The IHostedService.StartAsync implementation is
+        // synchronous up to and including the disposed check, so
+        // the exception is raised before any Task is returned.
+        // Discard the return value to keep the lambda's return
+        // type void and satisfy xUnit2014 (no Assert.Throws on
+        // Func<Task>).
+        Assert.Throws<ObjectDisposedException>(() =>
+        {
+            _ = ((IHostedService)supervisor).StartAsync(TestContext.Current.CancellationToken);
+        });
+    }
+
     private static SupervisorHarness CreateSupervisor(FakeClock clock)
     {
         CrashLoopGuard guard = new(FastGuardOptions(), clock.Now);
