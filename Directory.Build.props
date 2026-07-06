@@ -20,6 +20,11 @@
     <Copyright>Copyright © Zapret2Pilot contributors</Copyright>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <Z2PVersion>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</Z2PVersion>
+    <Version>$(Z2PVersion)</Version>
+  </PropertyGroup>
+
   <ItemGroup>
     <!--
       Analyzer packages (0.0.18-C / D-A1, D-A2).

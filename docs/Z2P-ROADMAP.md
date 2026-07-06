@@ -20,9 +20,9 @@
 ## Status
 
 ```text
-Current VERSION:        0.0.24
+Current VERSION:        0.0.25
 Master plan:            v6 (2026-07-04)
-Next milestone:         0.0.25 — Bootstrap, Platform Boundaries & UI Composition
+Next milestone:         0.0.26 — Privileged Boundary & Secure Process Launch
 Real winws2 launch:     forbidden before 0.0.24–0.0.28 are complete
 Public portable ZIP:    forbidden before 0.0.42
 Stable runtime updater: forbidden before TUF conformance/security review
@@ -262,6 +262,7 @@ is the navigable summary; do not duplicate the detailed record here.
 | `0.0.22` | Runtime Crash Loop Guard | Implemented | `Z2P-IMPLEMENTATION-STATUS.md` |
 | `0.0.23` | Runtime Kernel Correctness Hardening | Implemented | `Z2P-IMPLEMENTATION-STATUS.md` |
 | `0.0.24` | Runtime Kernel Lifecycle Closure | Implemented | `Z2P-IMPLEMENTATION-STATUS.md` |
+| `0.0.25` | Bootstrap, Platform Boundaries & UI Composition | Implemented | `Z2P-IMPLEMENTATION-STATUS.md` |
 
 ## 3.1. Notable architecture corrections between 0.0.20 and 0.0.23
 

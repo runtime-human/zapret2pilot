@@ -1,7 +1,4 @@
-using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using Microsoft.Extensions.DependencyInjection;
-using Zapret2Pilot.App.Shell;
 
 namespace Zapret2Pilot.App;
 
@@ -14,11 +11,7 @@ public sealed partial class App : Avalonia.Application
 
     public override void OnFrameworkInitializationCompleted()
     {
-        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-        {
-            desktop.MainWindow = AppHost.Services.GetRequiredService<MainWindow>();
-        }
-
+        // MainWindow is provided by the desktop lifetime callback in Program.Main.
         base.OnFrameworkInitializationCompleted();
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Reactive;
+using FluentIcons.Common;
 using ReactiveUI;
 
 namespace Zapret2Pilot.App.Navigation;
@@ -25,6 +26,7 @@ public sealed class NavigationItemViewModel : ReactiveObject
         Title = title;
         this.isSelected = isSelected;
         NavigateCommand = navigateCommand;
+        Icon = MapIcon(RouteId);
     }
 
     public RouteId RouteId { get; }
@@ -33,7 +35,13 @@ public sealed class NavigationItemViewModel : ReactiveObject
 
     public bool IsSelected => isSelected;
 
-    public string Marker => IsSelected ? "●" : string.Empty;
+    /// <summary>
+    /// FluentIcons symbol used to render the sidebar entry.
+    /// Resolved eagerly from the route id; the mapping is a pure
+    /// value-to-enum function with no Avalonia render dependency,
+    /// so it is safe to use in headless view-model tests.
+    /// </summary>
+    public Icon Icon { get; }
 
     public ReactiveCommand<Unit, Unit> NavigateCommand { get; }
 
@@ -45,6 +53,13 @@ public sealed class NavigationItemViewModel : ReactiveObject
         }
 
         this.RaiseAndSetIfChanged(ref isSelected, value);
-        this.RaisePropertyChanged(nameof(Marker));
     }
+
+    private static Icon MapIcon(RouteId routeId) => routeId.Value switch
+    {
+        "dashboard" => Icon.Home,
+        "profiles" => Icon.People,
+        "settings" => Icon.Settings,
+        _ => Icon.Home,
+    };
 }

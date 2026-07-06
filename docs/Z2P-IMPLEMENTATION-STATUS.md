@@ -869,16 +869,71 @@ Notes:
 
 ## 0.0.25 — Bootstrap, Platform Boundaries & UI Composition
 
-Status: **Not Started / Planned.**
+Status: **implemented**.
 
-- v6 reference: `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §28.
-- Required outcome (v6 §26): trusted configuration, Windows TFMs,
-  no service locator, testable visual shell.
-- v6 §0.3 critical corrections applied here: C6 (Generic Host
-  defaults restricted), C7 (Windows-specific TFMs),
-  C8 (typed feature facades over reflection CommandBus).
-- When this milestone is implemented, replace this block with the
-  standard status entry and the matching DEC entry.
+Implemented files and areas:
+
+- Scope A — Generic Host:
+  - `src/Zapret2Pilot.App/Hosting/Z2PHostBuilder.cs` — `Host.CreateApplicationBuilder`, explicit configuration sources, trusted options setup;
+  - `src/Zapret2Pilot.App/Hosting/Z2PApplicationOptions.cs` — application options with DataAnnotations validation;
+  - `src/Zapret2Pilot.App/Hosting/Z2PApplicationOptionsValidator.cs` — `IValidateOptions<Z2PApplicationOptions>`;
+  - `src/Zapret2Pilot.App/Hosting/Z2PConfigurationDefaults.cs` — hardcoded trusted TUF root and default storage path;
+  - `src/Zapret2Pilot.App/appsettings.json` — approved configuration file only;
+- Scope B — Startup Lifecycle:
+  - `src/Zapret2Pilot.App/Lifecycle/ApplicationLifecyclePhase.cs` — canonical phase enum;
+  - `src/Zapret2Pilot.App/Lifecycle/IZ2PApplicationLifecycleCoordinator.cs` — read-only observable contract;
+  - `src/Zapret2Pilot.App/Lifecycle/Z2PApplicationLifecycleCoordinator.cs` — `IHostedService` auto-advancing phases;
+- Scope C — Platform TFMs:
+  - `src/Zapret2Pilot.App/Zapret2Pilot.App.csproj` and `src/Zapret2Pilot.Runtime/Zapret2Pilot.Runtime.csproj` — `net10.0-windows10.0.26100.0`;
+  - `tests/Zapret2Pilot.App.ViewModelTests/Architecture/TfmArchitectureTests.cs` — architecture tests for the TFM split;
+- Scope D — DI Composition:
+  - `src/Zapret2Pilot.App/DependencyInjection/AppServiceCollectionExtensions.cs` — explicit registration of navigation, scheduler, lifecycle, exception policy, feature facades, shell;
+  - `src/Zapret2Pilot.App/Threading/AvaloniaUiScheduler.cs`, `IUiScheduler.cs`, `ImmediateUiScheduler.cs` — centralized UI scheduling seam;
+  - `src/Zapret2Pilot.App/Properties/AssemblyInfo.cs` — `InternalsVisibleTo` for tests;
+  - `src/Zapret2Pilot.App/Program.cs` and `App.axaml.cs` — production composition root without static locator;
+  - `src/Zapret2Pilot.App/Shell/MainWindowViewModel.cs` and `MainWindow.axaml.cs` — single production constructor;
+- Scope E — Application API Migration Start:
+  - `src/Zapret2Pilot.Application/UseCases/` — `IRuntimeUseCases`, `IProfileUseCases`, `IRulesUseCases`, `IAutoDoctorUseCases`, `IDiagnosticsUseCases`, `IRuntimeUpdateUseCases`, `IDataManagementUseCases`;
+  - `src/Zapret2Pilot.Application/UseCases/UseCaseImplementations.cs` — minimal stub implementations returning `Result<T>`;
+  - `src/Zapret2Pilot.Application/UseCases/ApplicationServiceCollectionExtensions.cs` — DI registration helper;
+  - `tests/Zapret2Pilot.Application.Tests/UseCases/FeatureFacadeTests.cs` — facade contract tests;
+- Scope F — ReactiveUI Lifecycle:
+  - `MainWindowViewModel.cs` — `IActivatableViewModel`, `WhenActivated`, `CompositeDisposable`, command `ThrownExceptions` observer;
+  - `Program.cs` — `RxApp` exception handler via `WithExceptionHandler`;
+  - `MainWindow.axaml.cs` — view-side activation hook;
+- Scope G — Visual Contract:
+  - `src/Zapret2Pilot.App/Shared/Theme/LightTheme.axaml` — theme tokens (spacing, radius, typography, brushes);
+  - `NavigationItemViewModel.cs`, `NavigationIcons.cs` and `MainWindow.axaml` — Fluent-style vector icons via `FluentIcons.Avalonia` (pinned exact version `2.0.316.1`), no emoji;
+  - `MainWindowViewModel.cs` — dynamic `AppVersion` from `AssemblyInformationalVersionAttribute`;
+  - `VERSION = 0.0.25`;
+- Scope H — Privileged Input Baseline:
+  - `src/Zapret2Pilot.App/Input/CliAllowlist.cs` — CLI allowlist;
+  - `src/Zapret2Pilot.App/Input/FileImportBoundary.cs` — extension/size/magic validation;
+  - `src/Zapret2Pilot.App/Input/ExternalLinkLauncher.cs` — scheme/host whitelist, testable process launcher;
+  - `tests/Zapret2Pilot.App.ViewModelTests/Input/` — input boundary tests;
+- Scope I — Global Exception Foundation:
+  - `src/Zapret2Pilot.App/Diagnostics/ExceptionSeverity.cs`, `ExceptionContext.cs`;
+  - `src/Zapret2Pilot.App/Diagnostics/ExceptionClassifier.cs` — pure allocation-light classifier;
+  - `src/Zapret2Pilot.App/Diagnostics/IExceptionPolicy.cs`, `ExceptionPolicy.cs`;
+  - `Program.cs` — subscriptions for AppDomain, TaskScheduler, Dispatcher, ReactiveUI;
+  - `tests/Zapret2Pilot.App.ViewModelTests/Diagnostics/ExceptionClassifierTests.cs`.
+
+Validation commands to run locally:
+
+```powershell
+dotnet build Zapret2Pilot.slnx -c Release
+dotnet test tests/Zapret2Pilot.App.ViewModelTests -c Release
+dotnet test tests/Zapret2Pilot.Application.Tests -c Release
+dotnet test Zapret2Pilot.slnx -c Release
+```
+
+Notes:
+
+- No real `winws2` is launched in this milestone.
+- Runtime commands in the shell remain disabled until the lifecycle coordinator reaches `ApplicationLifecyclePhase.Ready`.
+- Security-critical configuration values (`TrustedTufRoot`, `DeploymentFlavor`, `DeveloperMode`, runtime/storage roots) are set in code and cannot be overridden by environment variables, ordinary `appsettings.json`, or arbitrary CLI arguments.
+- The static service locator (`AppHost`) and production parameterless `MainWindowViewModel` constructors have been removed.
+- Scope G uses `FluentIcons.Avalonia` (pinned exact version `2.0.316.1`, verified compatible with Avalonia 12.0.5) for sidebar/dashboard icons; the temporary `StreamGeometry` deviation is removed. See `DEC-0051`.
 
 ## 0.0.26 — Privileged Boundary & Secure Process Launch
 

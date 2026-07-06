@@ -5,6 +5,14 @@
     <RootNamespace>Zapret2Pilot.Runtime.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!--
+      0.0.25 Scope C: match the Windows TFM of Zapret2Pilot.Runtime,
+      which this project exercises. The TFM is a superset of net10.0
+      so the cross-platform FakeRuntime test executable (which stays
+      on net10.0) keeps resolving as a transitive dependency.
+    -->
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
   </PropertyGroup>
 
   <ItemGroup>

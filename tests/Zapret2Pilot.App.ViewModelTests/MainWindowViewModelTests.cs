@@ -1,9 +1,14 @@
 using System;
 using System.Reactive.Linq;
+using System.Windows.Input;
+using ReactiveUI;
 using Xunit;
+using Zapret2Pilot.App.Diagnostics;
+using Zapret2Pilot.App.Lifecycle;
 using Zapret2Pilot.App.Navigation;
 using Zapret2Pilot.App.Shell;
 using Zapret2Pilot.App.Threading;
+using Zapret2Pilot.App.ViewModelTests.Fakes;
 using Zapret2Pilot.Runtime.Guard;
 using Zapret2Pilot.Runtime.Supervisor;
 
@@ -18,10 +23,10 @@ public sealed class MainWindowViewModelTests
     [Fact]
     public static void InitialShellIdentityMatchesProjectCanon()
     {
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = CreateViewModel();
 
         Assert.Equal("Zapret2Pilot", viewModel.AppName);
-        Assert.Equal("v0.0.24", viewModel.AppVersion);
+        Assert.StartsWith("v0.0.25", viewModel.AppVersion);
         Assert.Equal("Zapret2Pilot", viewModel.WindowTitle);
         Assert.Equal("Главная", viewModel.PageTitle);
     }
@@ -29,7 +34,7 @@ public sealed class MainWindowViewModelTests
     [Fact]
     public static void SidebarContainsNavigationPlaceholdersWithoutRuntimeStatusBlock()
     {
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = CreateViewModel();
 
         Assert.Collection(
             viewModel.SidebarItems,
@@ -45,7 +50,7 @@ public sealed class MainWindowViewModelTests
     [Fact]
     public static void DashboardUsesMockDesignTimeStatus()
     {
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = CreateViewModel();
 
         Assert.Equal("Обход активен", viewModel.StatusTitle);
         Assert.Equal("Текущий профиль работает стабильно.", viewModel.StatusSubtitle);
@@ -57,7 +62,7 @@ public sealed class MainWindowViewModelTests
     [Fact]
     public static void KeyServicesUseLatencyInsteadOfExcellentCopy()
     {
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = CreateViewModel();
 
         Assert.Collection(
             viewModel.KeyServices,
@@ -86,7 +91,7 @@ public sealed class MainWindowViewModelTests
     [Fact]
     public static void NavigateToProfilesUpdatesCurrentPageAndSelection()
     {
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = CreateViewModel();
 
         bool navigated = viewModel.NavigateTo(RouteId.Profiles);
 
@@ -102,7 +107,7 @@ public sealed class MainWindowViewModelTests
     [Fact]
     public static void UnknownRouteDoesNotChangeCurrentPage()
     {
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = CreateViewModel();
 
         bool navigated = viewModel.NavigateTo(new RouteId("unknown"));
 
@@ -114,7 +119,7 @@ public sealed class MainWindowViewModelTests
     [Fact]
     public static void MockCommandsOnlyUpdateUiState()
     {
-        MainWindowViewModel viewModel = new();
+        MainWindowViewModel viewModel = CreateViewModel();
 
         using IDisposable subscription = viewModel.CheckNowCommand.Execute().Subscribe(_ => { });
 
@@ -127,24 +132,86 @@ public sealed class MainWindowViewModelTests
         NavigationRouter router = new(new NavigationPageFactory(), RouteId.Dashboard);
         ImmediateUiScheduler scheduler = new();
         using FakeRuntimeSupervisor fakeSupervisor = new();
-        MainWindowViewModel viewModel = new(router, scheduler, fakeSupervisor, logger: null);
+        MainWindowViewModel viewModel = new(router, scheduler, fakeSupervisor, logger: null, coordinator: new FakeLifecycleCoordinator());
 
-        RuntimeSupervisorState blockedState = new(
-            status: RuntimeSupervisorStatus.StartBlocked,
-            lastStartResult: null,
-            guardResult: new CrashLoopGuardResult(
-                isAllowed: false,
-                backoffRemaining: TimeSpan.FromSeconds(5),
-                consecutiveFailures: 1),
-            lastError: null,
-            timestamp: DateTimeOffset.UtcNow);
+        // The supervisor subscription is wired inside WhenActivated
+        // (Packet 6 — Scope F). Activate the view model so the
+        // subscription becomes live before we publish, then deactivate
+        // to dispose it cleanly at the end of the test.
+        viewModel.Activator.Activate();
+        try
+        {
+            RuntimeSupervisorState blockedState = new(
+                status: RuntimeSupervisorStatus.StartBlocked,
+                lastStartResult: null,
+                guardResult: new CrashLoopGuardResult(
+                    isAllowed: false,
+                    backoffRemaining: TimeSpan.FromSeconds(5),
+                    consecutiveFailures: 1),
+                lastError: null,
+                timestamp: DateTimeOffset.UtcNow);
 
-        fakeSupervisor.Publish(blockedState);
+            fakeSupervisor.Publish(blockedState);
 
-        Assert.Equal(
-            "Запуск отложен: слишком много падений. Повтор через 5 с.",
-            viewModel.LastAction);
+            Assert.Equal(
+                "Запуск отложен: слишком много падений. Повтор через 5 с.",
+                viewModel.LastAction);
+        }
+        finally
+        {
+            viewModel.Activator.Deactivate();
+        }
     }
+
+    [Fact]
+    public static void RuntimeCommandsDisabledWhenCoordinatorIsNotReady()
+    {
+        FakeLifecycleCoordinator coordinator = new();
+        coordinator.SetPhase(ApplicationLifecyclePhase.ProcessBootstrap);
+        MainWindowViewModel viewModel = CreateViewModel(coordinator: coordinator);
+
+        ICommand stopCommand = viewModel.StopCommand;
+        ICommand checkNowCommand = viewModel.CheckNowCommand;
+
+        Assert.False(stopCommand.CanExecute(null));
+        Assert.False(checkNowCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public static void RuntimeCommandsEnabledWhenCoordinatorReachesReady()
+    {
+        FakeLifecycleCoordinator coordinator = new();
+        MainWindowViewModel viewModel = CreateViewModel(coordinator: coordinator);
+
+        ICommand stopCommand = viewModel.StopCommand;
+        ICommand checkNowCommand = viewModel.CheckNowCommand;
+
+        Assert.True(stopCommand.CanExecute(null));
+        Assert.True(checkNowCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public static void MainWindowViewModelIsActivatable()
+    {
+        MainWindowViewModel viewModel = CreateViewModel();
+
+        Assert.IsAssignableFrom<IActivatableViewModel>(viewModel);
+        Assert.NotNull(((IActivatableViewModel)viewModel).Activator);
+    }
+
+    private static MainWindowViewModel CreateViewModel(
+        NavigationRouter? router = null,
+        IUiScheduler? scheduler = null,
+        IRuntimeSupervisor? supervisor = null,
+        IZ2PApplicationLifecycleCoordinator? coordinator = null,
+        IExceptionPolicy? exceptionPolicy = null) =>
+    new(
+        router ?? new NavigationRouter(new NavigationPageFactory(), RouteId.Dashboard),
+        scheduler ?? new ImmediateUiScheduler(),
+        supervisor,
+        logger: null,
+        coordinator ?? new FakeLifecycleCoordinator(),
+        exceptionPolicy);
 }
 
 #pragma warning restore CA1707 // Identifiers should not contain underscores

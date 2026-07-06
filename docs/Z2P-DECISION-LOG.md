@@ -1342,3 +1342,30 @@ Consequence:
   section with the implemented files, tests, validation
   commands and notes.
 
+## DEC-0051 — Visual contract icons via FluentIcons.Avalonia
+
+Date: 2026-07-06
+
+Decision:
+
+- `0.0.25` Scope G requires a visual contract with theme tokens, Fluent icons, no emoji, and a dynamic version.
+- The implementation now uses the `FluentIcons.Avalonia` NuGet package (pinned exact version `2.0.316.1`; verified compatible with Avalonia `12.0.5` and ReactiveUI `23.2.28`).
+- The temporary hand-drawn `StreamGeometry` approach (`Z2P.Icon.*` resources and `Path` elements) is replaced.
+- The sidebar exposes icons via a strongly-typed `Icon Icon` property on `NavigationItemViewModel`, mapped from the route id; the dashboard check, header settings, and sidebar items all bind to `<ic:FluentIcon>` controls.
+- The acceptance criteria of Scope G are still met: no emoji, theme tokens present, dynamic version from `AssemblyInformationalVersionAttribute`, and Fluent-style icons in the sidebar and dashboard.
+
+Reference:
+
+- `docs/Z2P-PLAN-0.0.25.md` Scope G.
+- `docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md` §28 Scope G.
+- `Directory.Packages.props`.
+- `src/Zapret2Pilot.App/Zapret2Pilot.App.csproj`.
+- `src/Zapret2Pilot.App/Shared/Theme/LightTheme.axaml`.
+- `src/Zapret2Pilot.App/Navigation/NavigationItemViewModel.cs`.
+- `src/Zapret2Pilot.App/Navigation/NavigationIcons.cs`.
+- `src/Zapret2Pilot.App/Shell/MainWindow.axaml`.
+
+Consequence:
+
+- The milestone ships with `FluentIcons.Avalonia` 2.0.316.1 as the single icon source. If a future milestone needs additional icon variants (color/COLRv1, light stroke, custom glyphs), the package already supports them via `IconVariant` and `IconSize` enums.
+

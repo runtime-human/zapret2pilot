@@ -2,6 +2,7 @@
     x:Class="Zapret2Pilot.App.Shell.MainWindow"
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ic="using:FluentIcons.Avalonia"
     xmlns:nav="using:Zapret2Pilot.App.Navigation"
     xmlns:vm="using:Zapret2Pilot.App.Shell"
     x:DataType="vm:MainWindowViewModel"
@@ -53,14 +54,12 @@
                   BorderThickness="0"
                   Padding="0">
                 <Border Classes="NavItem">
-                  <Grid ColumnDefinitions="24,*">
-                    <TextBlock
-                        Grid.Column="0"
-                        Text="{Binding Marker}"
-                        Foreground="{StaticResource Z2P.Brush.Primary}" />
+                  <Grid ColumnDefinitions="4,24,*">
+                    <Border Grid.Column="0" Width="4" Background="{StaticResource Z2P.Brush.Primary}" CornerRadius="2" IsVisible="{Binding IsSelected}" />
+                    <ic:FluentIcon Grid.Column="1" Icon="{Binding Icon}" IconVariant="Regular" IconSize="Size20" Foreground="{StaticResource Z2P.Brush.TextSecondary}" />
 
                     <TextBlock
-                        Grid.Column="1"
+                        Grid.Column="2"
                         Text="{Binding Title}"
                         FontSize="14"
                         Foreground="{StaticResource Z2P.Brush.TextPrimary}" />
@@ -91,7 +90,7 @@
             Spacing="16"
             VerticalAlignment="Center">
           <TextBlock Text="RU" Classes="Body" />
-          <TextBlock Text="⚙" Classes="Body" />
+          <ic:FluentIcon Icon="{x:Static nav:NavigationIcons.Settings}" IconVariant="Regular" IconSize="Size20" Foreground="{StaticResource Z2P.Brush.TextSecondary}" />
         </StackPanel>
       </Grid>
 
@@ -129,13 +128,7 @@
                   CornerRadius="32"
                   Background="#DCFCE7"
                   VerticalAlignment="Top">
-                <TextBlock
-                    Text="✓"
-                    FontSize="38"
-                    FontWeight="SemiBold"
-                    Foreground="{StaticResource Z2P.Brush.Success}"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center" />
+                <ic:FluentIcon Icon="{x:Static nav:NavigationIcons.Checkmark}" IconVariant="Filled" IconSize="Size32" Foreground="{StaticResource Z2P.Brush.Success}" HorizontalAlignment="Center" VerticalAlignment="Center" />
               </Border>
 
               <StackPanel Grid.Column="1" Spacing="10">

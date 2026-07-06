@@ -12,6 +12,25 @@
     <SolidColorBrush x:Key="Z2P.Brush.TextPrimary" Color="#0F172A" />
     <SolidColorBrush x:Key="Z2P.Brush.TextSecondary" Color="#475569" />
     <SolidColorBrush x:Key="Z2P.Brush.TextMuted" Color="#64748B" />
+
+    <!-- Spacing tokens -->
+    <x:Double x:Key="Z2P.Space.4">4</x:Double>
+    <x:Double x:Key="Z2P.Space.8">8</x:Double>
+    <x:Double x:Key="Z2P.Space.12">12</x:Double>
+    <x:Double x:Key="Z2P.Space.16">16</x:Double>
+    <x:Double x:Key="Z2P.Space.20">20</x:Double>
+    <x:Double x:Key="Z2P.Space.24">24</x:Double>
+
+    <!-- Radius tokens -->
+    <x:Double x:Key="Z2P.Radius.8">8</x:Double>
+    <x:Double x:Key="Z2P.Radius.12">12</x:Double>
+    <x:Double x:Key="Z2P.Radius.16">16</x:Double>
+
+    <!-- Typography tokens -->
+    <x:Double x:Key="Z2P.FontSize.Body">14</x:Double>
+    <x:Double x:Key="Z2P.FontSize.Caption">13</x:Double>
+    <x:Double x:Key="Z2P.FontSize.CardTitle">16</x:Double>
+    <x:Double x:Key="Z2P.FontSize.PageTitle">28</x:Double>
   </Styles.Resources>
 
   <Style Selector="Window">
