@@ -305,7 +305,7 @@ internal sealed class BlockingStartupStep : IStartupStep
         Name = name;
     }
 
-    public string Name { get; } = "StorageRecovery";
+    public string Name { get; }
 
     public StartupStepCriticality Criticality => StartupStepCriticality.Critical;
 

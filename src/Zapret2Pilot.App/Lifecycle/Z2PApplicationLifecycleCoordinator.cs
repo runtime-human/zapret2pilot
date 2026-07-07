@@ -133,6 +133,21 @@ public sealed class Z2PApplicationLifecycleCoordinator
 
         lock (pipelineLock)
         {
+            // Re-check the phase inside the lock: between releasing
+            // the first lock and acquiring this one, StopAsync could
+            // have transitioned to Stopping/Stopped. If the
+            // coordinator is already in a terminal shutdown state,
+            // do not start the pipeline.
+            ApplicationLifecyclePhase phaseAfterLock = CurrentPhase;
+            if (phaseAfterLock is ApplicationLifecyclePhase.Stopping
+                or ApplicationLifecyclePhase.Stopped)
+            {
+                logger.LogWarning(
+                    "SignalShellVisible: coordinator reached {Phase} between the first and second lock. Ignoring.",
+                    phaseAfterLock);
+                return;
+            }
+
             pipelineTask ??= Task.Run(
                 () => RunPipelineAsync(pipelineCts.Token),
                 CancellationToken.None);
@@ -253,12 +268,13 @@ public sealed class Z2PApplicationLifecycleCoordinator
 
                 case StartupStepStatus.Degraded:
                     // Degraded success does not stop the pipeline but
-                    // is a soft signal; the final Ready-vs-Degraded
-                    // decision is made below.
+                    // remembers the degradation: the final
+                    // Ready-vs-Degraded decision is made below.
                     logger.LogWarning(
                         "Lifecycle step {Step} reported Degraded: {Message}",
                         step.Name,
                         result.Message);
+                    hasDegradableFailure = true;
                     continue;
 
                 case StartupStepStatus.Failed:
