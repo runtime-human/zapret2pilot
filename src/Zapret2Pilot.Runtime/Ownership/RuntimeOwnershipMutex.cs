@@ -5,12 +5,17 @@ namespace Zapret2Pilot.Runtime.Ownership;
 
 public sealed class RuntimeOwnershipMutex
 {
+    private static readonly NamedWaitHandleOptions OwnershipOptions = new()
+    {
+        CurrentUserOnly = true,
+        CurrentSessionOnly = false,
+    };
+
     private readonly string mutexName;
 
     public RuntimeOwnershipMutex(string mutexName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(mutexName);
-
         this.mutexName = mutexName;
     }
 
@@ -21,16 +26,36 @@ public sealed class RuntimeOwnershipMutex
             throw new ArgumentOutOfRangeException(nameof(timeout));
         }
 
-        Mutex mutex = new(initiallyOwned: false, name: mutexName);
+        Mutex? mutex = null;
         bool handleTransferred = false;
 
         try
         {
             try
             {
+                mutex = new Mutex(
+                    initiallyOwned: false,
+                    name: mutexName,
+                    options: OwnershipOptions,
+                    createdNew: out _);
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                return RuntimeOwnershipAcquireResult.NotAcquired(
+                    RuntimeOwnershipAcquireFailureReason.ExistingObjectRejected);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return RuntimeOwnershipAcquireResult.NotAcquired(
+                    RuntimeOwnershipAcquireFailureReason.ExistingObjectAccessDenied);
+            }
+
+            try
+            {
                 if (!mutex.WaitOne(timeout))
                 {
-                    return RuntimeOwnershipAcquireResult.NotAcquired();
+                    return RuntimeOwnershipAcquireResult.NotAcquired(
+                        RuntimeOwnershipAcquireFailureReason.TimedOut);
                 }
             }
             catch (AbandonedMutexException)
@@ -62,7 +87,7 @@ public sealed class RuntimeOwnershipMutex
         {
             if (!handleTransferred)
             {
-                mutex.Dispose();
+                mutex?.Dispose();
             }
         }
     }

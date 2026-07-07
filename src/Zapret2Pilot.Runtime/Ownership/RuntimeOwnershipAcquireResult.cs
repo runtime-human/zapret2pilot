@@ -7,7 +7,8 @@ public sealed record class RuntimeOwnershipAcquireResult
     private RuntimeOwnershipAcquireResult(
         bool acquired,
         bool wasAbandoned,
-        RuntimeOwnershipLease? lease)
+        RuntimeOwnershipLease? lease,
+        RuntimeOwnershipAcquireFailureReason failureReason)
     {
         if (acquired && lease is null)
         {
@@ -24,9 +25,17 @@ public sealed record class RuntimeOwnershipAcquireResult
             throw new ArgumentException("Not-acquired ownership result cannot be abandoned.", nameof(wasAbandoned));
         }
 
+        if (acquired && failureReason != RuntimeOwnershipAcquireFailureReason.None)
+        {
+            throw new ArgumentException(
+                "Acquired ownership result must not carry a failure reason.",
+                nameof(failureReason));
+        }
+
         Acquired = acquired;
         WasAbandoned = wasAbandoned;
         Lease = lease;
+        FailureReason = failureReason;
     }
 
     public bool Acquired { get; }
@@ -35,12 +44,23 @@ public sealed record class RuntimeOwnershipAcquireResult
 
     public RuntimeOwnershipLease? Lease { get; }
 
-    public static RuntimeOwnershipAcquireResult NotAcquired()
+    public RuntimeOwnershipAcquireFailureReason FailureReason { get; }
+
+    public static RuntimeOwnershipAcquireResult NotAcquired(
+        RuntimeOwnershipAcquireFailureReason reason = RuntimeOwnershipAcquireFailureReason.TimedOut)
     {
+        if (reason == RuntimeOwnershipAcquireFailureReason.None)
+        {
+            throw new ArgumentException(
+                "Not-acquired ownership result must carry a concrete failure reason.",
+                nameof(reason));
+        }
+
         return new RuntimeOwnershipAcquireResult(
             acquired: false,
             wasAbandoned: false,
-            lease: null);
+            lease: null,
+            failureReason: reason);
     }
 
     public static RuntimeOwnershipAcquireResult CreateAcquired(
@@ -52,6 +72,7 @@ public sealed record class RuntimeOwnershipAcquireResult
         return new RuntimeOwnershipAcquireResult(
             acquired: true,
             wasAbandoned: wasAbandoned,
-            lease: lease);
+            lease: lease,
+            failureReason: RuntimeOwnershipAcquireFailureReason.None);
     }
 }
