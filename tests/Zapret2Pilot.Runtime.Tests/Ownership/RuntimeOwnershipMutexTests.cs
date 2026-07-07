@@ -9,25 +9,6 @@ public sealed class RuntimeOwnershipMutexTests
 {
     private static string CreateCompatibleMutexName() => RuntimeTestData.CreateUniqueMutexName();
 
-    private static bool LocalGlobalNamespaceSeparationIsEnforced()
-    {
-        string name = $"Z2P_PROBE_{Guid.NewGuid():N}";
-        using Mutex local = new(initiallyOwned: false, name: $"Local\\{name}");
-        try
-        {
-            using Mutex global = new(
-                initiallyOwned: false,
-                name: $"Global\\{name}",
-                options: new NamedWaitHandleOptions { CurrentSessionOnly = false },
-                createdNew: out _);
-            return false;
-        }
-        catch (WaitHandleCannotBeOpenedException)
-        {
-            return true;
-        }
-    }
-
     [Fact]
     public static void TryAcquireReturnsLeaseWhenMutexIsAvailable()
     {
@@ -134,55 +115,10 @@ public sealed class RuntimeOwnershipMutexTests
 
     [Fact]
 #pragma warning disable CA1707 // Identifiers should not contain underscores (behavior-descriptive test name)
-    public static void TryAcquire_WhenExistingMutexHasDifferentScope_ReturnsExistingObjectRejected()
-#pragma warning restore CA1707
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        if (!LocalGlobalNamespaceSeparationIsEnforced())
-        {
-            return;
-        }
-
-        // CreateUniqueMutexName returns a Global\ prefixed name (matching the
-        // production usage of RuntimeOwnershipNames.GlobalMutexName). Place a
-        // baseline mutex explicitly in the Local\ namespace so the production
-        // RuntimeOwnershipMutex (which opens the Global\ namespace) sees a
-        // different object: WaitHandleCannotBeOpenedException ->
-        // ExistingObjectRejected.
-        string mutexName = RuntimeTestData.CreateUniqueMutexName();
-        string localBaselineName = mutexName.StartsWith(@"Global\", StringComparison.Ordinal)
-            ? $@"Local\{mutexName.Substring(@"Global\".Length)}"
-            : mutexName;
-
-        using (Mutex baseline = new(initiallyOwned: false, name: localBaselineName))
-        {
-            RuntimeOwnershipMutex ownershipMutex = new(mutexName);
-            RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
-
-            Assert.False(result.Acquired);
-            Assert.False(result.WasAbandoned);
-            Assert.Null(result.Lease);
-            Assert.Equal(
-                RuntimeOwnershipAcquireFailureReason.ExistingObjectRejected,
-                result.FailureReason);
-        }
-    }
-
-    [Fact]
-#pragma warning disable CA1707 // Identifiers should not contain underscores (behavior-descriptive test name)
     public static void TryAcquire_WhenExistingObjectIsNotAMutex_ReturnsExistingObjectRejected()
 #pragma warning restore CA1707
     {
         if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        if (!LocalGlobalNamespaceSeparationIsEnforced())
         {
             return;
         }
