@@ -31,4 +31,14 @@ public interface IZ2PApplicationLifecycleCoordinator
     /// late subscribers by the underlying <c>BehaviorSubject</c>.
     /// </summary>
     IObservable<ApplicationLifecyclePhase> PhaseChanged { get; }
+
+    /// <summary>
+    /// Idempotent signal invoked by the shell when the main
+    /// window's <c>Opened</c> event has fired. Triggers the
+    /// transition from <see cref="ApplicationLifecyclePhase.WaitingForShell"/>
+    /// to <see cref="ApplicationLifecyclePhase.ShellVisible"/> and
+    /// starts the <see cref="IStartupStep"/> pipeline on a
+    /// background task. Subsequent calls are no-ops.
+    /// </summary>
+    void SignalShellVisible();
 }

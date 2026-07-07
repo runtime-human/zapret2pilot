@@ -12,6 +12,7 @@ using ReactiveUI.Avalonia;
 using Zapret2Pilot.App.Diagnostics;
 using Zapret2Pilot.App.Hosting;
 using Zapret2Pilot.App.Input;
+using Zapret2Pilot.App.Lifecycle;
 using Zapret2Pilot.App.Shell;
 
 namespace Zapret2Pilot.App;
@@ -84,6 +85,16 @@ internal static class Program
 
         try
         {
+            // 0.0.28 Packet 3 (P0-9): resolve the lifecycle
+            // coordinator after the host has started, then wire its
+            // SignalShellVisible() call to the shell's
+            // MainWindow.Opened event. The coordinator waits in
+            // WaitingForShell until the shell actually becomes
+            // visible, so runtime commands cannot be enabled before
+            // a real MainWindow exists.
+            IZ2PApplicationLifecycleCoordinator lifecycle =
+                host.Services.GetRequiredService<IZ2PApplicationLifecycleCoordinator>();
+
             return BuildAvaloniaApp(reactiveUiObserver)
                 .AfterSetup(_ =>
                 {
@@ -95,7 +106,9 @@ internal static class Program
                 })
                 .StartWithClassicDesktopLifetime(args, desktop =>
                 {
-                    desktop.MainWindow = host.Services.GetRequiredService<MainWindow>();
+                    MainWindow mainWindow = host.Services.GetRequiredService<MainWindow>();
+                    mainWindow.Opened += (_, _) => lifecycle.SignalShellVisible();
+                    desktop.MainWindow = mainWindow;
                 });
         }
         finally

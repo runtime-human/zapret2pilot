@@ -9,6 +9,7 @@
     <Project Path="src/Zapret2Pilot.Storage/Zapret2Pilot.Storage.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Zapret2Pilot.App.Tests/Zapret2Pilot.App.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj" />
     <Project Path="tests/Zapret2Pilot.Application.Tests/Zapret2Pilot.Application.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Core.Tests/Zapret2Pilot.Core.Tests.csproj" />
