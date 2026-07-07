@@ -36,10 +36,13 @@ namespace Zapret2Pilot.Runtime.Kernel;
 ///         <see cref="IRuntimeProcessHost.StartAsync"/> for the
 ///         start pipeline, the moment the stop pipeline begins
 ///         for the stop pipeline — and surfacing
-///         <c>RollbackRequired</c> /
 ///         <c>RecoveryRequired</c> instead of an ordinary
-///         <c>Cancelled</c> result when cancellation is requested
-///         after the boundary has been crossed.</item>
+///         <c>Cancelled</c> result when the stop pipeline is
+///         cancelled after the boundary has been crossed. The
+///         start pipeline never raises <c>RollbackRequired</c>
+///         on cancellation because a partially-completed start
+///         cannot be classified reliably from inside the
+///         runner.</item>
 /// </list>
 /// <para>
 /// The runner never throws on cancellation: it converts
@@ -132,47 +135,49 @@ internal sealed class RuntimeProcessEffectRunner : IRuntimeEffectRunner
 
         CancellationToken effectiveToken = linkedCts?.Token ?? cancellationToken;
 
-        bool startBoundaryCrossed = false;
         bool stopBoundaryCrossed = false;
 
         try
         {
-            RuntimeKernelCommand.EffectCompleted? pipelineResult = intent.Kind switch
+            if (intent.Kind == RuntimeEffectKind.StopProcess)
             {
-                RuntimeEffectKind.StartProcess => await RunStartAsync(
-                    intent,
-                    effectiveToken).ConfigureAwait(false),
-                RuntimeEffectKind.StopProcess => await RunStopAsync(
-                    intent,
-                    effectiveToken).ConfigureAwait(false),
-                _ => null,
-            };
+                // Honour pre-cancellation BEFORE crossing the
+                // irreversible boundary: if the linked token is
+                // already cancelled we must not call into the
+                // host's stop pipeline at all. Crossing the
+                // boundary unconditionally and then catching
+                // OCE would also report the wrong outcome to
+                // the kernel state machine.
+                effectiveToken.ThrowIfCancellationRequested();
 
-            if (pipelineResult is null)
-            {
-                return NewCompletion(
+                // The stop pipeline crosses the irreversible
+                // boundary as soon as it is invoked: from this
+                // moment on, a partial cancellation must be
+                // classified as RecoveryRequired because the
+                // previous runtime may already be torn down
+                // (or in the middle of being torn down). The
+                // local is set BEFORE the await so the catch
+                // block below can read the correct value if the
+                // host's StopAsync throws OperationCanceledException.
+                stopBoundaryCrossed = true;
+
+                return await RunStopAsync(
                     intent,
-                    Result.Failure<Unit>(UnsupportedKindError(intent.Kind)),
-                    cancellationReason: null,
-                    boundaryCrossed: false);
+                    effectiveToken).ConfigureAwait(false);
             }
 
-            // The pipeline helpers set the boundary flag on the
-            // returned completion (the helper does not have
-            // access to our locals; the async signature cannot
-            // carry `ref`). Lift the boundary flag back into the
-            // local variables so the catch / finally blocks can
-            // classify cancellations correctly.
-            if (intent.Kind == RuntimeEffectKind.StartProcess)
-            {
-                startBoundaryCrossed = pipelineResult.CrossedIrreversibleBoundary;
-            }
-            else if (intent.Kind == RuntimeEffectKind.StopProcess)
-            {
-                stopBoundaryCrossed = pipelineResult.CrossedIrreversibleBoundary;
-            }
-
-            return pipelineResult;
+            // The start pipeline crosses the irreversible
+            // boundary only when the host's StartAsync returns
+            // a success result; a partially-completed start
+            // that is cancelled cannot be classified reliably
+            // from the runner, so cancellations during the
+            // start pipeline always produce an ordinary
+            // Cancelled completion. The helper surfaces the
+            // success-path boundary flag on the returned
+            // completion; no local needs to be tracked here.
+            return await RunStartAsync(
+                intent,
+                effectiveToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -183,17 +188,11 @@ internal sealed class RuntimeProcessEffectRunner : IRuntimeEffectRunner
                 intent,
                 cancellationToken);
 
-            bool boundaryCrossed = startBoundaryCrossed || stopBoundaryCrossed;
-
-            if (boundaryCrossed)
+            if (stopBoundaryCrossed)
             {
-                ErrorInfo error = stopBoundaryCrossed
-                    ? RecoveryRequiredError(reason)
-                    : RollbackRequiredError(reason);
-
                 return NewCompletion(
                     intent,
-                    Result.Failure<Unit>(error),
+                    Result.Failure<Unit>(RecoveryRequiredError(reason)),
                     reason,
                     boundaryCrossed: true);
             }
@@ -220,7 +219,7 @@ internal sealed class RuntimeProcessEffectRunner : IRuntimeEffectRunner
                 intent,
                 Result.Failure<Unit>(error),
                 cancellationReason: null,
-                boundaryCrossed: startBoundaryCrossed || stopBoundaryCrossed);
+                boundaryCrossed: stopBoundaryCrossed);
         }
         finally
         {
@@ -387,15 +386,6 @@ internal sealed class RuntimeProcessEffectRunner : IRuntimeEffectRunner
         return new ErrorInfo(
             code: "RuntimeEffectCancelled",
             message: $"The effect was cancelled ({reason}) before the irreversible boundary was crossed.",
-            severity: ErrorSeverity.Error,
-            category: ErrorCategory.Runtime);
-    }
-
-    private static ErrorInfo RollbackRequiredError(RuntimeCancellationReason reason)
-    {
-        return new ErrorInfo(
-            code: "RuntimeEffectRollbackRequired",
-            message: $"The effect was cancelled ({reason}) after the start boundary was crossed; the running process must be rolled back.",
             severity: ErrorSeverity.Error,
             category: ErrorCategory.Runtime);
     }

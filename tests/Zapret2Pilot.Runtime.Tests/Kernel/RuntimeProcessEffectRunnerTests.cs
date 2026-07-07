@@ -37,7 +37,7 @@ public sealed class RuntimeProcessEffectRunnerTests
     private static readonly TimeSpan ShortDeadline = TimeSpan.FromMilliseconds(150);
 
     [Fact]
-    public static async Task StartProcess_Success_CrossesBoundaryAndReturnsStartResult()
+    public static async Task SuccessfulStart_ReturnsBoundaryCrossed()
     {
         FakeHost host = new()
         {
@@ -68,7 +68,7 @@ public sealed class RuntimeProcessEffectRunnerTests
     }
 
     [Fact]
-    public static async Task StopProcess_Success_CrossesBoundary()
+    public static async Task SuccessfulStop_ReturnsBoundaryCrossed()
     {
         FakeHost host = new()
         {
@@ -307,6 +307,184 @@ public sealed class RuntimeProcessEffectRunnerTests
         Assert.False(completion.CrossedIrreversibleBoundary);
     }
 
+    [Fact]
+    public static async Task PreCancelledStart_ReturnsCancelledWithoutBoundary()
+    {
+        // The outer token is already cancelled when the runner
+        // dispatches the effect, so the host throws OCE before it
+        // can do any work. The start pipeline has not crossed the
+        // irreversible boundary (no process is alive yet) so the
+        // completion is an ordinary Cancelled, not a
+        // RollbackRequired / RecoveryRequired.
+        using CancellationTokenSource outer = new();
+        outer.Cancel();
+        FakeHost host = new()
+        {
+            StartHandler = (_, token) => AwaitTokenCancellationAsync<RuntimeProcessHostResult>(token),
+        };
+        RuntimeProcessEffectRunner runner = new(host);
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+        RuntimeEffectIntent intent = new(
+            OperationId: RuntimeOperationId.New(),
+            Generation: new RuntimeGeneration(14),
+            Kind: RuntimeEffectKind.StartProcess,
+            Payload: context,
+            RequestedAtUtc: DateTimeOffset.UtcNow,
+            Deadline: null,
+            CancellationReason: RuntimeCancellationReason.UserRequested);
+
+        RuntimeKernelCommand.EffectCompleted completion = await runner.RunAsync(
+            intent,
+            new FakeClock(),
+            outer.Token)
+            .WaitAsync(DeadlineWaitTimeout, TestContext.Current.CancellationToken);
+
+        Assert.True(completion.Result.IsFailure);
+        Assert.Equal("RuntimeEffectCancelled", completion.Result.Error.Code);
+        Assert.Equal(RuntimeCancellationReason.HostShutdown, completion.CancellationReason);
+        Assert.False(completion.CrossedIrreversibleBoundary);
+    }
+
+    [Fact]
+    public static async Task PreCancelledStop_ReturnsCancelledWithoutBoundary()
+    {
+        // The outer token is already cancelled before the runner
+        // enters the stop pipeline. The pre-check
+        // (ThrowIfCancellationRequested) throws before
+        // stopBoundaryCrossed is set, so the host is never
+        // called and the completion is an ordinary Cancelled,
+        // not a RecoveryRequired.
+        using CancellationTokenSource outer = new();
+        outer.Cancel();
+        FakeHost host = new()
+        {
+            StopHandler = token => AwaitTokenCancellationAsync<Unit>(token),
+        };
+        RuntimeProcessEffectRunner runner = new(host);
+        RuntimeEffectIntent intent = new(
+            OperationId: RuntimeOperationId.New(),
+            Generation: new RuntimeGeneration(15),
+            Kind: RuntimeEffectKind.StopProcess,
+            Payload: "Test stop intent",
+            RequestedAtUtc: DateTimeOffset.UtcNow,
+            Deadline: null,
+            CancellationReason: RuntimeCancellationReason.UserRequested);
+
+        RuntimeKernelCommand.EffectCompleted completion = await runner.RunAsync(
+            intent,
+            new FakeClock(),
+            outer.Token)
+            .WaitAsync(DeadlineWaitTimeout, TestContext.Current.CancellationToken);
+
+        Assert.True(completion.Result.IsFailure);
+        Assert.Equal("RuntimeEffectCancelled", completion.Result.Error.Code);
+        Assert.Equal(RuntimeCancellationReason.HostShutdown, completion.CancellationReason);
+        Assert.False(completion.CrossedIrreversibleBoundary);
+        Assert.Equal(0, host.StopCallCount);
+    }
+
+    [Fact]
+    public static async Task CancellationDuringStop_ReturnsRecoveryRequired()
+    {
+        // The runner enters the stop pipeline (which means the
+        // irreversible boundary has been crossed) and then the
+        // outer token is cancelled while the host is still
+        // awaiting it. The host throws OperationCanceledException
+        // and the runner must classify the result as
+        // RecoveryRequired — the previous runtime may be in the
+        // middle of being torn down.
+        using CancellationTokenSource outer = new();
+        TaskCompletionSource enteredStop = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        FakeHost host = new()
+        {
+            StopHandler = async token =>
+            {
+                enteredStop.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+                return await Task.FromCanceled<Result<Unit>>(token).ConfigureAwait(false);
+            },
+        };
+        RuntimeProcessEffectRunner runner = new(host);
+        RuntimeEffectIntent intent = new(
+            OperationId: RuntimeOperationId.New(),
+            Generation: new RuntimeGeneration(16),
+            Kind: RuntimeEffectKind.StopProcess,
+            Payload: "Test stop intent",
+            RequestedAtUtc: DateTimeOffset.UtcNow,
+            Deadline: null,
+            CancellationReason: RuntimeCancellationReason.UserRequested);
+
+        Task<RuntimeKernelCommand.EffectCompleted> runTask = runner.RunAsync(
+            intent,
+            new FakeClock(),
+            outer.Token);
+
+        // Wait for the runner to have entered the stop pipeline
+        // and called the host. By the time the host signals
+        // entry, the runner has already crossed the irreversible
+        // boundary, so any subsequent cancellation must be
+        // classified as RecoveryRequired.
+        await enteredStop.Task.WaitAsync(DeadlineWaitTimeout, TestContext.Current.CancellationToken);
+        Assert.Equal(1, host.StopCallCount);
+
+        outer.Cancel();
+
+        RuntimeKernelCommand.EffectCompleted completion = await runTask
+            .WaitAsync(DeadlineWaitTimeout, TestContext.Current.CancellationToken);
+
+        Assert.True(completion.Result.IsFailure);
+        Assert.Equal("RuntimeEffectRecoveryRequired", completion.Result.Error.Code);
+        Assert.Equal(RuntimeCancellationReason.HostShutdown, completion.CancellationReason);
+        Assert.True(completion.CrossedIrreversibleBoundary);
+    }
+
+    [Fact]
+    public static async Task FailedStartAfterHostCleanup_DoesNotClaimRecoveryRequired()
+    {
+        // The start pipeline is cancelled mid-flight. The runner
+        // cannot reliably tell whether a partially-completed
+        // start has crossed the irreversible boundary (a process
+        // may or may not be alive), so the cancellation must be
+        // classified as an ordinary Cancelled — not as
+        // RollbackRequired / RecoveryRequired. The outer caller
+        // is responsible for the host-level cleanup.
+        using CancellationTokenSource outer = new();
+        FakeHost host = new()
+        {
+            StartHandler = (_, token) => AwaitTokenCancellationAsync<RuntimeProcessHostResult>(token),
+        };
+        RuntimeProcessEffectRunner runner = new(host);
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+        RuntimeEffectIntent intent = new(
+            OperationId: RuntimeOperationId.New(),
+            Generation: new RuntimeGeneration(17),
+            Kind: RuntimeEffectKind.StartProcess,
+            Payload: context,
+            RequestedAtUtc: DateTimeOffset.UtcNow,
+            Deadline: null,
+            CancellationReason: RuntimeCancellationReason.UserRequested);
+
+        Task<RuntimeKernelCommand.EffectCompleted> runTask = runner.RunAsync(
+            intent,
+            new FakeClock(),
+            outer.Token);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(50), TestContext.Current.CancellationToken);
+        Assert.Equal(1, host.StartCallCount);
+
+        outer.Cancel();
+
+        RuntimeKernelCommand.EffectCompleted completion = await runTask
+            .WaitAsync(DeadlineWaitTimeout, TestContext.Current.CancellationToken);
+
+        Assert.True(completion.Result.IsFailure);
+        Assert.Equal("RuntimeEffectCancelled", completion.Result.Error.Code);
+        Assert.Equal(RuntimeCancellationReason.HostShutdown, completion.CancellationReason);
+        Assert.False(completion.CrossedIrreversibleBoundary);
+    }
+
     private static async Task<Result<RuntimeProcessHostResult>> WaitForCancellationAsync(CancellationToken token)
     {
         // Suspend until the supplied token fires, then surface
@@ -321,6 +499,18 @@ public sealed class RuntimeProcessEffectRunnerTests
         // the compiler happy if the delay is ever refactored to
         // complete normally.
         return await Task.FromCanceled<Result<RuntimeProcessHostResult>>(token).ConfigureAwait(false);
+    }
+
+    private static async Task<Result<T>> AwaitTokenCancellationAsync<T>(CancellationToken token)
+        where T : notnull
+    {
+        // Generic sibling of WaitForCancellationAsync used by
+        // both the start and stop fake-host handlers. Awaits the
+        // token and surfaces OperationCanceledException so the
+        // runner's catch block can classify the cancellation.
+        await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+
+        return await Task.FromCanceled<Result<T>>(token).ConfigureAwait(false);
     }
 
     private static RuntimeProcessStartContext CreateStartContext(TemporaryDirectory assetsRoot)
