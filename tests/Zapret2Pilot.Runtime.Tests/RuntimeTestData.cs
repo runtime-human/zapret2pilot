@@ -18,9 +18,7 @@ internal static class RuntimeTestData
 
     public static string CreateUniqueMutexName()
     {
-        return OperatingSystem.IsWindows()
-            ? $@"Local\Z2P_TEST_{Guid.NewGuid():N}"
-            : $"Z2P_TEST_{Guid.NewGuid():N}";
+        return $"Z2P_TEST_{Guid.NewGuid():N}";
     }
 
     public static RuntimeOwnershipLease RequireLease(RuntimeOwnershipAcquireResult result)
