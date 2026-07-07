@@ -7,7 +7,7 @@ namespace Zapret2Pilot.Runtime.Tests.Ownership;
 
 public sealed class RuntimeOwnershipMutexTests
 {
-    private static string CreateCompatibleMutexName() => $"Z2P_TEST_{Guid.NewGuid():N}";
+    private static string CreateCompatibleMutexName() => RuntimeTestData.CreateUniqueMutexName();
 
     private static bool LocalGlobalNamespaceSeparationIsEnforced()
     {
@@ -17,7 +17,7 @@ public sealed class RuntimeOwnershipMutexTests
         {
             using Mutex global = new(
                 initiallyOwned: false,
-                name: name,
+                name: $"Global\\{name}",
                 options: new NamedWaitHandleOptions { CurrentSessionOnly = false },
                 createdNew: out _);
             return false;
@@ -147,13 +147,18 @@ public sealed class RuntimeOwnershipMutexTests
             return;
         }
 
-        string mutexName = CreateCompatibleMutexName();
+        // CreateUniqueMutexName returns a Global\ prefixed name (matching the
+        // production usage of RuntimeOwnershipNames.GlobalMutexName). Place a
+        // baseline mutex explicitly in the Local\ namespace so the production
+        // RuntimeOwnershipMutex (which opens the Global\ namespace) sees a
+        // different object: WaitHandleCannotBeOpenedException ->
+        // ExistingObjectRejected.
+        string mutexName = RuntimeTestData.CreateUniqueMutexName();
+        string localBaselineName = mutexName.StartsWith(@"Global\", StringComparison.Ordinal)
+            ? $@"Local\{mutexName.Substring(@"Global\".Length)}"
+            : mutexName;
 
-        // Pre-create a baseline mutex explicitly in the Local\ namespace.
-        // RuntimeOwnershipMutex (CurrentSessionOnly = false) opens the object
-        // in the Global\ namespace, so this deterministic scope mismatch must
-        // surface as WaitHandleCannotBeOpenedException -> ExistingObjectRejected.
-        using (Mutex baseline = new(initiallyOwned: false, name: $"Local\\{mutexName}"))
+        using (Mutex baseline = new(initiallyOwned: false, name: localBaselineName))
         {
             RuntimeOwnershipMutex ownershipMutex = new(mutexName);
             RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
@@ -169,7 +174,7 @@ public sealed class RuntimeOwnershipMutexTests
 
     [Fact]
 #pragma warning disable CA1707 // Identifiers should not contain underscores (behavior-descriptive test name)
-    public static void TryAcquire_WhenExistingMutexDeniesAccess_ReturnsExistingObjectAccessDenied()
+    public static void TryAcquire_WhenExistingObjectIsNotAMutex_ReturnsExistingObjectRejected()
 #pragma warning restore CA1707
     {
         if (!OperatingSystem.IsWindows())
@@ -182,23 +187,26 @@ public sealed class RuntimeOwnershipMutexTests
             return;
         }
 
-        string mutexName = CreateCompatibleMutexName();
+        // Pre-create a non-mutex named object (EventWaitHandle) at the same
+        // Global\ path that RuntimeOwnershipMutex will try to open. The Mutex
+        // constructor throws WaitHandleCannotBeOpenedException because the
+        // existing object is not a mutex, and the production code maps that
+        // to ExistingObjectRejected.
+        string name = RuntimeTestData.CreateUniqueMutexName();
 
-        // Pre-create a baseline mutex explicitly in the Local\ namespace.
-        // RuntimeOwnershipMutex (CurrentSessionOnly = false) opens the object
-        // in the Global\ namespace, so this deterministic scope mismatch must
-        // surface as UnauthorizedAccessException -> ExistingObjectAccessDenied.
-        using (Mutex baseline = new(initiallyOwned: false, name: $"Local\\{mutexName}"))
-        {
-            RuntimeOwnershipMutex ownershipMutex = new(mutexName);
-            RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
+        using EventWaitHandle baseline = new(
+            initialState: false,
+            mode: EventResetMode.AutoReset,
+            name: name);
 
-            Assert.False(result.Acquired);
-            Assert.False(result.WasAbandoned);
-            Assert.Null(result.Lease);
-            Assert.Equal(
-                RuntimeOwnershipAcquireFailureReason.ExistingObjectAccessDenied,
-                result.FailureReason);
-        }
+        RuntimeOwnershipMutex ownershipMutex = new(name);
+        RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
+
+        Assert.False(result.Acquired);
+        Assert.False(result.WasAbandoned);
+        Assert.Null(result.Lease);
+        Assert.Equal(
+            RuntimeOwnershipAcquireFailureReason.ExistingObjectRejected,
+            result.FailureReason);
     }
 }
