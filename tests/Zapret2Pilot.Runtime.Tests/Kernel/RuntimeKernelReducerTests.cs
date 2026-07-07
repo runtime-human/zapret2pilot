@@ -428,8 +428,8 @@ public sealed class RuntimeKernelReducerTests
             CancellationReason = RuntimeCancellationReason.HostShutdown,
             Deadline = clock.GetUtcNow() + TimeSpan.FromSeconds(5),
         };
-        ErrorInfo rollbackError = new(
-            code: "RuntimeEffectRollbackRequired",
+        ErrorInfo syntheticError = new(
+            code: "SyntheticEffectFailure",
             message: "Cancellation crossed the start boundary.",
             severity: ErrorSeverity.Error,
             category: ErrorCategory.Runtime);
@@ -439,7 +439,7 @@ public sealed class RuntimeKernelReducerTests
             new RuntimeKernelCommand.EffectCompleted(
                 pendingId,
                 state.Generation,
-                Result.Failure<Unit>(rollbackError),
+                Result.Failure<Unit>(syntheticError),
                 StartResult: null,
                 CancellationReason: RuntimeCancellationReason.HostShutdown,
                 CrossedIrreversibleBoundary: true),
@@ -449,7 +449,7 @@ public sealed class RuntimeKernelReducerTests
         Assert.True(result.Outcome.IsSuccess);
         Assert.Equal(RuntimeKernelStatus.Stopped, result.NextState.Status);
         Assert.NotNull(result.NextState.LastError);
-        Assert.Equal("RuntimeEffectRollbackRequired", result.NextState.LastError!.Code);
+        Assert.Equal("SyntheticEffectFailure", result.NextState.LastError!.Code);
         Assert.Null(result.NextState.Deadline);
         Assert.Null(result.NextState.CancellationReason);
     }

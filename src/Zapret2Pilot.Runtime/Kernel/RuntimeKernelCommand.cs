@@ -111,9 +111,8 @@ public abstract record RuntimeKernelCommand
     /// (a successful process creation for a start effect, or
     /// the moment a stop effect invoked the host). The reducer
     /// uses this flag to distinguish ordinary cancellations
-    /// from <c>RollbackRequired</c> /
-    /// <c>RecoveryRequired</c> outcomes when reconciling the
-    /// next state.
+    /// from <c>RecoveryRequired</c> outcomes when reconciling
+    /// the next state.
     /// </param>
     public sealed record EffectCompleted(
         RuntimeOperationId OperationId,

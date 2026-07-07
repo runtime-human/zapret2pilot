@@ -24,7 +24,7 @@ namespace Zapret2Pilot.Runtime.Kernel;
 /// irreversible-boundary rule (a successful start, or the moment
 /// the stop pipeline begins, can no longer return a plain
 /// <c>Cancelled</c> outcome; the runner must surface
-/// <c>RollbackRequired</c> / <c>RecoveryRequired</c> instead).
+/// <c>RecoveryRequired</c> instead).
 /// </para>
 /// <para>
 /// Implementations MUST be safe to call from any thread: the
@@ -73,8 +73,7 @@ internal interface IRuntimeEffectRunner
     /// when the token fires after the boundary has been crossed
     /// the runner returns
     /// <see cref="RuntimeCancellationReason.HostShutdown"/>
-    /// together with a <c>RollbackRequired</c> /
-    /// <c>RecoveryRequired</c> failure.
+    /// together with a <c>RecoveryRequired</c> failure.
     /// </param>
     /// <returns>
     /// A <see cref="Task{TResult}"/> that always completes with

@@ -385,14 +385,13 @@ public static class RuntimeKernelReducer
 
         if (command.Result.IsFailure)
         {
-            // Cancellation outcomes (RollbackRequired /
-            // RecoveryRequired / plain Cancelled) follow the
-            // same shape as ordinary host failures: the state
-            // transitions to Stopped and the error is surfaced
-            // through LastError so the supervisor can project
-            // it onto the public state. The deadline and
-            // cancellation reason are cleared because the
-            // operation is now terminal.
+            // Cancellation outcomes (RecoveryRequired / plain
+            // Cancelled) follow the same shape as ordinary host
+            // failures: the state transitions to Stopped and the
+            // error is surfaced through LastError so the
+            // supervisor can project it onto the public state.
+            // The deadline and cancellation reason are cleared
+            // because the operation is now terminal.
             var next = state with
             {
                 Status = RuntimeKernelStatus.Stopped,
