@@ -315,7 +315,7 @@ public sealed class RuntimeProcessEffectRunnerTests
         // can do any work. The start pipeline has not crossed the
         // irreversible boundary (no process is alive yet) so the
         // completion is an ordinary Cancelled, not a
-        // RollbackRequired / RecoveryRequired.
+        // RecoveryRequired.
         using CancellationTokenSource outer = new();
         outer.Cancel();
         FakeHost host = new()
@@ -447,7 +447,7 @@ public sealed class RuntimeProcessEffectRunnerTests
         // start has crossed the irreversible boundary (a process
         // may or may not be alive), so the cancellation must be
         // classified as an ordinary Cancelled — not as
-        // RollbackRequired / RecoveryRequired. The outer caller
+        // RecoveryRequired. The outer caller
         // is responsible for the host-level cleanup.
         using CancellationTokenSource outer = new();
         FakeHost host = new()

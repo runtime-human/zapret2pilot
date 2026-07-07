@@ -39,9 +39,9 @@ namespace Zapret2Pilot.Runtime.Kernel;
 ///         <c>RecoveryRequired</c> instead of an ordinary
 ///         <c>Cancelled</c> result when the stop pipeline is
 ///         cancelled after the boundary has been crossed. The
-///         start pipeline never raises <c>RollbackRequired</c>
-///         on cancellation because a partially-completed start
-///         cannot be classified reliably from inside the
+///         start pipeline never raises a post-boundary recovery
+///         outcome on cancellation because a partially-completed
+///         start cannot be classified reliably from inside the
 ///         runner.</item>
 /// </list>
 /// <para>
