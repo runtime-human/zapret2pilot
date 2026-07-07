@@ -17,6 +17,7 @@ using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Locking;
 using Zapret2Pilot.Runtime.Ownership;
 using Zapret2Pilot.Runtime.Recovery;
+using Zapret2Pilot.Runtime.Threading;
 using Zapret2Pilot.Runtime.Transactions;
 using Zapret2Pilot.Runtime.Windows;
 using Zapret2Pilot.Runtime.Workspace;
@@ -34,18 +35,25 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// <para>
 /// <see cref="StartAsync"/>, <see cref="StopAsync"/> and
 /// <see cref="Dispose"/> may be called from any thread. The host
-/// serialises the start, stop and dispose pipelines internally via a
-/// private <c>operationLock</c>, so concurrent invocations are safe
-/// and can never interleave state mutations.
+/// marshals the start, stop and dispose pipelines onto the
+/// <see cref="IRuntimeAffinityExecutor"/>'s dedicated
+/// <c>"Z2P-RuntimeAffinity"</c> thread, so concurrent invocations
+/// are serialised on a single, predictable thread and can never
+/// interleave state mutations. The caller's thread is never
+/// blocked: the public methods only enqueue the pipeline and
+/// return a <see cref="Task{TResult}"/> that completes when the
+/// affinity thread finishes the work.
 /// </para>
 /// <para>
-/// The host no longer depends on a dedicated kernel worker thread.
 /// Single-thread affinity of the ownership lease is the
-/// <see cref="Kernel.RuntimeKernelLoop"/>'s responsibility: the loop
-/// drives the kernel state machine on a single, predictable thread
-/// and invokes <see cref="IRuntimeProcessHost"/> methods from that
-/// thread. The host itself runs the pipeline on the caller's thread
-/// and does not need to hop to a kernel worker.
+/// <see cref="Kernel.RuntimeKernelLoop"/>'s contract: the loop
+/// drives the kernel state machine on a single, predictable
+/// thread and invokes <see cref="IRuntimeProcessHost"/> methods
+/// from that thread. The affinity executor pins the host
+/// pipeline to the same single thread regardless of which
+/// caller invoked the host, so the lease's
+/// <c>acquire / dispose</c> pair always runs on the same
+/// thread.
 /// </para>
 /// <para>
 /// The start pipeline acquires the global ownership mutex, performs
@@ -102,20 +110,11 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     private readonly IRuntimeJobObjectProcessAssigner jobObjectAssigner;
     private readonly RuntimeLockFileStore lockFileStore;
     private readonly ILogger<RuntimeProcessHost> logger;
+    private readonly IRuntimeAffinityExecutor affinityExecutor;
     private readonly TimeSpan stopTimeout;
     private readonly string ownerInstanceId;
 
     private readonly object stateLock = new();
-
-    /// <summary>
-    /// Serialises the start, stop and dispose pipelines. The host no
-    /// longer relies on a dedicated worker thread for thread
-    /// affinity; instead, this lock guarantees that only one
-    /// <see cref="StartAsync"/>, <see cref="StopAsync"/> or
-    /// <see cref="Dispose"/> body runs at a time, and that the
-    /// pipelines never interleave state mutations.
-    /// </summary>
-    private readonly object operationLock = new();
 
     private RuntimeOwnershipLease? ownershipLease;
     private Process? process;
@@ -175,6 +174,12 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// Pass <see cref="NullLogger{T}.Instance"/> when the host is used
     /// outside of a hosted service (e.g. in unit tests).
     /// </param>
+    /// <param name="affinityExecutor">
+    /// Executor that marshals the start, stop and dispose pipelines
+    /// onto the <c>"Z2P-RuntimeAffinity"</c> thread, preserving
+    /// the ownership-mutex / lease thread-affinity invariant without
+    /// blocking the caller's thread.
+    /// </param>
     /// <param name="stopTimeout">
     /// Maximum time to wait for the runtime process to exit after
     /// <see cref="StopAsync"/> requests termination. Defaults to 5
@@ -188,6 +193,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         IRuntimeJobObjectProcessAssigner jobObjectAssigner,
         RuntimeLockFileStore lockFileStore,
         ILogger<RuntimeProcessHost> logger,
+        IRuntimeAffinityExecutor affinityExecutor,
         TimeSpan? stopTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(ownershipMutex, nameof(ownershipMutex));
@@ -197,6 +203,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         ArgumentNullException.ThrowIfNull(jobObjectAssigner, nameof(jobObjectAssigner));
         ArgumentNullException.ThrowIfNull(lockFileStore, nameof(lockFileStore));
         ArgumentNullException.ThrowIfNull(logger, nameof(logger));
+        ArgumentNullException.ThrowIfNull(affinityExecutor, nameof(affinityExecutor));
 
         this.ownershipMutex = ownershipMutex;
         this.staleLockRecovery = staleLockRecovery;
@@ -205,18 +212,22 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         this.jobObjectAssigner = jobObjectAssigner;
         this.lockFileStore = lockFileStore;
         this.logger = logger;
+        this.affinityExecutor = affinityExecutor;
         this.stopTimeout = stopTimeout ?? DefaultStopTimeout;
         ownerInstanceId = Guid.NewGuid().ToString("N");
     }
 
     /// <summary>
     /// Starts the runtime process. This method may be called from any
-    /// thread. The actual start pipeline runs on the caller's thread
-    /// under the host's <c>operationLock</c>, which serialises it with
+    /// thread. The actual start pipeline runs on the
+    /// <see cref="IRuntimeAffinityExecutor"/>'s dedicated
+    /// <c>"Z2P-RuntimeAffinity"</c> thread, which serialises it with
     /// concurrent <see cref="StopAsync"/> and <see cref="Dispose"/>
-    /// invocations. Single-thread affinity of the ownership lease is
-    /// the <see cref="Kernel.RuntimeKernelLoop"/>'s responsibility, not
-    /// the host's.
+    /// invocations without blocking the caller's thread. Single-thread
+    /// affinity of the ownership lease is preserved by the executor:
+    /// every awaited continuation inside the pipeline resumes on the
+    /// affinity thread, so the lease's <c>acquire / dispose</c> pair
+    /// always runs on the same thread.
     /// </summary>
     /// <param name="context">
     /// Start context carrying the compiled plan, asset manifest,
@@ -252,27 +263,26 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                 category: ErrorCategory.Runtime)));
         }
 
-        lock (operationLock)
-        {
-            return StartPipeline(context, cancellationToken);
-        }
+        return affinityExecutor.ExecuteAsync(
+            ct => StartPipelineAsync(context, ct),
+            cancellationToken);
     }
 
     /// <summary>
-    /// Performs the start pipeline on the calling thread. The
-    /// pipeline is the body of <see cref="StartAsync"/>: argument
-    /// validation, mutex acquisition, stale lock recovery, workspace
+    /// Performs the start pipeline on the
+    /// <c>"Z2P-RuntimeAffinity"</c> thread. The pipeline is the
+    /// body of <see cref="StartAsync"/>: argument validation,
+    /// mutex acquisition, stale lock recovery, workspace
     /// materialization, transaction start, job object creation,
     /// process launch, readiness check, lock file write and
     /// transaction commit. The async seams (materializer and
-    /// readiness checker) are unwrapped via
-    /// <see cref="RunSync{T}(Task{T})"/> so the entire pipeline runs
-    /// on the caller's thread, which is also the thread that holds
-    /// the <c>operationLock</c> and (per the kernel-loop contract)
-    /// the thread that will eventually dispose the ownership lease
-    /// during cleanup paths.
+    /// readiness checker) are awaited without
+    /// <c>ConfigureAwait(false)</c> so their continuations resume
+    /// on the affinity thread, preserving ownership-lease
+    /// thread affinity for the <c>lease.Dispose()</c> cleanup
+    /// paths below.
     /// </summary>
-    private Task<Result<RuntimeProcessHostResult>> StartPipeline(
+    private async Task<Result<RuntimeProcessHostResult>> StartPipelineAsync(
         RuntimeProcessStartContext context,
         CancellationToken cancellationToken)
     {
@@ -280,20 +290,20 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         {
             if (disposed)
             {
-                return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+                return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                     code: "RuntimeProcessHostDisposed",
                     message: "Cannot start the runtime: the host has been disposed.",
                     severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime)));
+                    category: ErrorCategory.Runtime));
             }
 
             if (ownershipLease is not null)
             {
-                return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+                return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                     code: "RuntimeAlreadyRunning",
                     message: "Cannot start the runtime: a previous start has not been stopped.",
                     severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime)));
+                    category: ErrorCategory.Runtime));
             }
         }
 
@@ -301,11 +311,11 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         RuntimeOwnershipAcquireResult acquireResult = ownershipMutex.TryAcquire(TimeSpan.Zero);
         if (!acquireResult.Acquired || acquireResult.Lease is null)
         {
-            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimeOwnershipNotAcquired",
                 message: "Cannot start the runtime: ownership mutex is held by another process.",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime)));
+                category: ErrorCategory.Runtime));
         }
 
         RuntimeOwnershipLease lease = acquireResult.Lease;
@@ -322,16 +332,16 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             // 2. Stale lock recovery (must run on the owning thread).
             staleLockRecovery.RecoverAfterOwnershipAcquired(lease);
 
-            // 3. Materialize the workspace. Called synchronously via
-            //    GetAwaiter().GetResult() to preserve mutex thread affinity.
-            Task<Result<RuntimeWorkspaceMaterializeResult>> materializeTask =
-                workspaceMaterializer.MaterializeAsync(
+            // 3. Materialize the workspace. Awaited without
+            //    ConfigureAwait(false) so the continuation resumes
+            //    on the affinity thread, preserving ownership-lease
+            //    thread affinity for cleanup paths.
+            Result<RuntimeWorkspaceMaterializeResult> materializeResult =
+                await workspaceMaterializer.MaterializeAsync(
                     context.Plan,
                     context.Manifest,
                     context.WorkspaceDirectory,
-                    cancellationToken);
-            Result<RuntimeWorkspaceMaterializeResult> materializeResult =
-                RunSync(materializeTask);
+                    cancellationToken).ConfigureAwait(true);
             if (materializeResult.IsFailure)
             {
                 ErrorInfo error = new(
@@ -339,14 +349,14 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: $"Workspace materialization failed: {materializeResult.Error.Message}",
                     severity: ErrorSeverity.Error,
                     category: materializeResult.Error.Category);
-                return FailStartAndCleanup(error, startedProcess: null, createdJobObject: null, transaction: null, lease);
+                return await FailStartAndCleanupAsync(error, startedProcess: null, createdJobObject: null, transaction: null, lease).ConfigureAwait(true);
             }
 
             // 4. Begin the start transaction.
             Result<RuntimeTransaction> beginResult = transactionManager.BeginStart(context.Plan);
             if (beginResult.IsFailure)
             {
-                return FailStartAndCleanup(beginResult.Error, startedProcess: null, createdJobObject: null, transaction: null, lease);
+                return await FailStartAndCleanupAsync(beginResult.Error, startedProcess: null, createdJobObject: null, transaction: null, lease).ConfigureAwait(true);
             }
             transaction = beginResult.Value;
 
@@ -363,7 +373,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: $"Failed to create a job object for runtime containment: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                return FailStartAndCleanup(jobError, startedProcess: null, createdJobObject: null, transaction, lease);
+                return await FailStartAndCleanupAsync(jobError, startedProcess: null, createdJobObject: null, transaction, lease).ConfigureAwait(true);
             }
 
             if (!createResult.Created || createResult.JobObject is null)
@@ -373,7 +383,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: "Cannot create a job object: the current platform is not supported.",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                return FailStartAndCleanup(jobError, startedProcess: null, createdJobObject: null, transaction, lease);
+                return await FailStartAndCleanupAsync(jobError, startedProcess: null, createdJobObject: null, transaction, lease).ConfigureAwait(true);
             }
             createdJobObject = createResult.JobObject;
 
@@ -419,7 +429,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: $"Failed to start the runtime process: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                return FailStartAndCleanup(startError, startedProcess: null, createdJobObject, transaction, lease);
+                return await FailStartAndCleanupAsync(startError, startedProcess: null, createdJobObject, transaction, lease).ConfigureAwait(true);
             }
 
             if (startedProcess is null)
@@ -429,7 +439,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: "Failed to start the runtime process: Process.Start returned null.",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                return FailStartAndCleanup(startError, startedProcess: null, createdJobObject, transaction, lease);
+                return await FailStartAndCleanupAsync(startError, startedProcess: null, createdJobObject, transaction, lease).ConfigureAwait(true);
             }
 
             // 7. Capture process identity (used for both assignment and lock metadata).
@@ -449,7 +459,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: $"Failed to read runtime process information: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                return FailStartAndCleanup(infoError, startedProcess, createdJobObject, transaction, lease);
+                return await FailStartAndCleanupAsync(infoError, startedProcess, createdJobObject, transaction, lease).ConfigureAwait(true);
             }
 
             IntPtr processHandle;
@@ -464,7 +474,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: $"Failed to obtain the runtime process handle: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                return FailStartAndCleanup(handleError, startedProcess, createdJobObject, transaction, lease);
+                return await FailStartAndCleanupAsync(handleError, startedProcess, createdJobObject, transaction, lease).ConfigureAwait(true);
             }
 
             // 8. Assign the process to the job object.
@@ -478,16 +488,17 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: $"Failed to assign the runtime process to the job object: status={assignResult.Status}.",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Runtime);
-                return FailStartAndCleanup(assignError, startedProcess, createdJobObject, transaction, lease);
+                return await FailStartAndCleanupAsync(assignError, startedProcess, createdJobObject, transaction, lease).ConfigureAwait(true);
             }
 
-            // 9. Readiness check (synchronous to preserve ownership-mutex thread
-            //    affinity: the continuation of an awaited Task could resume on a
-            //    different thread, breaking lease.Dispose() in cleanup paths).
-            Result<Unit> readinessResult = RunSync(RuntimeReadinessChecker.CheckAsync(
+            // 9. Readiness check. Awaited without ConfigureAwait(false)
+            //    so the continuation resumes on the affinity thread,
+            //    preserving ownership-lease thread affinity for the
+            //    lease.Dispose() in cleanup paths.
+            Result<Unit> readinessResult = await RuntimeReadinessChecker.CheckAsync(
                 startedProcess,
                 RuntimeReadinessChecker.DefaultReadinessTimeout,
-                cancellationToken));
+                cancellationToken).ConfigureAwait(true);
             if (readinessResult.IsFailure)
             {
                 ErrorInfo readinessError = new(
@@ -495,7 +506,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: readinessResult.Error.Message,
                     severity: ErrorSeverity.Error,
                     category: readinessResult.Error.Category);
-                return FailStartAndCleanup(readinessError, startedProcess, createdJobObject, transaction, lease);
+                return await FailStartAndCleanupAsync(readinessError, startedProcess, createdJobObject, transaction, lease).ConfigureAwait(true);
             }
 
             // 10. Write the lock metadata.
@@ -530,7 +541,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                     message: $"Failed to write the runtime lock file: {ex.Message}",
                     severity: ErrorSeverity.Error,
                     category: ErrorCategory.Storage);
-                return FailStartAndCleanup(lockError, startedProcess, createdJobObject, transaction, lease);
+                return await FailStartAndCleanupAsync(lockError, startedProcess, createdJobObject, transaction, lease).ConfigureAwait(true);
             }
 
             // 11. Commit the start transaction.
@@ -567,7 +578,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                         ex,
                         "StartAsync: failed to dispose the ownership lease during commit-failure cleanup.");
                 }
-                return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(commitError));
+                return Result.Failure<RuntimeProcessHostResult>(commitError);
             }
             transactionCommitted = true;
             transaction = null;
@@ -580,11 +591,11 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                 jobObject = createdJobObject;
             }
 
-            return Task.FromResult(Result.Success(new RuntimeProcessHostResult(
+            return Result.Success(new RuntimeProcessHostResult(
                 processId: processId,
                 processName: processName,
                 executablePath: executablePath,
-                plan: context.Plan)));
+                plan: context.Plan));
         }
         catch (OperationCanceledException)
         {
@@ -595,11 +606,11 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                 transactionCommitted,
                 lockFileWritten,
                 lease);
-            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimeStartCancelled",
                 message: "The runtime start was cancelled.",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime)));
+                category: ErrorCategory.Runtime));
         }
         catch (Exception ex)
         {
@@ -610,23 +621,23 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
                 transactionCommitted,
                 lockFileWritten,
                 lease);
-            return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
                 code: "RuntimeStartUnexpectedError",
                 message: $"Unexpected error while starting the runtime: {ex.Message}",
                 severity: ErrorSeverity.Error,
-                category: ErrorCategory.Runtime)));
+                category: ErrorCategory.Runtime));
         }
     }
 
     /// <summary>
     /// Stops the runtime process. This method may be called from any
-    /// thread. The actual stop pipeline runs on the caller's thread
-    /// under the host's <c>operationLock</c>, which serialises it
+    /// thread. The actual stop pipeline runs on the
+    /// <see cref="IRuntimeAffinityExecutor"/>'s dedicated
+    /// <c>"Z2P-RuntimeAffinity"</c> thread, which serialises it
     /// with concurrent <see cref="StartAsync"/> and
-    /// <see cref="Dispose"/> invocations. Single-thread affinity of
-    /// the ownership lease is the
-    /// <see cref="Kernel.RuntimeKernelLoop"/>'s responsibility, not
-    /// the host's.
+    /// <see cref="Dispose"/> invocations without blocking the
+    /// caller's thread. Single-thread affinity of the ownership
+    /// lease is preserved by the executor.
     /// </summary>
     /// <param name="cancellationToken">
     /// Cancellation token observed before stopping.
@@ -637,23 +648,23 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// </returns>
     public Task<Result<Unit>> StopAsync(CancellationToken cancellationToken = default)
     {
-        lock (operationLock)
-        {
-            return StopPipeline(cancellationToken);
-        }
+        return affinityExecutor.ExecuteAsync(
+            ct => StopPipelineAsync(ct),
+            cancellationToken);
     }
 
     /// <summary>
-    /// Performs the stop pipeline on the calling thread. Rejects the
-    /// call when the host is already disposed (the public-facing
+    /// Performs the stop pipeline on the
+    /// <c>"Z2P-RuntimeAffinity"</c> thread. Rejects the call when
+    /// the host is already disposed (the public-facing
     /// <see cref="StopAsync"/> contract) and also when the runtime
     /// is not running (the documented <c>RuntimeNotRunning</c>
     /// failure). When the host is alive AND the runtime is running,
-    /// delegates the cleanup to <see cref="CleanupPipeline"/>, which
-    /// is the <c>disposed</c>-agnostic entry point also used by
-    /// <see cref="Dispose"/>.
+    /// delegates the cleanup to <see cref="CleanupPipelineAsync"/>,
+    /// which is the <c>disposed</c>-agnostic entry point also used
+    /// by <see cref="Dispose"/>.
     /// </summary>
-    private Task<Result<Unit>> StopPipeline(CancellationToken cancellationToken)
+    private async Task<Result<Unit>> StopPipelineAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -661,33 +672,34 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         {
             if (disposed)
             {
-                return Task.FromResult(Result.Failure<Unit>(new ErrorInfo(
+                return Result.Failure<Unit>(new ErrorInfo(
                     code: "RuntimeProcessHostDisposed",
                     message: "Cannot stop the runtime: the host has been disposed.",
                     severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime)));
+                    category: ErrorCategory.Runtime));
             }
 
             if (ownershipLease is null || process is null)
             {
-                return Task.FromResult(Result.Failure<Unit>(new ErrorInfo(
+                return Result.Failure<Unit>(new ErrorInfo(
                     code: "RuntimeNotRunning",
                     message: "Cannot stop the runtime: the runtime is not running.",
                     severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime)));
+                    category: ErrorCategory.Runtime));
             }
         }
 
-        return CleanupPipeline(cancellationToken);
+        return await CleanupPipelineAsync(cancellationToken).ConfigureAwait(true);
     }
 
     /// <summary>
-    /// Performs the stop / cleanup pipeline on the calling thread
-    /// without consulting the <c>disposed</c> flag. This is the
-    /// entry point used by both <see cref="StopPipeline"/> (after the
-    /// <c>disposed</c> check) and <see cref="Dispose"/>, so the same
-    /// teardown logic runs in both paths. The <c>disposed</c> flag
-    /// is deliberately ignored here because <see cref="Dispose"/>
+    /// Performs the stop / cleanup pipeline on the
+    /// <c>"Z2P-RuntimeAffinity"</c> thread without consulting the
+    /// <c>disposed</c> flag. This is the entry point used by both
+    /// <see cref="StopPipelineAsync"/> (after the <c>disposed</c>
+    /// check) and <see cref="Dispose"/>, so the same teardown
+    /// logic runs in both paths. The <c>disposed</c> flag is
+    /// deliberately ignored here because <see cref="Dispose"/>
     /// sets the flag before running the cleanup, and the cleanup
     /// still has to run.
     ///
@@ -701,7 +713,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// <c>RuntimeNotRunning</c> failure that
     /// <see cref="StopAsync"/> returns when called on a
     /// not-running host (that failure is produced by
-    /// <see cref="StopPipeline"/>'s <c>disposed</c> guard, not
+    /// <see cref="StopPipelineAsync"/>'s <c>disposed</c> guard, not
     /// here).
     /// </para>
     /// <para>
@@ -720,7 +732,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// starts. The token is not honoured while a non-cancellable
     /// kernel operation is in progress.
     /// </param>
-    private Task<Result<Unit>> CleanupPipeline(CancellationToken cancellationToken)
+    private async Task<Result<Unit>> CleanupPipelineAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -741,13 +753,13 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             // state. Treated as a successful no-op so that
             // Dispose (which always reaches this method) is
             // idempotent.
-            return Task.FromResult(Result.Success(Unit.Instance));
+            return Result.Success(Unit.Instance);
         }
 
         Result<RuntimeTransaction> beginStopResult = transactionManager.BeginStop();
         if (beginStopResult.IsFailure)
         {
-            return Task.FromResult(Result.Failure<Unit>(beginStopResult.Error));
+            return Result.Failure<Unit>(beginStopResult.Error);
         }
 
         RuntimeTransaction transaction = beginStopResult.Value;
@@ -865,28 +877,38 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             jobObject = null;
         }
 
-        return Task.FromResult(finalResult ?? Result.Success(Unit.Instance));
+        // CleanupPipelineAsync is implemented as an async method so
+        // it shares the same Task-returning contract as
+        // StartPipelineAsync and StopPipelineAsync. The body is
+        // intentionally synchronous — the affinity executor pumps
+        // any continuations posted from within it — so a single
+        // completed Task is awaited here to make the await
+        // requirement of the async state machine explicit.
+        await Task.CompletedTask.ConfigureAwait(true);
+        return finalResult ?? Result.Success(Unit.Instance);
     }
 
     /// <summary>
     /// Disposes the host. Sets the <c>disposed</c> flag and runs
-    /// the cleanup pipeline on the calling thread under the host's
-    /// <c>operationLock</c>. Single-thread affinity of the ownership
-    /// lease is the <see cref="Kernel.RuntimeKernelLoop"/>'s
-    /// responsibility, not the host's: by the time the kernel loop
-    /// calls <see cref="Dispose"/>, the runtime process is already
-    /// stopped and the lease is no longer held on a kernel thread.
+    /// the cleanup pipeline on the
+    /// <see cref="IRuntimeAffinityExecutor"/>'s dedicated
+    /// <c>"Z2P-RuntimeAffinity"</c> thread, blocking the caller's
+    /// thread until the cleanup finishes. Single-thread affinity
+    /// of the ownership lease is preserved by the executor: the
+    /// pipeline and the lease's <c>Dispose</c> run on the same
+    /// thread that previously acquired the lease.
     ///
     /// <para>
-    /// The cleanup work is <see cref="CleanupPipeline"/>, NOT
-    /// <see cref="StopPipeline"/>. The two methods share the same
-    /// teardown body, but <see cref="StopPipeline"/> short-circuits
-    /// when <c>disposed = true</c>, while <see cref="CleanupPipeline"/>
-    /// does not consult the flag. Routing <see cref="Dispose"/>
-    /// through <see cref="CleanupPipeline"/> ensures the running
+    /// The cleanup work is <see cref="CleanupPipelineAsync"/>, NOT
+    /// <see cref="StopPipelineAsync"/>. The two methods share the
+    /// same teardown body, but <see cref="StopPipelineAsync"/>
+    /// short-circuits when <c>disposed = true</c>, while
+    /// <see cref="CleanupPipelineAsync"/> does not consult the
+    /// flag. Routing <see cref="Dispose"/> through
+    /// <see cref="CleanupPipelineAsync"/> ensures the running
     /// process, job object, lock file and ownership lease are
-    /// actually torn down, instead of being silently leaked because
-    /// the public-facing stop path rejected the call.
+    /// actually torn down, instead of being silently leaked
+    /// because the public-facing stop path rejected the call.
     /// </para>
     /// <para>
     /// If the pipeline throws, the catch falls back to
@@ -896,7 +918,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// </summary>
     public void Dispose()
     {
-        lock (operationLock)
+        lock (stateLock)
         {
             if (disposed)
             {
@@ -904,16 +926,19 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             }
 
             disposed = true;
+        }
 
-            try
-            {
-                CleanupPipeline(CancellationToken.None).GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Dispose: cleanup pipeline failed; falling back to best-effort cleanup.");
-                BestEffortDispose();
-            }
+        try
+        {
+            affinityExecutor
+                .ExecuteAsync(_ => CleanupPipelineAsync(CancellationToken.None))
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Dispose: cleanup pipeline failed; falling back to best-effort cleanup.");
+            BestEffortDispose();
         }
     }
 
@@ -929,7 +954,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// <see cref="RuntimeOwnershipLease"/> is eventually
     /// finalised. This is the same cleanup the host performed
     /// pre-0.0.20 and is only used as a fallback when the
-    /// <see cref="CleanupPipeline"/> call itself throws.
+    /// <see cref="CleanupPipelineAsync"/> call itself throws.
     /// </summary>
     private void BestEffortDispose()
     {
@@ -1175,7 +1200,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// <summary>
     /// Best-effort kill + dispose of a process that may not have
     /// been fully started or assigned to the job object. Used by the
-    /// failure paths in <see cref="StartPipeline"/>.
+    /// failure paths in <see cref="StartPipelineAsync"/>.
     /// </summary>
     /// <param name="processToDispose">The process to terminate and dispose.</param>
     private void BestEffortKillAndDispose(Process? processToDispose)
@@ -1190,7 +1215,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
 
     /// <summary>
     /// Best-effort lock file delete. Used by the failure paths in
-    /// <see cref="StartPipeline"/> and <see cref="BestEffortDispose"/>.
+    /// <see cref="StartPipelineAsync"/> and <see cref="BestEffortDispose"/>.
     /// </summary>
     private void BestEffortDeleteLock()
     {
@@ -1206,7 +1231,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
 
     /// <summary>
     /// Performs the standard partial-state cleanup for a
-    /// <see cref="StartPipeline"/> failure path and returns the
+    /// <see cref="StartPipelineAsync"/> failure path and returns the
     /// corresponding failure <see cref="Result{T}"/>. Kills and
     /// disposes the started process (if any), disposes the job
     /// object (if any), rolls the transaction back (if any) and
@@ -1222,8 +1247,11 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
     /// <param name="createdJobObject">The created job object, or <c>null</c>.</param>
     /// <param name="transaction">The open transaction, or <c>null</c>.</param>
     /// <param name="lease">The ownership lease acquired at the start of the pipeline.</param>
-    /// <returns>A failed <see cref="Task{T}"/> wrapping a <see cref="Result{T}"/> around <paramref name="error"/>.</returns>
-    private Task<Result<RuntimeProcessHostResult>> FailStartAndCleanup(
+    /// <returns>
+    /// A failed <see cref="Task{TResult}"/> wrapping a
+    /// <see cref="Result{T}"/> around <paramref name="error"/>.
+    /// </returns>
+    private async Task<Result<RuntimeProcessHostResult>> FailStartAndCleanupAsync(
         ErrorInfo error,
         Process? startedProcess,
         IRuntimeJobObject? createdJobObject,
@@ -1245,7 +1273,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             {
                 logger.LogError(
                     ex,
-                    "FailStartAndCleanup: failed to dispose the job object.");
+                    "FailStartAndCleanupAsync: failed to dispose the job object.");
             }
         }
 
@@ -1259,7 +1287,7 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
             {
                 logger.LogError(
                     ex,
-                    "FailStartAndCleanup: transaction rollback failed.");
+                    "FailStartAndCleanupAsync: transaction rollback failed.");
             }
         }
 
@@ -1271,15 +1299,24 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
         {
             logger.LogError(
                 ex,
-                "FailStartAndCleanup: failed to dispose the ownership lease.");
+                "FailStartAndCleanupAsync: failed to dispose the ownership lease.");
         }
 
-        return Task.FromResult(Result.Failure<RuntimeProcessHostResult>(error));
+        // FailStartAndCleanupAsync is implemented as an async method
+        // so it shares the same Task-returning contract as
+        // StartPipelineAsync. The body is intentionally
+        // synchronous — every dependency on the affinity thread
+        // has already been honoured — so a single completed Task
+        // is awaited here to make the await requirement of the
+        // async state machine explicit and to keep the return
+        // type consistent with the rest of the pipeline.
+        await Task.CompletedTask.ConfigureAwait(true);
+        return Result.Failure<RuntimeProcessHostResult>(error);
     }
 
     /// <summary>
     /// Tears down the partially-constructed state when
-    /// <see cref="StartPipeline"/> fails. Rolls the transaction back (if
+    /// <see cref="StartPipelineAsync"/> fails. Rolls the transaction back (if
     /// it was started and not yet committed), kills and disposes the
     /// process, disposes the job object, deletes the lock file (if
     /// it was written) and disposes the ownership lease. All steps
@@ -1372,23 +1409,4 @@ public sealed class RuntimeProcessHost : IRuntimeProcessHost, IAsyncDisposable, 
 
         return builder.ToString();
     }
-
-    /// <summary>
-    /// Synchronously blocks on a <see cref="Task{T}"/> by unwrapping
-    /// its result via <c>GetAwaiter().GetResult()</c>. Used in the
-    /// start pipeline to preserve ownership-mutex thread affinity:
-    /// an <c>await</c> may resume on a different thread, which would
-    /// break <c>RuntimeOwnershipLease.Dispose()</c> cleanup paths.
-    /// </summary>
-    /// <typeparam name="T">Task result type.</typeparam>
-    /// <param name="task">The task to wait for.</param>
-    /// <returns>The task result.</returns>
-    private static T RunSync<T>(Task<T> task) => task.GetAwaiter().GetResult();
-
-    /// <summary>
-    /// Synchronously blocks on a <see cref="Task"/>. See the
-    /// generic overload for the rationale.
-    /// </summary>
-    /// <param name="task">The task to wait for.</param>
-    private static void RunSync(Task task) => task.GetAwaiter().GetResult();
 }

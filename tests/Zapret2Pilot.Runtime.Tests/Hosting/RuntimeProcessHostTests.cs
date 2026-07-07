@@ -15,6 +15,7 @@ using Zapret2Pilot.Runtime.Integrity;
 using Zapret2Pilot.Runtime.Locking;
 using Zapret2Pilot.Runtime.Ownership;
 using Zapret2Pilot.Runtime.Recovery;
+using Zapret2Pilot.Runtime.Threading;
 using Zapret2Pilot.Runtime.Transactions;
 using Zapret2Pilot.Runtime.Windows;
 using Zapret2Pilot.Runtime.Workspace;
@@ -490,13 +491,16 @@ public sealed partial class RuntimeProcessHostTests
 
     /// <summary>
     /// Per-test fixture that owns a <see cref="TemporaryDirectory"/>, a
-    /// fully wired <see cref="RuntimeProcessHost"/>, and a unique
-    /// ownership mutex name. The host and the temp directory are
-    /// disposed together.
+    /// fully wired <see cref="RuntimeProcessHost"/>, the
+    /// <see cref="IRuntimeAffinityExecutor"/> that drives the
+    /// host's pipelines, and a unique ownership mutex name. The
+    /// host, the executor and the temp directory are disposed
+    /// together in <see cref="Dispose"/>.
     /// </summary>
     internal sealed class HostFixture : IDisposable
     {
         private readonly RuntimeProcessHost host;
+        private readonly IRuntimeAffinityExecutor affinityExecutor;
         private bool disposed;
 
         private HostFixture(
@@ -505,6 +509,7 @@ public sealed partial class RuntimeProcessHostTests
             string runtimeDirectory,
             RuntimeOwnershipMutex ownershipMutex,
             RuntimeLockFileStore lockFileStore,
+            IRuntimeAffinityExecutor affinityExecutor,
             RuntimeProcessHost host)
         {
             TempDir = tempDir;
@@ -512,6 +517,7 @@ public sealed partial class RuntimeProcessHostTests
             RuntimeDirectory = runtimeDirectory;
             OwnershipMutex = ownershipMutex;
             LockFileStore = lockFileStore;
+            this.affinityExecutor = affinityExecutor;
             this.host = host;
         }
 
@@ -524,6 +530,8 @@ public sealed partial class RuntimeProcessHostTests
         public RuntimeOwnershipMutex OwnershipMutex { get; }
 
         public RuntimeLockFileStore LockFileStore { get; }
+
+        public IRuntimeAffinityExecutor AffinityExecutor => affinityExecutor;
 
         public RuntimeProcessHost Host => host;
 
@@ -545,6 +553,7 @@ public sealed partial class RuntimeProcessHostTests
             IRuntimeTransactionManager effectiveTransactionManager = transactionManager
                 ?? new RuntimeTransactionManager();
             IRuntimeJobObjectProcessAssigner jobObjectAssigner = new RuntimeJobObjectProcessAssigner();
+            IRuntimeAffinityExecutor affinityExecutor = new RuntimeAffinityExecutor();
 
             RuntimeProcessHost host = new(
                 ownershipMutex,
@@ -554,6 +563,7 @@ public sealed partial class RuntimeProcessHostTests
                 jobObjectAssigner,
                 lockFileStore,
                 NullLogger<RuntimeProcessHost>.Instance,
+                affinityExecutor,
                 stopTimeout: TimeSpan.FromSeconds(5));
 
             return new HostFixture(
@@ -562,6 +572,7 @@ public sealed partial class RuntimeProcessHostTests
                 runtimeDirectory,
                 ownershipMutex,
                 lockFileStore,
+                affinityExecutor,
                 host);
         }
 
@@ -734,7 +745,12 @@ public sealed partial class RuntimeProcessHostTests
 
             disposed = true;
 
+            // Dispose the host first so its cleanup pipeline
+            // runs against a still-live affinity executor, then
+            // dispose the executor so its background thread is
+            // joined before the temp directory is deleted.
             host.Dispose();
+            affinityExecutor.Dispose();
             TempDir.Dispose();
         }
 

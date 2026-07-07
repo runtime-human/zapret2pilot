@@ -17,10 +17,13 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// Implementations must be thread-safe: <see cref="StartAsync"/>,
 /// <see cref="StopAsync"/> and (where applicable)
 /// <see cref="IDisposable.Dispose"/> may be called from any thread.
-/// The production <see cref="RuntimeProcessHost"/> serialises its
-/// start, stop and dispose pipelines via an internal lock so the
+/// The production <see cref="RuntimeProcessHost"/> marshals its
+/// start, stop and dispose pipelines onto the
+/// <see cref="Zapret2Pilot.Runtime.Threading.IRuntimeAffinityExecutor"/>'s
+/// dedicated <c>"Z2P-RuntimeAffinity"</c> thread, so the
 /// ownership-mutex and the Job Object lifetime are preserved
-/// regardless of the caller's thread.
+/// regardless of the caller's thread, and the caller's thread
+/// is never blocked.
 /// </para>
 /// <para>
 /// Both methods return a <see cref="Result{T}"/> carrying either a
@@ -34,9 +37,10 @@ public interface IRuntimeProcessHost
 {
     /// <summary>
     /// Starts the runtime process. The production implementation
-    /// runs the launch pipeline on the caller's thread under an
-    /// internal lock; the call returns a
-    /// <see cref="Task{TResult}"/> the caller can await.
+    /// marshals the launch pipeline onto the
+    /// <c>"Z2P-RuntimeAffinity"</c> thread; the call returns a
+    /// <see cref="Task{TResult}"/> the caller can await without
+    /// blocking the caller's thread.
     /// </summary>
     /// <param name="context">
     /// Start context carrying the compiled plan, asset manifest,
@@ -44,8 +48,8 @@ public interface IRuntimeProcessHost
     /// </param>
     /// <param name="cancellationToken">
     /// Cancellation token observed at well-defined points in the
-    /// pipeline. The token is not honoured while the ownership
-    /// mutex is held or while the operating system is performing
+    /// pipeline. The token is not honoured while the ownership mutex
+    /// is held or while the operating system is performing
     /// non-cancellable work.
     /// </param>
     /// <returns>
@@ -59,9 +63,10 @@ public interface IRuntimeProcessHost
 
     /// <summary>
     /// Stops the runtime process. The production implementation
-    /// runs the stop pipeline on the caller's thread under an
-    /// internal lock; the call returns a
-    /// <see cref="Task{TResult}"/> the caller can await.
+    /// marshals the stop pipeline onto the
+    /// <c>"Z2P-RuntimeAffinity"</c> thread; the call returns a
+    /// <see cref="Task{TResult}"/> the caller can await without
+    /// blocking the caller's thread.
     /// </summary>
     /// <param name="cancellationToken">
     /// Cancellation token observed before the stop pipeline runs.

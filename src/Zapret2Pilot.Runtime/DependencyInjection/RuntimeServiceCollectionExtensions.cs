@@ -13,6 +13,7 @@ using Zapret2Pilot.Runtime.Ownership;
 using Zapret2Pilot.Runtime.Recovery;
 using Zapret2Pilot.Runtime.State;
 using Zapret2Pilot.Runtime.Supervisor;
+using Zapret2Pilot.Runtime.Threading;
 using Zapret2Pilot.Runtime.Transactions;
 using Zapret2Pilot.Runtime.Windows;
 using Zapret2Pilot.Runtime.Workspace;
@@ -91,6 +92,15 @@ public static class RuntimeServiceCollectionExtensions
         services.AddSingleton<IRuntimeTransactionManager, RuntimeTransactionManager>();
         services.AddSingleton<IRuntimeJobObjectProcessAssigner, RuntimeJobObjectProcessAssigner>();
 
+        // Register the runtime affinity executor BEFORE the process
+        // host so the host's factory lambda can resolve it. The
+        // executor owns a dedicated background thread named
+        // "Z2P-RuntimeAffinity" that the host uses to serialise
+        // its start, stop and dispose pipelines.
+        services.AddSingleton<RuntimeAffinityExecutor>();
+        services.AddSingleton<IRuntimeAffinityExecutor>(
+            static sp => sp.GetRequiredService<RuntimeAffinityExecutor>());
+
         services.AddSingleton<RuntimeProcessHost>(
             static sp => new RuntimeProcessHost(
                 sp.GetRequiredService<RuntimeOwnershipMutex>(),
@@ -99,7 +109,8 @@ public static class RuntimeServiceCollectionExtensions
                 sp.GetRequiredService<IRuntimeTransactionManager>(),
                 sp.GetRequiredService<IRuntimeJobObjectProcessAssigner>(),
                 sp.GetRequiredService<RuntimeLockFileStore>(),
-                sp.GetRequiredService<ILogger<RuntimeProcessHost>>()));
+                sp.GetRequiredService<ILogger<RuntimeProcessHost>>(),
+                sp.GetRequiredService<IRuntimeAffinityExecutor>()));
 
         // The supervisor depends on IRuntimeProcessHost, not on
         // the concrete RuntimeProcessHost, so expose the same
