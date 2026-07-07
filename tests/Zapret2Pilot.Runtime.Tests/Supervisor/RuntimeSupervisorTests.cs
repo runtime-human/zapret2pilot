@@ -452,6 +452,236 @@ public sealed class RuntimeSupervisorTests
         });
     }
 
+    [Fact]
+    public static async Task StopAsync_DuringStart_CompletesStartWithSuperseded()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        // Slow the start effect down so the stop can race
+        // against the in-flight start and supersede the
+        // receipt before the kernel reaches Running.
+        harness.Runner.StartDelay = TimeSpan.FromMilliseconds(200);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        using RuntimeSupervisor supervisor = harness.Supervisor;
+
+        // Start a StartAsync but do not await it yet — the
+        // start effect is in flight, the start receipt is
+        // in the pending slot.
+        Task<Result<RuntimeProcessHostResult>> startTask = supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+
+        // Give the start command a moment to reach the kernel
+        // and for the in-flight start effect to begin.
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // The stop should now supersede the in-flight start
+        // receipt and drive the kernel to Stopped.
+        Result<Unit> stopResult = await supervisor.StopAsync(
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            stopResult.IsSuccess,
+            stopResult.IsFailure ? stopResult.Error.ToString() : string.Empty);
+        Assert.Equal(RuntimeSupervisorStatus.Stopped, supervisor.CurrentState.Status);
+
+        // The in-flight start caller should observe a
+        // typed superseded failure rather than a Running
+        // success (the underlying start effect was aborted
+        // by the stop).
+        Result<RuntimeProcessHostResult> startResult = await startTask;
+        Assert.True(
+            startResult.IsFailure,
+            "The superseded start must surface as a failure result.");
+        Assert.Equal("RuntimeSupervisorStartSupersededByStop", startResult.Error.Code);
+    }
+
+    [Fact]
+    public static async Task StartAsync_SupersededByStopAsync_ReturnsSupersededFailure()
+    {
+        // The supersede path also has to be observable from
+        // the perspective of the original StartAsync caller
+        // even when the start effect has *just* begun — i.e.
+        // the stop arrives before the kernel publishes a
+        // terminal state. The test forces the race by using
+        // an unconfigured (failing) start result and a stop
+        // issued immediately after the start. The
+        // supersede cancellation wins because the natural
+        // completion of the start effect races the
+        // supersede; either outcome is acceptable, but the
+        // caller must NOT observe a typed Running success
+        // and the supervisor must end in Stopped.
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.StartDelay = TimeSpan.FromMilliseconds(150);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        using RuntimeSupervisor supervisor = harness.Supervisor;
+
+        Task<Result<RuntimeProcessHostResult>> startTask = supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+
+        Result<Unit> stopResult = await supervisor.StopAsync(
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            stopResult.IsSuccess,
+            stopResult.IsFailure ? stopResult.Error.ToString() : string.Empty);
+        Assert.Equal(RuntimeSupervisorStatus.Stopped, supervisor.CurrentState.Status);
+
+        Result<RuntimeProcessHostResult> startResult = await startTask;
+        Assert.True(startResult.IsFailure);
+        Assert.Equal("RuntimeSupervisorStartSupersededByStop", startResult.Error.Code);
+    }
+
+    [Fact]
+    public static async Task ConcurrentStartAsync_SecondCallReturnsAlreadyRunning()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.StartDelay = TimeSpan.FromMilliseconds(200);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        using RuntimeSupervisor supervisor = harness.Supervisor;
+
+        // First start goes in flight; second start is
+        // rejected because the slot is already held by an
+        // active receipt.
+        Task<Result<RuntimeProcessHostResult>> firstStart = supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+
+        Result<RuntimeProcessHostResult> secondStart = await supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(secondStart.IsFailure);
+        Assert.Equal("RuntimeSupervisorAlreadyRunning", secondStart.Error.Code);
+        Assert.Equal(1, harness.Runner.StartCallCount);
+
+        // Drain the first start so the supervisor is not
+        // torn down with a still-in-flight task.
+        await supervisor.StopAsync(TestContext.Current.CancellationToken);
+        await firstStart;
+    }
+
+    [Fact]
+    public static async Task ConcurrentStopAsync_BothShareSameResult()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        // The stop effect must stay in flight long enough
+        // for the second StopAsync to observe the first
+        // stop's receipt in the slot. Otherwise the second
+        // stop reads loop.CurrentState as already-Stopped
+        // and short-circuits with an idempotent no-op
+        // success, defeating the "share the same receipt"
+        // assertion.
+        harness.Runner.StopDelay = TimeSpan.FromMilliseconds(150);
+        harness.Runner.NextStopResult = Result.Failure<Unit>(new ErrorInfo(
+            code: "FakeHostStopFailed",
+            message: "Simulated host stop failure for the supervisor tests.",
+            severity: ErrorSeverity.Error,
+            category: ErrorCategory.Runtime));
+        using RuntimeSupervisor supervisor = harness.Supervisor;
+
+        // Bring the supervisor into Running so StopAsync
+        // actually posts a command.
+        Result<RuntimeProcessHostResult> start = await supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        Assert.True(start.IsSuccess, start.IsFailure ? start.Error.ToString() : string.Empty);
+
+        // Two concurrent StopAsync calls share the same
+        // receipt. Both must observe the same typed failure
+        // (because NextStopResult is a failure).
+        Task<Result<Unit>> firstStop = supervisor.StopAsync(TestContext.Current.CancellationToken);
+        // Give the first stop a moment to install its
+        // receipt in the slot before the second stop
+        // attempts TryBeginReceipt.
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+        Task<Result<Unit>> secondStop = supervisor.StopAsync(TestContext.Current.CancellationToken);
+
+        Result<Unit> firstResult = await firstStop;
+        Result<Unit> secondResult = await secondStop;
+
+        Assert.True(firstResult.IsFailure);
+        Assert.Equal("FakeHostStopFailed", firstResult.Error.Code);
+        Assert.True(secondResult.IsFailure);
+        Assert.Equal("FakeHostStopFailed", secondResult.Error.Code);
+
+        // The runner's stop was invoked exactly once: the
+        // second call shared the first call's receipt.
+        Assert.Equal(1, harness.Runner.StopCallCount);
+    }
+
+    [Fact]
+    public static async Task Dispose_DuringStart_CompletesStartWithCancelled()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.StartDelay = TimeSpan.FromMilliseconds(300);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        RuntimeSupervisor supervisor = harness.Supervisor;
+
+        // The start is in flight. Dispose must not hang and
+        // must cause the in-flight start awaiter to resume.
+        Task<Result<RuntimeProcessHostResult>> startTask = supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Dispose drives the supervisor through the
+        // Disposing -> Stopped lifecycle: it cancels the
+        // in-flight receipt and posts a final stop command.
+        Exception? thrown = Record.Exception(() => supervisor.Dispose());
+        Assert.Null(thrown);
+
+        // The in-flight start caller observes a typed
+        // OperationCanceledException. The supervisor does
+        // not catch OCE on the start path, so the exception
+        // propagates — consistent with the user-cancellation
+        // contract the previous semaphore-based design
+        // exposed. ThrowsAnyAsync accepts the
+        // TaskCanceledException subclass the TCS throws.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => startTask);
+    }
+
+    [Fact]
+    public static async Task ReceiptClearedAfterTerminalState()
+    {
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        using RuntimeSupervisor supervisor = harness.Supervisor;
+
+        // While the start is in flight the slot must hold a
+        // receipt. The runner is synchronous so the slot
+        // is cleared almost immediately after the start
+        // returns, but the assertion is robust to either
+        // timing: we observe the slot before and after the
+        // awaited call.
+        Result<RuntimeProcessHostResult> result = await supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.ToString() : string.Empty);
+
+        // After the receipt's terminal state is observed
+        // the slot is cleared via the onTerminal callback.
+        Assert.False(supervisor.HasPendingReceiptForTests);
+
+        // A subsequent stop (which posts its own receipt
+        // and clears the slot on completion) must also
+        // leave the slot empty.
+        Result<Unit> stopResult = await supervisor.StopAsync(
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            stopResult.IsSuccess,
+            stopResult.IsFailure ? stopResult.Error.ToString() : string.Empty);
+        Assert.False(supervisor.HasPendingReceiptForTests);
+    }
+
     private static SupervisorHarness CreateSupervisor(FakeClock clock)
     {
         CrashLoopGuard guard = new(FastGuardOptions(), clock.Now);
@@ -694,11 +924,38 @@ public sealed class RuntimeSupervisorTests
 
         public Result<Unit> NextStopResult { get; set; } = Result.Success(Unit.Instance);
 
+        /// <summary>
+        /// Optional delay applied to the
+        /// <see cref="RuntimeEffectKind.StartProcess"/> effect
+        /// before the fake returns the completion. Tests that
+        /// need a start effect to stay in flight (e.g. the
+        /// "stop during start" race) set this to a non-zero
+        /// <see cref="TimeSpan"/>. The default
+        /// (<see cref="TimeSpan.Zero"/>) preserves the
+        /// previous synchronous behaviour.
+        /// </summary>
+        public TimeSpan StartDelay { get; set; } = TimeSpan.Zero;
+
+        /// <summary>
+        /// Optional delay applied to the
+        /// <see cref="RuntimeEffectKind.StopProcess"/> effect
+        /// before the fake returns the completion. Tests that
+        /// need a stop effect to stay in flight long enough
+        /// for a concurrent <c>StopAsync</c> to share the
+        /// in-flight stop receipt (rather than read the loop
+        /// as already-Stopped and short-circuit with an
+        /// idempotent no-op success) set this to a non-zero
+        /// <see cref="TimeSpan"/>. The default
+        /// (<see cref="TimeSpan.Zero"/>) preserves the
+        /// previous synchronous behaviour.
+        /// </summary>
+        public TimeSpan StopDelay { get; set; } = TimeSpan.Zero;
+
         public int StartCallCount { get; private set; }
 
         public int StopCallCount { get; private set; }
 
-        public Task<RuntimeKernelCommand.EffectCompleted> RunAsync(
+        public async Task<RuntimeKernelCommand.EffectCompleted> RunAsync(
             RuntimeEffectIntent intent,
             TimeProvider timeProvider,
             CancellationToken cancellationToken)
@@ -706,27 +963,71 @@ public sealed class RuntimeSupervisorTests
             if (intent.Kind == RuntimeEffectKind.StartProcess)
             {
                 StartCallCount++;
+                if (StartDelay > TimeSpan.Zero)
+                {
+                    try
+                    {
+                        await Task.Delay(StartDelay, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return new RuntimeKernelCommand.EffectCompleted(
+                            intent.OperationId,
+                            intent.Generation,
+                            Result.Failure<Unit>(new ErrorInfo(
+                                code: "RuntimeEffectCancelled",
+                                message: "The effect runner task was cancelled before the host could complete the operation.",
+                                severity: ErrorSeverity.Error,
+                                category: ErrorCategory.Runtime)),
+                            StartResult: null,
+                            CancellationReason: RuntimeCancellationReason.HostShutdown,
+                            CrossedIrreversibleBoundary: false);
+                    }
+                }
+
                 Result<RuntimeProcessHostResult> startResult = NextStartResult;
                 Result<Unit> unitResult = startResult.IsSuccess
                     ? Result.Success(Unit.Instance)
                     : Result.Failure<Unit>(startResult.Error);
-                return Task.FromResult(new RuntimeKernelCommand.EffectCompleted(
+                return new RuntimeKernelCommand.EffectCompleted(
                     intent.OperationId,
                     intent.Generation,
                     unitResult,
                     startResult.IsSuccess ? startResult.Value : null,
                     CancellationReason: null,
-                    CrossedIrreversibleBoundary: startResult.IsSuccess));
+                    CrossedIrreversibleBoundary: startResult.IsSuccess);
             }
 
             StopCallCount++;
-            return Task.FromResult(new RuntimeKernelCommand.EffectCompleted(
+            if (StopDelay > TimeSpan.Zero)
+            {
+                try
+                {
+                    await Task.Delay(StopDelay, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return new RuntimeKernelCommand.EffectCompleted(
+                        intent.OperationId,
+                        intent.Generation,
+                        Result.Failure<Unit>(new ErrorInfo(
+                            code: "RuntimeEffectCancelled",
+                            message: "The effect runner task was cancelled before the host could complete the operation.",
+                            severity: ErrorSeverity.Error,
+                            category: ErrorCategory.Runtime)),
+                        StartResult: null,
+                        CancellationReason: RuntimeCancellationReason.HostShutdown,
+                        CrossedIrreversibleBoundary: false);
+                }
+            }
+
+            return new RuntimeKernelCommand.EffectCompleted(
                 intent.OperationId,
                 intent.Generation,
                 NextStopResult,
                 StartResult: null,
                 CancellationReason: null,
-                CrossedIrreversibleBoundary: true));
+                CrossedIrreversibleBoundary: true);
         }
     }
 

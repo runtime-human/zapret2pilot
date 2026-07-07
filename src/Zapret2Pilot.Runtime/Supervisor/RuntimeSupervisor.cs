@@ -1,5 +1,4 @@
 using System;
-using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,7 +13,7 @@ namespace Zapret2Pilot.Runtime.Supervisor;
 
 /// <summary>
 /// <see cref="IRuntimeSupervisor"/> implementation. As of milestone
-/// 0.0.24 the supervisor is a pure façade over
+/// 0.0.25 the supervisor is a pure façade over
 /// <see cref="RuntimeKernelLoop"/>: the loop owns the state
 /// machine, the guard and the lifecycle command queue; the
 /// supervisor is a thin adapter that:
@@ -23,9 +22,11 @@ namespace Zapret2Pilot.Runtime.Supervisor;
 ///         <see cref="StopAsync"/> calls into
 ///         <see cref="RuntimeKernelCommand"/>s and forwards them to
 ///         the loop.</item>
-///   <item>Awaits the loop's projected
-///         <see cref="RuntimeKernelState"/> observable until the
-///         terminal status (<see cref="RuntimeSupervisorStatus.Running"/>,
+///   <item>Wraps every posted command in a
+///         <see cref="RuntimeCommandReceipt"/> and awaits the
+///         loop's projected <see cref="RuntimeKernelState"/>
+///         observable until the terminal status
+///         (<see cref="RuntimeSupervisorStatus.Running"/>,
 ///         <see cref="RuntimeSupervisorStatus.Stopped"/> or
 ///         <see cref="RuntimeSupervisorStatus.StartBlocked"/>) is
 ///         reached and returns the mapped result.</item>
@@ -44,12 +45,17 @@ namespace Zapret2Pilot.Runtime.Supervisor;
 /// <see cref="RuntimeKernelLoop.StateChanged"/>.
 /// </para>
 /// <para>
-/// <b>Concurrency.</b> The supervisor uses a private
-/// <see cref="SemaphoreSlim"/> to serialise concurrent
-/// <see cref="StartAsync"/> and <see cref="StopAsync"/> calls. The
-/// semaphore is never held across the call to the loop's blocking
-/// <c>await</c> on the projected observable, so the critical
-/// section is short and deadlocks are structurally impossible.
+/// <b>Concurrency model.</b> The supervisor serialises concurrent
+/// <see cref="StartAsync"/> and <see cref="StopAsync"/> calls
+/// through a single <c>pendingReceipt</c> slot guarded by
+/// <see cref="Interlocked.CompareExchange(ref object, object, object)"/>.
+/// A <see cref="SemaphoreSlim"/> is intentionally NOT used: the
+/// stop path is allowed to supersede an in-flight start so the
+/// caller pressing Stop does not have to wait for the start to
+/// resolve. Concurrent start calls are rejected with a typed
+/// <c>RuntimeSupervisorAlreadyRunning</c> failure result;
+/// concurrent stop calls share the same receipt and observe the
+/// same terminal outcome.
 /// </para>
 /// <para>
 /// <b>Hosted-service contract.</b> The supervisor implements
@@ -108,9 +114,17 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     private readonly ILogger<RuntimeSupervisor> logger;
     private readonly TimeProvider timeProvider;
 
-    private readonly SemaphoreSlim startStopLock = new(1, 1);
     private IDisposable? healthSubscription;
     private int lifecycleState; // stores a LifecycleState value
+
+    // CS0420: a reference to a volatile field is not treated as
+    // volatile when passed by ref to Interlocked.CompareExchange.
+    // The Interlocked operations provide the necessary memory
+    // barrier, so the warning is informational and the field can
+    // remain volatile for plain Volatile.Read/Write.
+#pragma warning disable CS0420
+    private volatile RuntimeCommandReceipt? pendingReceipt;
+#pragma warning restore CS0420
 
     /// <summary>
     /// Creates a new <see cref="RuntimeSupervisor"/> façade.
@@ -222,15 +236,30 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
 
         DisposeHealthSubscription();
 
+        // Cancel any in-flight receipt so the StartAsync (or
+        // StopAsync) caller that is awaiting it resumes with
+        // OperationCanceledException. The receipt's terminal
+        // callback also clears the pendingReceipt slot via
+        // CompareExchange, so the subsequent StopCoreAsync
+        // call observes an empty slot and posts a fresh stop
+        // command rather than blocking on a cancelled one.
+        RuntimeCommandReceipt? active = pendingReceipt;
+        if (active is not null && !active.IsCompleted)
+        {
+            active.TryCancel();
+        }
+
         try
         {
             // ignoreDisposed: true — the supervisor IS being
             // disposed, but the in-flight stop pipeline must
-            // still run to completion. The previous binary
-            // `int disposed` flag forced this call to short
-            // -circuit with ObjectDisposedException, which made
-            // Dispose a logged failure rather than a graceful
-            // shutdown.
+            // still run to completion. The receipt-based
+            // design intentionally does not take a semaphore
+            // here: the cancel above unblocks the in-flight
+            // start, the slot is cleared, and StopCoreAsync
+            // installs its own stop receipt and waits for
+            // the kernel to publish the terminal Stopped
+            // snapshot.
             StopCoreAsync(ignoreDisposed: true, CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
@@ -250,15 +279,6 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
                 logger.LogError(ex, "RuntimeSupervisor: loop disposal failed.");
             }
 
-            try
-            {
-                startStopLock.Dispose();
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "RuntimeSupervisor: startStopLock disposal failed.");
-            }
-
             // The teardown sequence is complete. Subsequent
             // StartAsync / StopAsync callers must observe
             // ObjectDisposedException.
@@ -273,46 +293,65 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref lifecycleState) != (int)LifecycleState.Active, this);
         ArgumentNullException.ThrowIfNull(context, nameof(context));
+        cancellationToken.ThrowIfCancellationRequested();
 
-        await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        RuntimeKernelState initial = loop.CurrentState;
+        RuntimeSupervisorStatus current = MapStatus(initial.Status);
+        if (current is not (RuntimeSupervisorStatus.Stopped or RuntimeSupervisorStatus.StartBlocked))
         {
-            RuntimeKernelState initial = loop.CurrentState;
-            RuntimeSupervisorStatus current = MapStatus(initial.Status);
-            if (current is RuntimeSupervisorStatus.Running
-                or RuntimeSupervisorStatus.Starting
-                or RuntimeSupervisorStatus.Stopping)
-            {
-                ErrorInfo alreadyRunning = new(
-                    code: "RuntimeSupervisorAlreadyRunning",
-                    message: "Cannot start the runtime: a start or stop transition is already in progress.",
-                    severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime);
-                return Result.Failure<RuntimeProcessHostResult>(alreadyRunning);
-            }
-
-            bool accepted = await loop
-                .PostCommandAsync(
-                    new RuntimeKernelCommand.Start(context, AutomationOwner.User),
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!accepted)
-            {
-                ErrorInfo error = new(
-                    code: "RuntimeKernelLoopNotAcceptingCommands",
-                    message: "The runtime kernel loop is not accepting new commands.",
-                    severity: ErrorSeverity.Error,
-                    category: ErrorCategory.Runtime);
-                return Result.Failure<RuntimeProcessHostResult>(error);
-            }
-
-            return await AwaitStartResultAsync(initial, cancellationToken).ConfigureAwait(false);
+            ErrorInfo alreadyRunning = new(
+                code: "RuntimeSupervisorAlreadyRunning",
+                message: "Cannot start the runtime: a start or stop transition is already in progress.",
+                severity: ErrorSeverity.Error,
+                category: ErrorCategory.Runtime);
+            return Result.Failure<RuntimeProcessHostResult>(alreadyRunning);
         }
-        finally
+
+        RuntimeKernelCommand command = new RuntimeKernelCommand.Start(context, AutomationOwner.User);
+        RuntimeCommandReceipt receipt = new(
+            command: command,
+            baselineGeneration: initial.Generation,
+            stateChanged: loop.StateChanged,
+            isTerminalStatus: IsStartTerminal,
+            onTerminal: ClearPendingReceipt,
+            createdAt: timeProvider.GetUtcNow(),
+            cancellationToken: cancellationToken);
+
+        if (!TryBeginReceipt(receipt, out RuntimeCommandReceipt? existing))
         {
-            startStopLock.Release();
+            // The slot is held by another active receipt. We
+            // cannot proceed: a concurrent start would race
+            // the in-flight kernel transition, and a
+            // concurrent stop is the supervisor's concern
+            // (StopAsync handles its own slot arbitration).
+            ErrorInfo alreadyRunning = new(
+                code: "RuntimeSupervisorAlreadyRunning",
+                message: "Cannot start the runtime: a start or stop transition is already in progress.",
+                severity: ErrorSeverity.Error,
+                category: ErrorCategory.Runtime);
+            _ = existing;
+            return Result.Failure<RuntimeProcessHostResult>(alreadyRunning);
         }
+
+        bool accepted = await loop
+            .PostCommandAsync(command, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!accepted)
+        {
+            // The loop rejected the command (typically because
+            // it is being torn down). Release the slot and
+            // surface a typed failure.
+            receipt.TryCancel();
+            ErrorInfo error = new(
+                code: "RuntimeKernelLoopNotAcceptingCommands",
+                message: "The runtime kernel loop is not accepting new commands.",
+                severity: ErrorSeverity.Error,
+                category: ErrorCategory.Runtime);
+            return Result.Failure<RuntimeProcessHostResult>(error);
+        }
+
+        return await AwaitStartResultAsync(receipt, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -365,41 +404,271 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
                 this);
         }
 
-        await startStopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        RuntimeKernelState initial = loop.CurrentState;
+        RuntimeSupervisorStatus current = MapStatus(initial.Status);
+        if (current is RuntimeSupervisorStatus.Stopped or RuntimeSupervisorStatus.StartBlocked)
+        {
+            // Idempotent no-op for an idle / guard-blocked
+            // supervisor. The loop has already published the
+            // terminal Stopped snapshot, so the receipt
+            // shortcut is not even attempted.
+            return Result.Success(Unit.Instance);
+        }
+
+        RuntimeCancellationReason cancellationReason = ignoreDisposed
+            ? RuntimeCancellationReason.HostShutdown
+            : RuntimeCancellationReason.UserRequested;
+        string reasonText = cancellationReason == RuntimeCancellationReason.HostShutdown
+            ? "Host-initiated stop"
+            : "User-initiated stop";
+
+        RuntimeKernelCommand command = new RuntimeKernelCommand.Stop(
+            RuntimeOperationId.New(),
+            reasonText,
+            cancellationReason);
+        RuntimeCommandReceipt receipt = new(
+            command: command,
+            baselineGeneration: initial.Generation,
+            stateChanged: loop.StateChanged,
+            isTerminalStatus: IsStopTerminal,
+            onTerminal: ClearPendingReceipt,
+            createdAt: timeProvider.GetUtcNow(),
+            cancellationToken: cancellationToken);
+
+        if (!TryBeginReceipt(receipt, out RuntimeCommandReceipt? existing))
+        {
+            return await ResolveStopReceiptConflictAsync(receipt, existing, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        bool accepted = await loop
+            .PostCommandAsync(command, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!accepted)
+        {
+            // The loop rejected the command (typically because
+            // it is being torn down). Treat this as a
+            // best-effort no-op: complete the receipt with the
+            // current state so the awaiter maps the outcome to
+            // Success and the slot is cleared.
+            receipt.TryCompleteWithState(loop.CurrentState);
+            return Result.Success(Unit.Instance);
+        }
+
+        return await AwaitStopResultAsync(receipt, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves the case where <see cref="TryBeginReceipt"/>
+    /// refused the new stop receipt because the
+    /// <c>pendingReceipt</c> slot is held by another active
+    /// receipt. Three sub-cases are handled:
+    /// <list type="bullet">
+    ///   <item>The existing receipt is a
+    ///         <see cref="RuntimeKernelCommand.Stop"/>: the new
+    ///         caller shares the existing receipt's completion
+    ///         and observes the same terminal outcome.</item>
+    ///   <item>The existing receipt is a
+    ///         <see cref="RuntimeKernelCommand.Start"/>: the
+    ///         existing receipt is superseded (its
+    ///         <see cref="RuntimeCommandReceipt.IsSuperseded"/>
+    ///         flag is set and its TCS is cancelled so the
+    ///         in-flight start caller gets a typed
+    ///         <c>SupersededByStop</c> failure), the slot is
+    ///         re-arbitrated, and the new stop receipt is
+    ///         installed. If a second receipt slipped into
+    ///         the slot in the meantime (a race), the new
+    ///         caller falls back to sharing the new
+    ///         stop receipt or to a typed
+    ///         <c>RuntimeSupervisorStopConflict</c>
+    ///         failure.</item>
+    ///   <item>The slot is empty (the existing receipt
+    ///         completed between the <see cref="TryBeginReceipt"/>
+    ///         read and the handler): the new stop receipt
+    ///         is installed and the post-and-await pipeline
+    ///         runs as the normal path would have.</item>
+    /// </list>
+    /// </summary>
+    private async Task<Result<Unit>> ResolveStopReceiptConflictAsync(
+        RuntimeCommandReceipt receipt,
+        RuntimeCommandReceipt? existing,
+        CancellationToken cancellationToken)
+    {
+        // Case 1: empty slot — the existing receipt completed
+        // between TryBeginReceipt's read and our handler.
+        // Re-attempt the slot install.
+        if (existing is null)
+        {
+            if (TryBeginReceipt(receipt, out RuntimeCommandReceipt? stillExisting))
+            {
+                return await PostAndAwaitStopAsync(receipt, cancellationToken).ConfigureAwait(false);
+            }
+
+            return await ResolveStopReceiptConflictAsync(receipt, stillExisting, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        // Case 2: another stop is in flight. Share its
+        // completion.
+        if (existing.Command is RuntimeKernelCommand.Stop)
+        {
+            return await AwaitSharedStopReceiptAsync(existing, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Case 3: a start is in flight. Supersede it and retry
+        // the slot install.
+        existing.TrySetSuperseded();
+        if (TryBeginReceipt(receipt, out RuntimeCommandReceipt? afterSupersede))
+        {
+            return await PostAndAwaitStopAsync(receipt, cancellationToken).ConfigureAwait(false);
+        }
+
+        // A new receipt slipped into the slot between
+        // TrySetSuperseded and the re-try. Recurse one level
+        // to handle the new conflict.
+        if (afterSupersede is not null && afterSupersede.Command is RuntimeKernelCommand.Stop)
+        {
+            return await AwaitSharedStopReceiptAsync(afterSupersede, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Could not establish a stop receipt. The most likely
+        // cause is a concurrent start that grabbed the slot
+        // after the supersede; surface a typed failure.
+        return Result.Failure<Unit>(new ErrorInfo(
+            code: "RuntimeSupervisorStopConflict",
+            message: "Failed to establish a stop receipt: another transition grabbed the slot after a supersede.",
+            severity: ErrorSeverity.Error,
+            category: ErrorCategory.Runtime));
+    }
+
+    /// <summary>
+    /// Posts the stop command on the supplied receipt and awaits
+    /// the terminal state. Used by the
+    /// <see cref="ResolveStopReceiptConflictAsync"/> retry path.
+    /// </summary>
+    private async Task<Result<Unit>> PostAndAwaitStopAsync(
+        RuntimeCommandReceipt receipt,
+        CancellationToken cancellationToken)
+    {
+        bool accepted = await loop
+            .PostCommandAsync(receipt.Command, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!accepted)
+        {
+            receipt.TryCompleteWithState(loop.CurrentState);
+            return Result.Success(Unit.Instance);
+        }
+
+        return await AwaitStopResultAsync(receipt, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Awaits the completion of an in-flight stop receipt shared
+    /// with a concurrent <see cref="StopAsync"/> caller. Maps
+    /// the terminal <see cref="RuntimeKernelState"/> to a
+    /// <see cref="Result{T}"/> the same way
+    /// <see cref="AwaitStopResultAsync(RuntimeCommandReceipt, CancellationToken)"/>
+    /// does, but reuses the existing receipt's
+    /// <see cref="TaskCompletionSource{TResult}"/> rather than
+    /// installing a new one.
+    /// </summary>
+    private static async Task<Result<Unit>> AwaitSharedStopReceiptAsync(
+        RuntimeCommandReceipt existing,
+        CancellationToken cancellationToken)
+    {
+        RuntimeKernelState terminal;
         try
         {
-            RuntimeKernelState initial = loop.CurrentState;
-            RuntimeSupervisorStatus current = MapStatus(initial.Status);
-            if (current is RuntimeSupervisorStatus.Stopped or RuntimeSupervisorStatus.StartBlocked)
-            {
-                // Idempotent no-op for an idle / guard-blocked
-                // supervisor. The loop has already published the
-                // terminal Stopped snapshot.
-                return Result.Success(Unit.Instance);
-            }
-
-            bool accepted = await loop
-                .PostCommandAsync(
-                    new RuntimeKernelCommand.Stop(
-                        RuntimeOperationId.New(),
-                        "User-initiated stop"),
-                    cancellationToken)
+            terminal = await existing.Completion.Task
+                .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // User cancellation propagates; supersede
+            // cancellations cannot happen here because the
+            // existing receipt is a Stop receipt, and the
+            // supersede path is only triggered for Start
+            // receipts in ResolveStopReceiptConflictAsync.
+            throw;
+        }
 
-            if (!accepted)
+        if (terminal.LastError is { } lastError)
+        {
+            return Result.Failure<Unit>(lastError);
+        }
+
+        return Result.Success(Unit.Instance);
+    }
+
+    /// <summary>
+    /// Atomically installs <paramref name="receipt"/> into the
+    /// <c>pendingReceipt</c> slot. The slot is overwritten when
+    /// it is <c>null</c> or when the existing receipt has
+    /// already completed (i.e. the existing receipt's terminal
+    /// callback fired between the read and the CAS, which is a
+    /// benign race because the completion callback is
+    /// idempotent).
+    /// </summary>
+    /// <param name="receipt">
+    /// Receipt to install. Must not be <c>null</c>.
+    /// </param>
+    /// <param name="existing">
+    /// When the method returns <c>false</c>, the receipt that
+    /// was holding the slot at the moment of the failed CAS.
+    /// The supervisor reads <c>existing.Command</c> to decide
+    /// between supersede (Start) and share (Stop).
+    /// </param>
+    /// <returns>
+    /// <c>true</c> when the slot now holds
+    /// <paramref name="receipt"/>. <c>false</c> when the slot
+    /// was held by an active receipt at the moment of the CAS;
+    /// <paramref name="existing"/> is set in that case.
+    /// </returns>
+    private bool TryBeginReceipt(
+        RuntimeCommandReceipt receipt,
+        out RuntimeCommandReceipt? existing)
+    {
+        ArgumentNullException.ThrowIfNull(receipt, nameof(receipt));
+
+#pragma warning disable CS0420
+        while (true)
+        {
+            existing = Volatile.Read(ref pendingReceipt);
+            if (existing is not null && !existing.IsCompleted)
             {
-                // The loop rejected the command (typically because
-                // it is being torn down). Treat this as a
-                // best-effort no-op.
-                return Result.Success(Unit.Instance);
+                return false;
             }
 
-            return await AwaitStopResultAsync(initial, cancellationToken).ConfigureAwait(false);
+            if (Interlocked.CompareExchange(ref pendingReceipt, receipt, existing) == existing)
+            {
+                return true;
+            }
+            // CAS failed because another thread changed the
+            // slot; re-read and retry.
         }
-        finally
-        {
-            startStopLock.Release();
-        }
+#pragma warning restore CS0420
+    }
+
+    /// <summary>
+    /// Terminal callback handed to every
+    /// <see cref="RuntimeCommandReceipt"/> the supervisor
+    /// creates. Clears the <c>pendingReceipt</c> slot via
+    /// <see cref="Interlocked.CompareExchange(ref object, object, object)"/>
+    /// so the slot is only cleared if it still points at
+    /// <paramref name="receipt"/>. A different receipt that
+    /// was installed in the meantime is preserved.
+    /// </summary>
+    /// <param name="receipt">
+    /// Receipt that just completed. The slot is cleared only
+    /// if it still points at this receipt.
+    /// </param>
+    private void ClearPendingReceipt(RuntimeCommandReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(receipt, nameof(receipt));
+        Interlocked.CompareExchange(ref pendingReceipt, null, receipt);
     }
 
     /// <summary>
@@ -442,51 +711,54 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     }
 
     /// <summary>
-    /// Awaits the projected kernel observable until the
-    /// supervisor reaches one of the start terminal states
-    /// (<see cref="RuntimeSupervisorStatus.Running"/>,
+    /// Awaits the start <see cref="RuntimeCommandReceipt"/>
+    /// until the supervisor reaches one of the start terminal
+    /// states (<see cref="RuntimeSupervisorStatus.Running"/>,
     /// <see cref="RuntimeSupervisorStatus.Stopped"/> or
     /// <see cref="RuntimeSupervisorStatus.StartBlocked"/>) and
-    /// returns the mapped result.
+    /// returns the mapped result. The receipt's
+    /// <see cref="RuntimeCommandReceipt.IsSuperseded"/> flag
+    /// is consulted so a stop-during-start race is surfaced as
+    /// a typed <c>RuntimeSupervisorStartSupersededByStop</c>
+    /// failure rather than the natural terminal
+    /// snapshot.
     /// </summary>
-    /// <param name="initial">
-    /// State captured before the start command was posted; used
-    /// as the baseline so the projection does not race against
-    /// a stale in-flight terminal state.
-    /// </param>
+    /// <param name="receipt">Start receipt to await.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    private async Task<Result<RuntimeProcessHostResult>> AwaitStartResultAsync(
-        RuntimeKernelState initial,
+    private static async Task<Result<RuntimeProcessHostResult>> AwaitStartResultAsync(
+        RuntimeCommandReceipt receipt,
         CancellationToken cancellationToken)
     {
-        TaskCompletionSource<RuntimeKernelState> tcs = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        // The kernel's StateChanged is backed by a BehaviorSubject
-        // observed on the task pool, so a new subscription
-        // immediately receives the latest published state. The
-        // initial state of a fresh loop is Stopped (which is in
-        // IsStartTerminal), so without the generation filter the
-        // subscription would resolve the TCS with the baseline
-        // snapshot before the kernel has even processed the
-        // Start command. Restricting to states with a strictly
-        // newer generation than the captured baseline makes the
-        // await deterministic.
-        using IDisposable subscription = loop.StateChanged
-            .Where(state =>
-                state.Generation.Value > initial.Generation.Value
-                && IsStartTerminal(state.Status))
-            .Subscribe(
-                state => tcs.TrySetResult(state),
-                ex => tcs.TrySetException(ex));
-
         RuntimeKernelState terminal;
         try
         {
-            terminal = await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            terminal = await receipt.Completion.Task
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (receipt.IsSuperseded)
         {
-            throw;
+            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+                code: "RuntimeSupervisorStartSupersededByStop",
+                message: "The start was superseded by a stop request before the kernel reached a terminal state.",
+                severity: ErrorSeverity.Error,
+                category: ErrorCategory.Runtime));
+        }
+
+        if (receipt.IsSuperseded)
+        {
+            // The receipt completed via TrySetSuperseded's
+            // TrySetCanceled (which the design clears the
+            // receipt and then immediately supersedes with a
+            // state). The race window between the two CAS
+            // ops is benign: if the natural terminal
+            // resolution won, the awaiter gets the state
+            // and we still consult IsSuperseded here.
+            return Result.Failure<RuntimeProcessHostResult>(new ErrorInfo(
+                code: "RuntimeSupervisorStartSupersededByStop",
+                message: "The start was superseded by a stop request before the kernel reached a terminal state.",
+                severity: ErrorSeverity.Error,
+                category: ErrorCategory.Runtime));
         }
 
         if (terminal.Status == RuntimeKernelStatus.Running)
@@ -524,40 +796,31 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     }
 
     /// <summary>
-    /// Awaits the projected kernel observable until the
-    /// supervisor reaches one of the stop terminal states
+    /// Awaits the stop <see cref="RuntimeCommandReceipt"/> until
+    /// the supervisor reaches one of the stop terminal states
     /// (<see cref="RuntimeSupervisorStatus.Stopped"/> or
     /// <see cref="RuntimeSupervisorStatus.StartBlocked"/>) and
     /// returns the mapped result.
     /// </summary>
-    /// <param name="initial">
-    /// State captured before the stop command was posted; used as
-    /// the generation baseline so the BehaviorSubject's replay of
-    /// the in-flight Stopping snapshot does not prematurely
-    /// resolve the await.
-    /// </param>
+    /// <param name="receipt">Stop receipt to await.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    private async Task<Result<Unit>> AwaitStopResultAsync(
-        RuntimeKernelState initial,
+    private static async Task<Result<Unit>> AwaitStopResultAsync(
+        RuntimeCommandReceipt receipt,
         CancellationToken cancellationToken)
     {
-        TaskCompletionSource<RuntimeKernelState> tcs = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        using IDisposable subscription = loop.StateChanged
-            .Where(state =>
-                state.Generation.Value > initial.Generation.Value
-                && IsStopTerminal(state.Status))
-            .Subscribe(
-                state => tcs.TrySetResult(state),
-                ex => tcs.TrySetException(ex));
-
         RuntimeKernelState terminal;
         try
         {
-            terminal = await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            terminal = await receipt.Completion.Task
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
+            // User cancellation propagates. The stop
+            // receipt's IsSuperseded flag is never set
+            // (supersede is reserved for the start
+            // receipt), so we rethrow unconditionally.
             throw;
         }
 
@@ -623,5 +886,23 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
     {
         IDisposable? subscription = Interlocked.Exchange(ref healthSubscription, null);
         subscription?.Dispose();
+    }
+
+    /// <summary>
+    /// Test-only seam: returns <c>true</c> when the
+    /// <c>pendingReceipt</c> slot is currently holding an
+    /// <see cref="RuntimeCommandReceipt"/>. Used by the
+    /// supervisor's own test suite to verify that the slot is
+    /// cleared after a terminal state is observed. Not part of
+    /// the public <see cref="IRuntimeSupervisor"/> contract.
+    /// </summary>
+    internal bool HasPendingReceiptForTests
+    {
+        get
+        {
+#pragma warning disable CS0420
+            return Volatile.Read(ref pendingReceipt) is not null;
+#pragma warning restore CS0420
+        }
     }
 }
