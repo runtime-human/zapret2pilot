@@ -9,6 +9,25 @@ public sealed class RuntimeOwnershipMutexTests
 {
     private static string CreateCompatibleMutexName() => $"Z2P_TEST_{Guid.NewGuid():N}";
 
+    private static bool LocalGlobalNamespaceSeparationIsEnforced()
+    {
+        string name = $"Z2P_PROBE_{Guid.NewGuid():N}";
+        using Mutex local = new(initiallyOwned: false, name: $"Local\\{name}");
+        try
+        {
+            using Mutex global = new(
+                initiallyOwned: false,
+                name: name,
+                options: new NamedWaitHandleOptions { CurrentSessionOnly = false },
+                createdNew: out _);
+            return false;
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            return true;
+        }
+    }
+
     [Fact]
     public static void TryAcquireReturnsLeaseWhenMutexIsAvailable()
     {
@@ -123,14 +142,18 @@ public sealed class RuntimeOwnershipMutexTests
             return;
         }
 
+        if (!LocalGlobalNamespaceSeparationIsEnforced())
+        {
+            return;
+        }
+
         string mutexName = CreateCompatibleMutexName();
 
-        // Pre-create a mutex using the legacy 2-arg constructor (no
-        // NamedWaitHandleOptions). The default scope for that constructor
-        // does not match CurrentUserOnly = true, so the subsequent
-        // OwnershipOptions-based attempt must surface a scope mismatch as
-        // WaitHandleCannotBeOpenedException -> ExistingObjectRejected.
-        using (Mutex baseline = new(initiallyOwned: false, name: mutexName))
+        // Pre-create a baseline mutex explicitly in the Local\ namespace.
+        // RuntimeOwnershipMutex (CurrentSessionOnly = false) opens the object
+        // in the Global\ namespace, so this deterministic scope mismatch must
+        // surface as WaitHandleCannotBeOpenedException -> ExistingObjectRejected.
+        using (Mutex baseline = new(initiallyOwned: false, name: $"Local\\{mutexName}"))
         {
             RuntimeOwnershipMutex ownershipMutex = new(mutexName);
             RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
@@ -154,28 +177,19 @@ public sealed class RuntimeOwnershipMutexTests
             return;
         }
 
+        if (!LocalGlobalNamespaceSeparationIsEnforced())
+        {
+            return;
+        }
+
         string mutexName = CreateCompatibleMutexName();
 
-        // Pre-create a mutex with CurrentSessionOnly = true so that the
-        // subsequent OwnershipOptions-based attempt (CurrentSessionOnly = false)
-        // hits a scope/security mismatch. On Windows, opening a named mutex
-        // with options that do not match the existing handle's security
-        // descriptor surfaces as UnauthorizedAccessException, which the
-        // OwnershipOptions path translates to ExistingObjectAccessDenied.
-        NamedWaitHandleOptions differentOptions = new()
+        // Pre-create a baseline mutex explicitly in the Local\ namespace.
+        // RuntimeOwnershipMutex (CurrentSessionOnly = false) opens the object
+        // in the Global\ namespace, so this deterministic scope mismatch must
+        // surface as UnauthorizedAccessException -> ExistingObjectAccessDenied.
+        using (Mutex baseline = new(initiallyOwned: false, name: $"Local\\{mutexName}"))
         {
-            CurrentUserOnly = true,
-            CurrentSessionOnly = true,
-        };
-
-        using (Mutex baseline = new(
-            initiallyOwned: false,
-            name: mutexName,
-            options: differentOptions,
-            createdNew: out bool baselineCreated))
-        {
-            Assert.True(baselineCreated, "Baseline mutex should have been created.");
-
             RuntimeOwnershipMutex ownershipMutex = new(mutexName);
             RuntimeOwnershipAcquireResult result = ownershipMutex.TryAcquire(TimeSpan.Zero);
 
