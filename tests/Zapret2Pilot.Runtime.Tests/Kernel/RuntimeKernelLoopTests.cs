@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reactive.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -15,6 +16,7 @@ using Zapret2Pilot.Core.Results;
 using Zapret2Pilot.Core.Runtime;
 using Zapret2Pilot.Engine.Zapret2.Assets;
 using Zapret2Pilot.Runtime.Guard;
+using Zapret2Pilot.Runtime.Health;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.Integrity;
 using Zapret2Pilot.Runtime.Kernel;
@@ -466,6 +468,273 @@ public sealed class RuntimeKernelLoopTests
         Assert.NotNull(loop.CurrentState.LastError);
         Assert.Equal("RuntimeEffectCancelled", loop.CurrentState.LastError!.Code);
         Assert.True(runner.RunAsyncCalled);
+    }
+
+    [Fact]
+    public static async Task EffectCompleted_IsNotDropped_UnderObservationPressure()
+    {
+        // P0-3 regression test: an EffectCompleted posted by an
+        // in-flight effect must not be dropped even while 100
+        // observations are queued in the observation slot. The
+        // lifecycle channel is unbounded, so the kernel can
+        // always accept the completion; the previous bounded
+        // channel design could silently drop it under pressure.
+        using ReleasableRunner runner = new();
+        CountingGuard guard = new();
+        using RuntimeKernelLoop loop = new(
+            guard,
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool accepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(accepted);
+
+        await Task.Run(
+            () => runner.Started.Wait(DrainWaitTimeout, TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+
+        // Capture the operation id and generation while the
+        // state is still `Starting` and the pending operation
+        // id is the in-flight start effect.
+        RuntimeOperationId capturedOperationId = loop.CurrentState.PendingOperationId
+            ?? RuntimeOperationId.New();
+        RuntimeGeneration capturedGeneration = loop.CurrentState.Generation;
+
+        // Hammer the observation slot. Only the latest value
+        // survives in the bounded capacity 1 + DropOldest
+        // observation channel.
+        for (int i = 0; i < 100; i++)
+        {
+            bool observationAccepted = await loop.PostCommandAsync(
+                new RuntimeKernelCommand.Observation(
+                    capturedOperationId,
+                    new RuntimeHealthSnapshot(
+                        RuntimeHealthState.Healthy,
+                        processId: 4321,
+                        observedAtUtc: DateTimeOffset.UtcNow)),
+                TestContext.Current.CancellationToken);
+            Assert.True(observationAccepted);
+        }
+
+        // Reflectively call the private PostCompletion method.
+        // The redesign replaces the bounded channel TryWrite
+        // with an unbounded one, so the call must always
+        // succeed even when the observation slot is under
+        // pressure.
+        MethodInfo postCompletion = typeof(RuntimeKernelLoop).GetMethod(
+            "PostCompletion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException(
+                "RuntimeKernelLoop.PostCompletion was not found.");
+
+        RuntimeKernelCommand.EffectCompleted completion = new(
+            capturedOperationId,
+            capturedGeneration,
+            Result.Success(Unit.Instance),
+            StartResult: null,
+            CancellationReason: null,
+            CrossedIrreversibleBoundary: true);
+
+        object? result = postCompletion.Invoke(loop, new object?[] { completion });
+        Assert.NotNull(result);
+        Assert.True((bool)result, "PostCompletion returned false; the EffectCompleted would be dropped.");
+
+        // Release the runner so Dispose completes promptly.
+        runner.Release();
+
+        RuntimeKernelStatus status = await WaitForStatus(
+            loop,
+            RuntimeKernelStatus.Running,
+            StateWaitTimeout,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeKernelStatus.Running, status);
+    }
+
+    [Fact]
+    public static async Task Observations_Coalesce_UnderPressure()
+    {
+        // 100 observations posted back-to-back must collapse
+        // through the bounded capacity 1 + DropOldest
+        // observation slot. The guard's RecordSuccess counter
+        // is the observable side effect: every processed
+        // Healthy observation emits a RecordGuardSuccess
+        // effect, so the count proves how many observations
+        // the kernel actually drained.
+        using ReleasableRunner runner = new();
+        CountingGuard guard = new();
+        using RuntimeKernelLoop loop = new(
+            guard,
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool accepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(accepted);
+
+        await Task.Run(
+            () => runner.Started.Wait(DrainWaitTimeout, TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+
+        RuntimeOperationId operationId = loop.CurrentState.PendingOperationId
+            ?? RuntimeOperationId.New();
+
+        for (int i = 0; i < 100; i++)
+        {
+            bool observationAccepted = await loop.PostCommandAsync(
+                new RuntimeKernelCommand.Observation(
+                    operationId,
+                    new RuntimeHealthSnapshot(
+                        RuntimeHealthState.Healthy,
+                        processId: 4321,
+                        observedAtUtc: DateTimeOffset.UtcNow)),
+                TestContext.Current.CancellationToken);
+            Assert.True(observationAccepted);
+        }
+
+        runner.Release();
+
+        await WaitForStatus(
+            loop,
+            RuntimeKernelStatus.Running,
+            StateWaitTimeout,
+            TestContext.Current.CancellationToken);
+
+        // The kernel only ever processes the latest pending
+        // observation per channel-read cycle, so the guard
+        // counter must be strictly less than the number of
+        // posts but at least 1 (the kernel did process at
+        // least one observation).
+        Assert.True(
+            guard.RecordSuccessCount >= 1,
+            $"Expected at least one RecordSuccess call. Actual: {guard.RecordSuccessCount}.");
+        Assert.True(
+            guard.RecordSuccessCount < 100,
+            $"Coalescing failed: guard.RecordSuccessCount was {guard.RecordSuccessCount} (>= 100).");
+    }
+
+    [Fact]
+    public static async Task StopCommand_Delivered_UnderObservationPressure()
+    {
+        // Stop is a lifecycle command and must supersede every
+        // queued observation. With the redesigned transport
+        // the lifecycle channel is unbounded, so Stop is never
+        // queued behind observations.
+        using ReleasableRunner runner = new();
+        CountingGuard guard = new();
+        using RuntimeKernelLoop loop = new(
+            guard,
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool accepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(accepted);
+
+        await Task.Run(
+            () => runner.Started.Wait(DrainWaitTimeout, TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+
+        RuntimeOperationId operationId = loop.CurrentState.PendingOperationId
+            ?? RuntimeOperationId.New();
+
+        for (int i = 0; i < 100; i++)
+        {
+            bool observationAccepted = await loop.PostCommandAsync(
+                new RuntimeKernelCommand.Observation(
+                    operationId,
+                    new RuntimeHealthSnapshot(
+                        RuntimeHealthState.Healthy,
+                        processId: 4321,
+                        observedAtUtc: DateTimeOffset.UtcNow)),
+                TestContext.Current.CancellationToken);
+            Assert.True(observationAccepted);
+        }
+
+        bool stopAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Stop(
+                RuntimeOperationId.New(),
+                "test-pressure"),
+            TestContext.Current.CancellationToken);
+        Assert.True(stopAccepted);
+
+        // The runner is still blocked. The loop must reach
+        // Stopping because Stop is delivered through the
+        // lifecycle channel, which is never queued behind
+        // observations.
+        RuntimeKernelStatus status = await WaitForStatus(
+            loop,
+            RuntimeKernelStatus.Stopping,
+            StateWaitTimeout,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeKernelStatus.Stopping, status);
+
+        runner.Release();
+    }
+
+    [Fact]
+    public static async Task Dispose_DrainsObservationSlot()
+    {
+        // Dispose must not throw when an observation is still
+        // sitting in the observation slot. The kernel loop
+        // should exit cleanly through the channel completion
+        // path without leaking the in-flight effect or
+        // surfacing an unhandled exception.
+        using ReleasableRunner runner = new();
+        CountingGuard guard = new();
+        RuntimeKernelLoop loop = new(
+            guard,
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool startAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(startAccepted);
+
+        bool observationAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Observation(
+                RuntimeOperationId.New(),
+                new RuntimeHealthSnapshot(
+                    RuntimeHealthState.Healthy,
+                    processId: 4321,
+                    observedAtUtc: DateTimeOffset.UtcNow)),
+            TestContext.Current.CancellationToken);
+        Assert.True(observationAccepted);
+
+        // Release the runner so the in-flight effect observes
+        // cancellation promptly during Dispose and the
+        // in-flight effect tracker can drain.
+        runner.Release();
+
+        // Give the kernel thread a moment to observe the
+        // observation so we are testing the slot-draining
+        // path (otherwise the kernel might still be reading
+        // the Start command when Dispose runs).
+        await Task.Delay(TimeSpan.FromMilliseconds(50), TestContext.Current.CancellationToken);
+
+        await loop.StopAsync(TestContext.Current.CancellationToken);
+        Exception? disposeException = Record.Exception(() => loop.Dispose());
+        Assert.Null(disposeException);
     }
 
     private static RuntimeKernelLoop CreateLoop()
@@ -947,6 +1216,112 @@ public sealed class RuntimeKernelLoopTests
         {
             Interlocked.Increment(ref runAsyncCallCount);
             return Task.FromCanceled<RuntimeKernelCommand.EffectCompleted>(CancelledToken);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="IRuntimeEffectRunner"/> fake that signals
+    /// when <see cref="RunAsync"/> is invoked, then blocks the
+    /// returned task until either <see cref="Release"/> is
+    /// called or the supplied cancellation token fires. Used
+    /// by the observation-pressure tests to keep the
+    /// in-flight start effect open while the test posts
+    /// observations and lifecycle commands directly into the
+    /// kernel.
+    /// </summary>
+    private sealed class ReleasableRunner : IRuntimeEffectRunner, IDisposable
+    {
+        private readonly ManualResetEventSlim started = new();
+        private readonly TaskCompletionSource<bool> release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int runAsyncCallCount;
+
+        public ManualResetEventSlim Started => started;
+
+        public bool RunAsyncCalled => Volatile.Read(ref runAsyncCallCount) > 0;
+
+        public int RunAsyncCallCount => Volatile.Read(ref runAsyncCallCount);
+
+        public void Release() => release.TrySetResult(true);
+
+        public Task<RuntimeKernelCommand.EffectCompleted> RunAsync(
+            RuntimeEffectIntent intent,
+            TimeProvider timeProvider,
+            CancellationToken cancellationToken)
+        {
+            started.Set();
+            Interlocked.Increment(ref runAsyncCallCount);
+
+            return Task.Run(async () =>
+            {
+                // Race Release against cancellation: whichever
+                // wins determines the completion shape. When
+                // the test releases the runner the completion
+                // is a normal success; when the kernel worker
+                // CTS is cancelled (Dispose / StopAsync) the
+                // completion reports HostShutdown so the
+                // in-flight effect tracker can drain.
+                Task winner = await Task.WhenAny(
+                    release.Task,
+                    Task.Delay(Timeout.Infinite, cancellationToken))
+                    .ConfigureAwait(false);
+
+                if (winner == release.Task)
+                {
+                    return new RuntimeKernelCommand.EffectCompleted(
+                        intent.OperationId,
+                        intent.Generation,
+                        Result.Success(Unit.Instance),
+                        StartResult: null,
+                        CancellationReason: null,
+                        CrossedIrreversibleBoundary: true);
+                }
+
+                return new RuntimeKernelCommand.EffectCompleted(
+                    intent.OperationId,
+                    intent.Generation,
+                    Result.Success(Unit.Instance),
+                    StartResult: null,
+                    CancellationReason: RuntimeCancellationReason.HostShutdown,
+                    CrossedIrreversibleBoundary: false);
+            }, cancellationToken);
+        }
+
+        public void Dispose()
+        {
+            started.Dispose();
+            release.TrySetResult(false);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="ICrashLoopGuard"/> fake that records how
+    /// many <see cref="RecordSuccess"/> and
+    /// <see cref="RecordFailure"/> calls the reducer emitted.
+    /// Used by the observation-coalescing test to prove the
+    /// kernel collapsed duplicate observations before they
+    /// reached the guard.
+    /// </summary>
+    private sealed class CountingGuard : ICrashLoopGuard
+    {
+        private int recordSuccessCount;
+        private int recordFailureCount;
+
+        public int RecordSuccessCount => Volatile.Read(ref recordSuccessCount);
+
+        public int RecordFailureCount => Volatile.Read(ref recordFailureCount);
+
+        public CrashLoopGuardResult Check() => new(
+            isAllowed: true,
+            backoffRemaining: null,
+            consecutiveFailures: 0);
+
+        public void RecordFailure() => Interlocked.Increment(ref recordFailureCount);
+
+        public void RecordSuccess() => Interlocked.Increment(ref recordSuccessCount);
+
+        public void Reset()
+        {
         }
     }
 }

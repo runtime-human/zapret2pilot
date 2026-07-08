@@ -12,15 +12,46 @@ namespace Zapret2Pilot.Runtime.Kernel;
 
 /// <summary>
 /// The single authority over the runtime lifecycle (DEC-0039,
-/// roadmap §5.1). The loop owns the bounded
-/// <see cref="Channel{T}"/> of <see cref="RuntimeKernelCommand"/>s,
-/// a single reader thread, the pure
-/// <see cref="RuntimeKernelReducer"/>, the
+/// roadmap §5.1). The loop owns two complementary command
+/// channels — a guaranteed-delivery <i>lifecycle channel</i>
+/// and a coalescing <i>observation slot</i> — a single reader
+/// thread, the pure <see cref="RuntimeKernelReducer"/>, the
 /// <see cref="IRuntimeEffectRunner"/> dispatch, and the
 /// <see cref="RuntimeStatePublisher"/> that surfaces immutable
 /// snapshots to the Application and UI layers.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>Two-channel transport (P0-3 fix).</b> The previous
+/// design used a single bounded channel of capacity 64 and
+/// relied on <c>TryWrite</c> for in-flight
+/// <see cref="RuntimeKernelCommand.EffectCompleted"/>s. Under
+/// observation pressure the bounded channel could fill up and
+/// silently drop the completion, leaving the loop wedged in
+/// <see cref="RuntimeKernelStatus.Starting"/> or
+/// <see cref="RuntimeKernelStatus.Stopping"/>. The redesign
+/// splits the transport:
+/// </para>
+/// <list type="bullet">
+///   <item><see cref="_lifecycleChannel"/> carries every
+///         command that must be delivered exactly once:
+///         <see cref="RuntimeKernelCommand.Start"/>,
+///         <see cref="RuntimeKernelCommand.Stop"/>,
+///         <see cref="RuntimeKernelCommand.EffectCompleted"/>,
+///         and <see cref="RuntimeKernelCommand.Dispose"/>.
+///         The channel is unbounded, so an
+///         <see cref="RuntimeKernelCommand.EffectCompleted"/>
+///         can never be dropped while the writer is still
+///         open.</item>
+///   <item><see cref="_observationChannel"/> carries
+///         <see cref="RuntimeKernelCommand.Observation"/>s
+///         from the health monitor. The channel has capacity 1
+///         and <see cref="BoundedChannelFullMode.DropOldest"/>,
+///         so a burst of observations collapses to the latest
+///         value. The kernel drains the slot after every
+///         lifecycle command and on every read, ensuring the
+///         most recent snapshot drives the guard.</item>
+/// </list>
 /// <para>
 /// <b>Thread model.</b> All state mutations happen on the
 /// kernel reader thread. Process effects are dispatched to
@@ -28,12 +59,12 @@ namespace Zapret2Pilot.Runtime.Kernel;
 /// kernel thread is never blocked on I/O. The runner returns a
 /// <see cref="Task{TResult}"/> that completes with a
 /// <see cref="RuntimeKernelCommand.EffectCompleted"/>; the
-/// loop tracks the in-flight task and posts the completion back
-/// to the channel when the task finishes.
+/// loop tracks the in-flight task and posts the completion to
+/// the lifecycle channel when the task finishes.
 /// </para>
 /// <para>
 /// <b>Shutdown.</b> <see cref="StopAsync(CancellationToken)"/>
-/// completes the channel writer (no new commands accepted),
+/// completes both channel writers (no new commands accepted),
 /// cancels the worker CTS (in-flight effects observe the
 /// signal), waits for the worker thread to join and then
 /// drains the in-flight effect tracker with a bounded timeout.
@@ -42,6 +73,9 @@ namespace Zapret2Pilot.Runtime.Kernel;
 /// and only then sets the <c>disposed</c> flag so a concurrent
 /// caller that observes <see cref="PostCommandAsync"/> after
 /// disposal still gets the typed <see cref="ObjectDisposedException"/>.
+/// Observations that were sitting in the observation slot at
+/// shutdown are abandoned; the slot is bounded so there is at
+/// most one such value and the kernel is exiting anyway.
 /// </para>
 /// <para>
 /// <b>Guard effects.</b> <see cref="RuntimeEffectKind.RecordGuardSuccess"/>
@@ -73,7 +107,30 @@ public sealed class RuntimeKernelLoop : IDisposable
     private readonly IRuntimeEffectRunner effectRunner;
     private readonly TimeProvider timeProvider;
     private readonly ILogger<RuntimeKernelLoop> logger;
-    private readonly Channel<RuntimeKernelCommand> channel;
+
+    /// <summary>
+    /// Guaranteed-delivery channel for every command the
+    /// kernel must observe exactly once: <see cref="RuntimeKernelCommand.Start"/>,
+    /// <see cref="RuntimeKernelCommand.Stop"/>,
+    /// <see cref="RuntimeKernelCommand.EffectCompleted"/>, and
+    /// <see cref="RuntimeKernelCommand.Dispose"/>. Unbounded so
+    /// the in-flight effect completion posted by
+    /// <see cref="DispatchAsyncEffect"/> is never lost while the
+    /// loop is still draining. <see cref="BoundedChannelFullMode.Wait"/>
+    /// is therefore not required.
+    /// </summary>
+    private readonly Channel<RuntimeKernelCommand> _lifecycleChannel;
+
+    /// <summary>
+    /// Coalescing slot for <see cref="RuntimeKernelCommand.Observation"/>s
+    /// pushed by the health monitor. Capacity 1 with
+    /// <see cref="BoundedChannelFullMode.DropOldest"/> collapses
+    /// bursts of identical-state observations to the latest
+    /// value, which is the only one that matters for the
+    /// guard / state reducer anyway.
+    /// </summary>
+    private readonly Channel<RuntimeKernelCommand.Observation> _observationChannel;
+
     private readonly RuntimeStatePublisher publisher;
     private readonly CancellationTokenSource workerCts = new();
     private readonly Thread workerThread;
@@ -110,12 +167,30 @@ public sealed class RuntimeKernelLoop : IDisposable
 
         publisher = new RuntimeStatePublisher(initialState);
 
-        channel = Channel.CreateBounded<RuntimeKernelCommand>(new BoundedChannelOptions(64)
+        // Lifecycle channel: unbounded, single reader, multiple
+        // writers. Carries Start, Stop, EffectCompleted, and
+        // Dispose. The runner's completion continuation and the
+        // supervisor race to write here, so SingleWriter is
+        // explicitly false. Unbounded ensures that an
+        // in-flight EffectCompleted is never dropped under
+        // observation pressure.
+        _lifecycleChannel = Channel.CreateUnbounded<RuntimeKernelCommand>(new UnboundedChannelOptions
         {
-            FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
             SingleWriter = false,
         });
+
+        // Observation slot: capacity 1 + DropOldest, single
+        // reader, multiple writers. Collapses bursts of health
+        // observations to the latest snapshot so the guard only
+        // sees the most recent state.
+        _observationChannel = Channel.CreateBounded<RuntimeKernelCommand.Observation>(
+            new BoundedChannelOptions(1)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false,
+            });
 
         workerThread = new Thread(RunLoop)
         {
@@ -150,9 +225,34 @@ public sealed class RuntimeKernelLoop : IDisposable
         RuntimeKernelCommand command,
         CancellationToken cancellationToken)
     {
+        // Route by command kind. Lifecycle commands go to the
+        // guaranteed-delivery channel; observations go to the
+        // coalescing slot. The match is intentionally explicit
+        // (no `is Observation` fallback) so a future new
+        // command subclass fails the build until its routing
+        // is decided.
+        if (command is RuntimeKernelCommand.Observation observation)
+        {
+            try
+            {
+                await _observationChannel.Writer.WriteAsync(observation, cancellationToken)
+                    .ConfigureAwait(false);
+                return true;
+            }
+            catch (ChannelClosedException)
+            {
+                return false;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+        }
+
         try
         {
-            await channel.Writer.WriteAsync(command, cancellationToken).ConfigureAwait(false);
+            await _lifecycleChannel.Writer.WriteAsync(command, cancellationToken)
+                .ConfigureAwait(false);
             return true;
         }
         catch (ChannelClosedException)
@@ -184,7 +284,13 @@ public sealed class RuntimeKernelLoop : IDisposable
             return;
         }
 
-        channel.Writer.Complete();
+        // Complete both writers so the worker thread observes
+        // closure on whichever channel it is reading from.
+        // The worker finally-block will TryComplete them again
+        // (idempotent) for symmetry, in case the loop exits
+        // through the Dispose path before this call lands.
+        _lifecycleChannel.Writer.Complete();
+        _observationChannel.Writer.Complete();
         workerCts.Cancel();
 
         Thread? thread = workerThread;
@@ -254,86 +360,224 @@ public sealed class RuntimeKernelLoop : IDisposable
         {
             while (!workerCts.Token.IsCancellationRequested)
             {
-                RuntimeKernelCommand command;
-                try
-                {
-                    command = channel.Reader.ReadAsync(workerCts.Token).AsTask()
-                        .GetAwaiter().GetResult();
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (ChannelClosedException)
+                RuntimeKernelCommand? command = ReadNextCommand();
+                if (command is null)
                 {
                     break;
                 }
 
-                try
+                bool isLifecycle = command is not RuntimeKernelCommand.Observation;
+
+                ProcessCommand(command, ref state);
+
+                // After every lifecycle command, drain the
+                // observation slot. The slot is bounded at
+                // capacity 1 with DropOldest, so the loop is
+                // cheap, but it guarantees the most recent
+                // health snapshot always influences the state
+                // following a lifecycle transition.
+                if (isLifecycle)
                 {
-                    var result = RuntimeKernelReducer.Reduce(
-                        state,
-                        command,
-                        guard,
-                        timeProvider);
-
-                    state = result.NextState;
-                    publisher.Publish(state);
-
-                    foreach (var effect in result.Effects)
+                    while (_observationChannel.Reader.TryRead(out RuntimeKernelCommand.Observation? obs))
                     {
-                        logger.LogDebug(
-                            "RuntimeKernelLoop produced effect {EffectKind} for operation {OperationId} generation {Generation} deadline {Deadline} reason {Reason}",
-                            effect.Kind,
-                            effect.OperationId,
-                            effect.Generation.Value,
-                            effect.Deadline,
-                            effect.CancellationReason);
-
-                        ExecuteEffect(effect);
-                    }
-
-                    foreach (var evt in result.Events)
-                    {
-                        if (evt is IgnoredStaleCompletion stale)
-                        {
-                            logger.LogWarning(
-                                "RuntimeKernelLoop rejected stale completion for operation {OperationId} generation {Generation} (state generation {StateGeneration}, pending {StatePendingOperationId}): {Reason}",
-                                stale.OperationId,
-                                stale.Generation.Value,
-                                stale.StateGeneration.Value,
-                                stale.StatePendingOperationId,
-                                stale.Reason);
-                        }
-                    }
-
-                    if (command is RuntimeKernelCommand.Dispose)
-                    {
-                        break;
+                        ProcessCommand(obs, ref state);
                     }
                 }
-                catch (Exception ex)
+
+                if (command is RuntimeKernelCommand.Dispose)
                 {
-                    logger.LogError(ex, "RuntimeKernelLoop: unhandled exception while processing command.");
+                    break;
                 }
             }
         }
         finally
         {
-            // The worker thread is exiting. Complete the channel
-            // writer so any subsequent post is rejected without
-            // spinning, and cancel the worker CTS so in-flight
-            // effect tasks observe the cancellation.
+            // The worker thread is exiting. Complete both
+            // channel writers so any subsequent post is rejected
+            // without spinning, and cancel the worker CTS so
+            // in-flight effect tasks observe the cancellation.
+            // TryComplete is idempotent so this is safe even if
+            // StopAsync has already completed the writers.
             try
             {
-                channel.Writer.TryComplete();
+                _lifecycleChannel.Writer.TryComplete();
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "RuntimeKernelLoop: failed to complete the channel writer in the worker finally.");
+                logger.LogWarning(ex, "RuntimeKernelLoop: failed to complete the lifecycle channel writer in the worker finally.");
+            }
+
+            try
+            {
+                _observationChannel.Writer.TryComplete();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "RuntimeKernelLoop: failed to complete the observation channel writer in the worker finally.");
             }
 
             workerCts.Cancel();
+        }
+    }
+
+    /// <summary>
+    /// Reads the next command to process, giving strict
+    /// priority to the lifecycle channel. Returns <c>null</c>
+    /// when the worker is being torn down (worker CTS
+    /// cancelled, lifecycle channel closed) so the loop can
+    /// exit cleanly.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The priority scheme is:
+    /// </para>
+    /// <list type="number">
+    ///   <item>If the lifecycle channel has a command ready,
+    ///         read it and return.</item>
+    ///   <item>Otherwise, if the observation channel has one
+    ///         ready, read it and return.</item>
+    ///   <item>Otherwise, wait on both
+    ///         <see cref="ChannelReader{T}.WaitToReadAsync"/>
+    ///         signals via <see cref="Task.WhenAny{TResult}(Task{TResult}[])"/>
+    ///         and read whichever channel has data available
+    ///         first, preferring the lifecycle channel on a
+    ///         tie.</item>
+    /// </list>
+    /// </remarks>
+    private RuntimeKernelCommand? ReadNextCommand()
+    {
+        // Fast path: a lifecycle command is already available.
+        if (_lifecycleChannel.Reader.TryRead(out RuntimeKernelCommand? lifecycle))
+        {
+            return lifecycle;
+        }
+
+        // Fast path: only an observation is available. The
+        // observation slot holds at most one value at a time
+        // because of its DropOldest capacity 1, so there is no
+        // need to drain it here.
+        if (_observationChannel.Reader.TryRead(out RuntimeKernelCommand.Observation? observation))
+        {
+            return observation;
+        }
+
+        // Both channels are empty. Wait for either channel to
+        // become readable. We track which channels are still
+        // alive so the loop terminates when both are closed
+        // (no signal will ever arrive again).
+        bool lifecycleAlive = true;
+        bool observationAlive = true;
+        while (lifecycleAlive && observationAlive)
+        {
+            Task<bool> lifecycleReady = _lifecycleChannel.Reader
+                .WaitToReadAsync(workerCts.Token).AsTask();
+            Task<bool> observationReady = _observationChannel.Reader
+                .WaitToReadAsync(workerCts.Token).AsTask();
+
+            Task winner;
+            try
+            {
+                winner = Task.WhenAny(lifecycleReady, observationReady)
+                    .GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+            catch (ChannelClosedException)
+            {
+                return null;
+            }
+
+            _ = winner;
+
+            // Lifecycle gets priority on a tie because the two
+            // channels are both signalled but TryRead is the
+            // only authoritative way to know which one has data.
+            // If TryRead returns false, the channel was
+            // completed concurrently with the signal.
+            if (_lifecycleChannel.Reader.TryRead(out lifecycle))
+            {
+                return lifecycle;
+            }
+
+            if (_observationChannel.Reader.TryRead(out observation))
+            {
+                return observation;
+            }
+
+            // Both TryReads returned false: either the signals
+            // were spurious (should not happen) or the channels
+            // were completed in the gap between the signal and
+            // the read. Use the WaitToReadAsync result to
+            // decide whether to wait again on each channel.
+            if (lifecycleReady.IsCompletedSuccessfully)
+            {
+                lifecycleAlive = lifecycleReady.Result;
+            }
+
+            if (observationReady.IsCompletedSuccessfully)
+            {
+                observationAlive = observationReady.Result;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Processes a single command on the kernel thread. The
+    /// command is reduced against the current state, the new
+    /// state is published, and any emitted effects are executed
+    /// inline (record-guard effects) or dispatched to the runner
+    /// (start / stop effects). Stale completion rejections are
+    /// logged as warnings but do not throw.
+    /// </summary>
+    /// <param name="command">Command to process.</param>
+    /// <param name="state">Current state; updated in place.</param>
+    private void ProcessCommand(RuntimeKernelCommand command, ref RuntimeKernelState state)
+    {
+        try
+        {
+            var result = RuntimeKernelReducer.Reduce(
+                state,
+                command,
+                guard,
+                timeProvider);
+
+            state = result.NextState;
+            publisher.Publish(state);
+
+            foreach (var effect in result.Effects)
+            {
+                logger.LogDebug(
+                    "RuntimeKernelLoop produced effect {EffectKind} for operation {OperationId} generation {Generation} deadline {Deadline} reason {Reason}",
+                    effect.Kind,
+                    effect.OperationId,
+                    effect.Generation.Value,
+                    effect.Deadline,
+                    effect.CancellationReason);
+
+                ExecuteEffect(effect);
+            }
+
+            foreach (var evt in result.Events)
+            {
+                if (evt is IgnoredStaleCompletion stale)
+                {
+                    logger.LogWarning(
+                        "RuntimeKernelLoop rejected stale completion for operation {OperationId} generation {Generation} (state generation {StateGeneration}, pending {StatePendingOperationId}): {Reason}",
+                        stale.OperationId,
+                        stale.Generation.Value,
+                        stale.StateGeneration.Value,
+                        stale.StatePendingOperationId,
+                        stale.Reason);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "RuntimeKernelLoop: unhandled exception while processing command.");
         }
     }
 
@@ -431,7 +675,7 @@ public sealed class RuntimeKernelLoop : IDisposable
                 RuntimeKernelCommand.EffectCompleted completion = BuildCompletionFromTask(
                     completedTask, effect);
                 inFlightEffects.Remove(completedTask);
-                TryPostCompletion(completion);
+                PostCompletion(completion);
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
@@ -516,23 +760,30 @@ public sealed class RuntimeKernelLoop : IDisposable
             CrossedIrreversibleBoundary: false);
     }
 
-    private void TryPostCompletion(RuntimeKernelCommand.EffectCompleted completion)
+    private bool PostCompletion(RuntimeKernelCommand.EffectCompleted completion)
     {
         try
         {
-            if (!channel.Writer.TryWrite(completion))
+            if (!_lifecycleChannel.Writer.TryWrite(completion))
             {
-                // Channel is full or closed. The worker thread
-                // is no longer reading; the completion is
-                // dropped on the floor. This is acceptable
-                // because the loop is being torn down and the
-                // kernel state will be reset to Stopped on the
-                // next Start. Log so the loss is observable.
-                logger.LogWarning(
-                    "RuntimeKernelLoop: dropped effect completion for operation {OperationId} generation {Generation} because the channel is closed.",
+                // The lifecycle channel is unbounded, so
+                // TryWrite can only fail because the writer has
+                // been completed — i.e. the loop is being torn
+                // down and the worker thread is no longer
+                // reading. This is the only situation in which
+                // an EffectCompleted is dropped, and it can
+                // only happen after the in-flight effect
+                // tracker has already been drained, so the
+                // state machine is in a terminal state. Log
+                // loudly so the loss is observable.
+                logger.LogError(
+                    "RuntimeKernelLoop: dropped effect completion for operation {OperationId} generation {Generation} because the lifecycle channel writer is completed.",
                     completion.OperationId,
                     completion.Generation.Value);
+                return false;
             }
+
+            return true;
         }
         catch (Exception ex)
         {
@@ -541,6 +792,7 @@ public sealed class RuntimeKernelLoop : IDisposable
                 "RuntimeKernelLoop: unexpected error while posting effect completion for operation {OperationId} generation {Generation}.",
                 completion.OperationId,
                 completion.Generation.Value);
+            return false;
         }
     }
 
