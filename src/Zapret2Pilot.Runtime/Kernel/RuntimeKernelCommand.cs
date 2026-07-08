@@ -130,4 +130,45 @@ public abstract record RuntimeKernelCommand
     /// reason.
     /// </summary>
     public sealed record Dispose : RuntimeKernelCommand;
+
+    /// <summary>
+    /// Control signal asking the kernel loop to cancel the
+    /// in-flight effect whose
+    /// <see cref="RuntimeKernelState.PendingOperationId"/>
+    /// matches <see cref="OperationId"/>. The command is a
+    /// pure control signal: the reducer does not mutate
+    /// state, but the loop uses it to flip the per-operation
+    /// <see cref="CancellationTokenSource"/> so the runner
+    /// observes <see cref="CancellationToken"/> cancellation
+    /// and the resulting
+    /// <see cref="EffectCompleted"/> carries the supplied
+    /// <see cref="Reason"/> as its
+    /// <see cref="EffectCompleted.CancellationReason"/>.
+    /// </summary>
+    /// <param name="OperationId">
+    /// Operation id of the in-flight effect to cancel. The
+    /// loop matches this against the entry in its
+    /// per-operation CTS registry; entries that have already
+    /// been removed (because the effect completed or was
+    /// cancelled by another path) are silently ignored.
+    /// </param>
+    /// <param name="Generation">
+    /// Generation of the kernel state the caller observed
+    /// when it decided to cancel. The reducer rejects
+    /// cancel commands whose generation does not match the
+    /// current state so a stale cancel cannot re-fire after a
+    /// newer generation has taken over.
+    /// </param>
+    /// <param name="Reason">
+    /// Typed cancellation reason to record on the resulting
+    /// <see cref="EffectCompleted"/>. The loop propagates
+    /// this to the runner through the linked token so the
+    /// completion can carry <see cref="RuntimeCancellationReason.Superseded"/>
+    /// even when the runner cannot classify the
+    /// cancellation itself.
+    /// </param>
+    public sealed record CancelOperation(
+        RuntimeOperationId OperationId,
+        RuntimeGeneration Generation,
+        RuntimeCancellationReason Reason) : RuntimeKernelCommand;
 }

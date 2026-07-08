@@ -517,8 +517,15 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
         }
 
         // Case 3: a start is in flight. Supersede it and retry
-        // the slot install.
+        // the slot install. The supersede path used to only
+        // mark the existing receipt as superseded; with the
+        // P0-2 fix it must also post a
+        // <see cref="RuntimeKernelCommand.CancelOperation"/>
+        // so the kernel loop flips the per-operation CTS and
+        // the in-flight start effect actually unwinds (rather
+        // than just the supervisor receipt).
         existing.TrySetSuperseded();
+        TryCancelInFlightStart(existing);
         if (TryBeginReceipt(receipt, out RuntimeCommandReceipt? afterSupersede))
         {
             return await PostAndAwaitStopAsync(receipt, cancellationToken).ConfigureAwait(false);
@@ -562,6 +569,84 @@ public sealed class RuntimeSupervisor : IRuntimeSupervisor, IHostedService, IDis
         }
 
         return await AwaitStopResultAsync(receipt, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Posts a <see cref="RuntimeKernelCommand.CancelOperation"/>
+    /// to the kernel loop when a stop supersedes an in-flight
+    /// start. The cancel command flips the kernel's
+    /// per-operation CTS so the runner observes cancellation
+    /// and the resulting
+    /// <see cref="RuntimeKernelCommand.EffectCompleted"/>
+    /// carries <see cref="RuntimeCancellationReason.Superseded"/>.
+    /// The post is best-effort: when the loop is being torn
+    /// down it will reject the post and the existing
+    /// supersede path is sufficient (the worker-CTS
+    /// cancellation will unwind the in-flight effect on its
+    /// own).
+    /// </summary>
+    /// <param name="supersededStartReceipt">
+    /// The start receipt that has just been superseded by a
+    /// stop. The kernel loop's current
+    /// <see cref="RuntimeKernelState.PendingOperationId"/> and
+    /// <see cref="RuntimeKernelState.Generation"/> identify
+    /// the in-flight effect to cancel.
+    /// </param>
+    private void TryCancelInFlightStart(RuntimeCommandReceipt supersededStartReceipt)
+    {
+        ArgumentNullException.ThrowIfNull(supersededStartReceipt, nameof(supersededStartReceipt));
+
+        RuntimeKernelState current = loop.CurrentState;
+        RuntimeOperationId? pendingOperationId = current.PendingOperationId;
+        if (!pendingOperationId.HasValue)
+        {
+            // The kernel has already cleared the pending
+            // operation id (e.g. the start effect
+            // completed and the loop transitioned to
+            // Running or Stopped between the receipt
+            // supersede and this read). No cancel to
+            // post.
+            return;
+        }
+
+        // Best-effort fire-and-forget post. The kernel loop
+        // routes the cancel command through its
+        // guaranteed-delivery lifecycle channel, so the
+        // supersede signal is delivered even if the
+        // supervisor has stopped accepting posts by the
+        // time the call lands (in that case the post
+        // returns false and the worker-CTS cancellation
+        // from the surrounding Dispose path takes over).
+        // AsTask() converts the returned ValueTask to a
+        // Task so the discard satisfies CA2012; the
+        // operation still runs to completion on the
+        // kernel loop thread regardless of whether the
+        // Task is observed.
+        //
+        // ObjectDisposedException can be raised synchronously
+        // when the loop has been disposed between the state
+        // read above and the post below (the supervisor's
+        // Dispose path closes down the loop right after this
+        // helper is invoked). The call is best-effort: the
+        // worker-CTS cancellation from the surrounding Dispose
+        // path will unwind any in-flight effect on its own,
+        // so swallowing the disposed exception is the
+        // intended benign-race handling.
+        try
+        {
+            _ = loop.PostCommandAsync(
+                new RuntimeKernelCommand.CancelOperation(
+                    pendingOperationId.Value,
+                    current.Generation,
+                    RuntimeCancellationReason.Superseded),
+                CancellationToken.None).AsTask();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop has been disposed concurrently with the
+            // supersede. The worker-CTS cancellation from
+            // the surrounding Dispose path takes over.
+        }
     }
 
     /// <summary>

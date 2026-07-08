@@ -496,6 +496,69 @@ public sealed class RuntimeSupervisorTests
     }
 
     [Fact]
+    public static async Task StopAsync_DuringStart_CancelsUnderlyingEffect()
+    {
+        // P0-2 regression test: when a Stop supersedes an
+        // in-flight Start, the underlying start effect must
+        // observe cancellation quickly — not just the
+        // supervisor receipt. The runner used here is a
+        // slow cancellable runner that exposes the
+        // CancellationToken firing through a flag the test
+        // can observe. Without the per-operation CTS the
+        // test would time out because the start effect
+        // would only unwind on its natural 30-second
+        // deadline.
+        FakeClock clock = new();
+        SupervisorHarness harness = CreateSupervisor(clock);
+        harness.Runner.StartDelay = TimeSpan.FromSeconds(30);
+        harness.Runner.NextStartResult = CreateSuccessResult();
+        using RuntimeSupervisor supervisor = harness.Supervisor;
+
+        // Start a StartAsync but do not await it yet — the
+        // start effect is in flight, the start receipt is
+        // in the pending slot.
+        Task<Result<RuntimeProcessHostResult>> startTask = supervisor.StartAsync(
+            CreateStartContext(),
+            TestContext.Current.CancellationToken);
+
+        // Give the start command a moment to reach the
+        // kernel and for the in-flight start effect to
+        // begin.
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // The stop should now supersede the in-flight start
+        // receipt, post a CancelOperation to the loop, and
+        // the loop must flip the per-operation CTS so the
+        // runner observes cancellation quickly.
+        Task<Result<Unit>> stopTask = supervisor.StopAsync(
+            TestContext.Current.CancellationToken);
+
+        // The stop receipt completes when the loop reaches
+        // the terminal Stopped state. With the per-operation
+        // CTS the in-flight start effect unwinds within a
+        // few tens of milliseconds — well under the 30-second
+        // start delay. Wait for the stop to complete with
+        // a generous but bounded timeout that proves the
+        // cancellation is fast.
+        Result<Unit> stopResult = await stopTask.WaitAsync(
+            TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            stopResult.IsSuccess,
+            stopResult.IsFailure ? stopResult.Error.ToString() : string.Empty);
+        Assert.Equal(RuntimeSupervisorStatus.Stopped, supervisor.CurrentState.Status);
+
+        // The in-flight start caller should observe a
+        // typed superseded failure rather than a Running
+        // success.
+        Result<RuntimeProcessHostResult> startResult = await startTask;
+        Assert.True(
+            startResult.IsFailure,
+            "The superseded start must surface as a failure result.");
+        Assert.Equal("RuntimeSupervisorStartSupersededByStop", startResult.Error.Code);
+    }
+
+    [Fact]
     public static async Task StartAsync_SupersededByStopAsync_ReturnsSupersededFailure()
     {
         // The supersede path also has to be observable from

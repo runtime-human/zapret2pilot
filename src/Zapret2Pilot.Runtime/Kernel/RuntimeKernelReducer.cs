@@ -101,6 +101,7 @@ public static class RuntimeKernelReducer
             RuntimeKernelCommand.Observation observation => ReduceObservation(state, observation, guard, timeProvider),
             RuntimeKernelCommand.EffectCompleted completed => ReduceEffectCompleted(state, completed, timeProvider),
             RuntimeKernelCommand.Dispose => ReduceDispose(state, timeProvider),
+            RuntimeKernelCommand.CancelOperation cancel => ReduceCancelOperation(state, cancel, timeProvider),
             _ => throw new ArgumentOutOfRangeException(nameof(command)),
         };
     }
@@ -502,6 +503,77 @@ public static class RuntimeKernelReducer
             nextState,
             effects,
             Array.Empty<object>(),
+            Result.Success(Unit.Instance));
+    }
+
+    /// <summary>
+    /// Reducer entry point for a
+    /// <see cref="RuntimeKernelCommand.CancelOperation"/>. The
+    /// command is a control signal only: the loop has its own
+    /// per-operation <see cref="CancellationTokenSource"/>
+    /// registry and uses this command to flip the matching
+    /// CTS. The reducer is therefore intentionally side-effect
+    /// free here — it only validates the command and emits an
+    /// <see cref="IgnoredStaleCompletion"/> event when the
+    /// cancel is stale (mismatched generation or mismatched
+    /// pending operation id).
+    /// </summary>
+    /// <remarks>
+    /// The match contract is:
+    /// <list type="bullet">
+    ///   <item>If <c>state.PendingOperationId == command.OperationId</c>
+    ///         AND <c>state.Generation == command.Generation</c>,
+    ///         the command targets the currently in-flight
+    ///         effect. The reducer stamps the timestamp on the
+    ///         state to acknowledge the command but does not
+    ///         transition out of <see cref="RuntimeKernelStatus.Starting"/>
+    ///         / <see cref="RuntimeKernelStatus.Stopping"/>;
+    ///         the actual state transition is driven by the
+    ///         resulting <see cref="RuntimeKernelCommand.EffectCompleted"/>,
+    ///         which now carries the supplied
+    ///         <see cref="RuntimeKernelCommand.CancelOperation.Reason"/>
+    ///         as its
+    ///         <see cref="RuntimeKernelCommand.EffectCompleted.CancellationReason"/>.</item>
+    ///   <item>Otherwise the command is treated as stale: an
+    ///         <see cref="IgnoredStaleCompletion"/> event is
+    ///         emitted with a <c>"CancelOperationStale"</c>
+    ///         reason, the state is returned unchanged, and
+    ///         the loop's <see cref="TryCancelOperation"/>
+    ///         entry point still runs (a stale cancel must
+    ///         never flip a CTS that has already been
+    ///         removed).</item>
+    /// </list>
+    /// </remarks>
+    private static RuntimeReducerResult ReduceCancelOperation(
+        RuntimeKernelState state,
+        RuntimeKernelCommand.CancelOperation command,
+        TimeProvider timeProvider)
+    {
+        var now = timeProvider.GetUtcNow();
+
+        bool matches = state.PendingOperationId == command.OperationId
+            && state.Generation == command.Generation;
+
+        if (matches)
+        {
+            return new RuntimeReducerResult(
+                state with { Timestamp = now },
+                Array.Empty<RuntimeEffectIntent>(),
+                Array.Empty<object>(),
+                Result.Success(Unit.Instance));
+        }
+
+        IgnoredStaleCompletion ignored = new(
+            command.OperationId,
+            command.Generation,
+            state.Generation,
+            state.PendingOperationId,
+            "CancelOperationStale");
+
+        return new RuntimeReducerResult(
+            state with { Timestamp = now },
+            Array.Empty<RuntimeEffectIntent>(),
+            new object[] { ignored },
             Result.Success(Unit.Instance));
     }
 }

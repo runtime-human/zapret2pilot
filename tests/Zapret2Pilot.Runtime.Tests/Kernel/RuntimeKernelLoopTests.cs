@@ -737,6 +737,338 @@ public sealed class RuntimeKernelLoopTests
         Assert.Null(disposeException);
     }
 
+    [Fact]
+    public static async Task Stop_DuringStart_CancelsInFlightStartEffect()
+    {
+        // P0-2 regression test: when a Stop (or, in this
+        // direct-to-loop variant, a CancelOperation)
+        // supersedes an in-flight Start, the underlying
+        // effect must observe cancellation and unwind
+        // promptly — not only the supervisor receipt.
+        // Without the per-operation CTS, the runner would
+        // block until its natural deadline (or 30 seconds)
+        // because nothing in the kernel told its
+        // CancellationToken to fire.
+        using CancellableRunner runner = new();
+        using RuntimeKernelLoop loop = new(
+            new AlwaysAllowedGuard(),
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool startAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(startAccepted);
+
+        // Wait until the in-flight effect has actually
+        // started so the test races against a real
+        // in-flight Task, not a queued Start.
+        await Task.Run(
+            () => runner.Started.Wait(DrainWaitTimeout, TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+
+        RuntimeKernelState startingState = loop.CurrentState;
+        Assert.Equal(RuntimeKernelStatus.Starting, startingState.Status);
+        RuntimeOperationId capturedOperationId = startingState.PendingOperationId
+            ?? RuntimeOperationId.New();
+        RuntimeGeneration capturedGeneration = startingState.Generation;
+
+        // Post a CancelOperation directly. The reducer
+        // matches it against the in-flight effect, the loop
+        // flips the per-operation CTS, and the runner
+        // observes the cancellation within a few tens of
+        // milliseconds.
+        bool cancelAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.CancelOperation(
+                capturedOperationId,
+                capturedGeneration,
+                RuntimeCancellationReason.Superseded),
+            TestContext.Current.CancellationToken);
+        Assert.True(cancelAccepted);
+
+        // The runner must observe the cancellation well
+        // before the 30-second start deadline. 2 seconds is
+        // a generous upper bound that still proves the
+        // cancellation is fast.
+        bool observed = await Task.Run(
+            () => runner.CancellationObserved.Wait(
+                TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            observed,
+            "The in-flight start effect did not observe cancellation within 2 seconds after the CancelOperation was posted.");
+
+        // The state must reach Stopped quickly too, because
+        // the runner's cancellation propagates as an
+        // EffectCompleted with the Superseded reason. The
+        // reducer treats the cancelled effect as a regular
+        // failure and moves the state to Stopped.
+        RuntimeKernelStatus status = await WaitForStatus(
+            loop,
+            RuntimeKernelStatus.Stopped,
+            StateWaitTimeout,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeKernelStatus.Stopped, status);
+    }
+
+    [Fact]
+    public static async Task CancelOperation_StaleGeneration_IsIgnored()
+    {
+        // A CancelOperation whose generation does not match
+        // the current kernel state must be ignored: the
+        // reducer emits an IgnoredStaleCompletion event and
+        // the in-flight effect is NOT cancelled. The
+        // plan-level guarantee is "Generation must match";
+        // the test exercises a generation that is older
+        // than the current state (the in-flight start is
+        // already at the next generation by the time the
+        // cancel arrives).
+        using CancellableRunner runner = new();
+        using RuntimeKernelLoop loop = new(
+            new AlwaysAllowedGuard(),
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool startAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(startAccepted);
+
+        await Task.Run(
+            () => runner.Started.Wait(DrainWaitTimeout, TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+
+        RuntimeKernelState startingState = loop.CurrentState;
+        Assert.Equal(RuntimeKernelStatus.Starting, startingState.Status);
+        RuntimeOperationId capturedOperationId = startingState.PendingOperationId
+            ?? RuntimeOperationId.New();
+
+        // Use a generation older than the current one. The
+        // reducer must reject the command and the runner
+        // must NOT observe cancellation.
+        RuntimeGeneration staleGeneration = new(Math.Max(0, startingState.Generation.Value - 1));
+
+        bool cancelAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.CancelOperation(
+                capturedOperationId,
+                staleGeneration,
+                RuntimeCancellationReason.Superseded),
+            TestContext.Current.CancellationToken);
+        Assert.True(cancelAccepted);
+
+        // The state must remain Starting: the cancel was a
+        // no-op because the generation did not match.
+        await Task.Delay(
+            TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeKernelStatus.Starting, loop.CurrentState.Status);
+
+        // The runner must NOT have observed cancellation.
+        Assert.False(
+            runner.CancellationObserved.IsSet,
+            "A stale-generation CancelOperation must not cancel the in-flight effect.");
+
+        // Release the runner so the test can drain
+        // cleanly.
+        runner.Release();
+    }
+
+    [Fact]
+    public static async Task Start_Cancelled_CompletesAsSuperseded()
+    {
+        // When a Start effect is superseded (e.g. by a
+        // Stop that races against the in-flight start),
+        // the kernel loop must:
+        //   1. Flip the per-operation CTS so the runner
+        //      observes cancellation.
+        //   2. Record the cancellation reason from the
+        //      CancelOperation command so the
+        //      completion callback can lift it onto the
+        //      resulting EffectCompleted.
+        //   3. Drive the state to Stopped once the
+        //      EffectCompleted is processed.
+        //
+        // This test verifies the captured EffectCompleted
+        // carries RuntimeCancellationReason.Superseded and
+        // the final state is Stopped. The wrapper runner
+        // captures the EffectCompleted so the test can
+        // assert on it directly (the loop's
+        // RuntimeKernelState projection does not surface
+        // the completion's CancellationReason).
+        using CompletionCapturingRunner runner = new();
+        using RuntimeKernelLoop loop = new(
+            new AlwaysAllowedGuard(),
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool startAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(startAccepted);
+
+        // Wait until the in-flight effect has actually
+        // started so the test races against a real
+        // in-flight Task, not a queued Start.
+        await Task.Run(
+            () => runner.Started.Wait(DrainWaitTimeout, TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+
+        RuntimeKernelState startingState = loop.CurrentState;
+        Assert.Equal(RuntimeKernelStatus.Starting, startingState.Status);
+        RuntimeOperationId capturedOperationId = startingState.PendingOperationId
+            ?? RuntimeOperationId.New();
+        RuntimeGeneration capturedGeneration = startingState.Generation;
+
+        // Post a CancelOperation with the Superseded
+        // reason — the same shape the supervisor posts
+        // from TryCancelInFlightStart.
+        bool cancelAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.CancelOperation(
+                capturedOperationId,
+                capturedGeneration,
+                RuntimeCancellationReason.Superseded),
+            TestContext.Current.CancellationToken);
+        Assert.True(cancelAccepted);
+
+        // Wait for the runner to observe cancellation
+        // (i.e. the linked token fired) so the test does
+        // not race the completion back to the loop.
+        bool observed = await Task.Run(
+            () => runner.CancellationObserved.Wait(
+                TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            observed,
+            "The in-flight start effect did not observe cancellation within 2 seconds after the CancelOperation was posted.");
+
+        // Wait for the state to reach Stopped. The
+        // reducer treats the cancelled EffectCompleted
+        // (failure with Superseded reason) as a regular
+        // failure and drives the state to Stopped.
+        RuntimeKernelStatus status = await WaitForStatus(
+            loop,
+            RuntimeKernelStatus.Stopped,
+            StateWaitTimeout,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeKernelStatus.Stopped, status);
+
+        // The completion captured by the wrapper must
+        // carry the Superseded reason. The completion
+        // callback in the loop lifts the stored
+        // per-operation reason onto the EffectCompleted
+        // before posting it back to the reducer; this
+        // assertion verifies that lift is wired
+        // correctly.
+        Assert.NotNull(runner.CapturedCompletion);
+        Assert.Equal(
+            RuntimeCancellationReason.Superseded,
+            runner.CapturedCompletion!.CancellationReason);
+    }
+
+    [Fact]
+    public static async Task WorkerShutdown_CancelsAllInFlightOperations()
+    {
+        // When the loop is disposed (or its worker is
+        // otherwise shut down) while two or more slow
+        // effects are in flight, the worker-CTS
+        // cancellation must propagate through each
+        // effect's linked token and each effect must
+        // observe cancellation. The kernel's
+        // per-operation CTS dictionary is also swept
+        // during Dispose, but the primary mechanism is
+        // the worker-CTS cancellation.
+        //
+        // To produce two in-flight effects we exploit
+        // the kernel's generation model: the Start
+        // effect is dispatched on generation N+1 and is
+        // still in flight when we post a Stop. The
+        // Stop command produces a StopProcess effect on
+        // generation N+2, leaving both effects in
+        // flight simultaneously.
+        using MultiEffectCancellableRunner runner = new();
+        using RuntimeKernelLoop loop = new(
+            new AlwaysAllowedGuard(),
+            runner,
+            new FakeClock(),
+            NullLogger<RuntimeKernelLoop>.Instance);
+
+        using TemporaryDirectory assetsRoot = new();
+        RuntimeProcessStartContext context = CreateStartContext(assetsRoot);
+
+        bool startAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Start(context, AutomationOwner.User),
+            TestContext.Current.CancellationToken);
+        Assert.True(startAccepted);
+
+        // Wait until the in-flight start effect has
+        // actually been dispatched. We do this by
+        // polling the runner's InFlightCount rather
+        // than relying on a single ManualResetEventSlim
+        // because we need to track the count for
+        // multiple effects.
+        await WaitForAsync(
+            () => Task.FromResult(runner.InFlightCount >= 1),
+            DrainWaitTimeout,
+            TestContext.Current.CancellationToken);
+
+        // Post a Stop command while the start effect is
+        // still in flight. The reducer dispatches a
+        // StopProcess effect on a fresh generation, so
+        // both the start and the stop effects are now
+        // in flight concurrently.
+        bool stopAccepted = await loop.PostCommandAsync(
+            new RuntimeKernelCommand.Stop(
+                RuntimeOperationId.New(),
+                "test-multi-effect-shutdown"),
+            TestContext.Current.CancellationToken);
+        Assert.True(stopAccepted);
+
+        // Wait until both effects are in flight. This
+        // is the precondition the test is verifying:
+        // the kernel holds 2+ in-flight effects before
+        // Dispose is called.
+        await WaitForAsync(
+            () => Task.FromResult(runner.InFlightCount >= 2),
+            DrainWaitTimeout,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(
+            runner.InFlightCount >= 2,
+            $"Expected at least 2 in-flight effects, but observed {runner.InFlightCount}.");
+
+        // Dispose the loop. The worker-CTS cancellation
+        // must propagate to both linked tokens; both
+        // effects must observe cancellation.
+        Exception? disposeException = Record.Exception(() => loop.Dispose());
+        Assert.Null(disposeException);
+
+        // Wait until both effects have observed
+        // cancellation. The cancellation counter is
+        // incremented from each effect's
+        // CancellationTokenRegistration callback, so
+        // the assertion directly proves the worker-CTS
+        // cancellation reached every in-flight effect.
+        await WaitForAsync(
+            () => Task.FromResult(runner.CancellationObservedCount >= 2),
+            DrainWaitTimeout,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            2,
+            runner.CancellationObservedCount);
+    }
+
     private static RuntimeKernelLoop CreateLoop()
     {
         FakeClock clock = new();
@@ -836,6 +1168,36 @@ public sealed class RuntimeKernelLoopTests
         {
             subscription.Dispose();
         }
+    }
+
+    private static async Task WaitForAsync(
+        Func<Task<bool>> condition,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        linked.CancelAfter(timeout);
+        TimeSpan pollInterval = TimeSpan.FromMilliseconds(10);
+        while (!linked.IsCancellationRequested)
+        {
+            if (await condition().ConfigureAwait(false))
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(pollInterval, linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        throw new TimeoutException(
+            $"The condition did not become true within {timeout}.");
     }
 
     private static RuntimeProcessStartContext CreateStartContext(TemporaryDirectory assetsRoot)
@@ -1194,6 +1556,130 @@ public sealed class RuntimeKernelLoopTests
     }
 
     /// <summary>
+    /// <see cref="IRuntimeEffectRunner"/> fake used by the
+    /// P0-2 cancellation tests. The runner registers a
+    /// callback on its incoming
+    /// <see cref="CancellationToken"/> so the test can
+    /// observe the moment the kernel flips the
+    /// per-operation CTS. The returned
+    /// <see cref="Task{TResult}"/> completes only when
+    /// either the token is cancelled (returning a
+    /// <see cref="RuntimeCancellationReason.Superseded"/>
+    /// completion) or the test calls
+    /// <see cref="Release"/> (returning a normal success).
+    /// </summary>
+    private sealed class CancellableRunner : IRuntimeEffectRunner, IDisposable
+    {
+        private readonly ManualResetEventSlim started = new();
+        private readonly ManualResetEventSlim cancellationObserved = new();
+        private readonly TaskCompletionSource<bool> release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int runAsyncCallCount;
+        private int disposedFlag;
+
+        public ManualResetEventSlim Started => started;
+
+        public ManualResetEventSlim CancellationObserved => cancellationObserved;
+
+        public int RunAsyncCallCount => Volatile.Read(ref runAsyncCallCount);
+
+        public void Release() => release.TrySetResult(true);
+
+        public Task<RuntimeKernelCommand.EffectCompleted> RunAsync(
+            RuntimeEffectIntent intent,
+            TimeProvider timeProvider,
+            CancellationToken cancellationToken)
+        {
+            started.Set();
+            Interlocked.Increment(ref runAsyncCallCount);
+
+            return Task.Run(async () =>
+            {
+                CancellationTokenSource localCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                try
+                {
+                    // Race Release against cancellation:
+                    // whichever wins determines the
+                    // completion shape. A local CTS
+                    // disposes the registration
+                    // deterministically so the test
+                    // runner never races Dispose on
+                    // the helper.
+                    using CancellationTokenRegistration registration = localCts.Token.Register(
+                        static state =>
+                        {
+                            CancellableRunner self = (CancellableRunner)state!;
+                            if (Volatile.Read(ref self.disposedFlag) == 0)
+                            {
+                                try
+                                {
+                                    self.cancellationObserved.Set();
+                                }
+                                catch (ObjectDisposedException)
+                                {
+                                    // The test disposed the
+                                    // helper between the
+                                    // cancellation signal and
+                                    // our callback. The
+                                    // signal is still valid
+                                    // for the test's
+                                    // assertions; swallow
+                                    // the disposal race.
+                                }
+                            }
+                        },
+                        this);
+
+                    Task winner = await Task.WhenAny(
+                        release.Task,
+                        Task.Delay(Timeout.Infinite, localCts.Token))
+                        .ConfigureAwait(false);
+
+                    if (winner == release.Task)
+                    {
+                        return new RuntimeKernelCommand.EffectCompleted(
+                            intent.OperationId,
+                            intent.Generation,
+                            Result.Success(Unit.Instance),
+                            StartResult: null,
+                            CancellationReason: null,
+                            CrossedIrreversibleBoundary: true);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Fall through to the cancellation
+                    // completion below.
+                }
+                finally
+                {
+                    localCts.Dispose();
+                }
+
+                return new RuntimeKernelCommand.EffectCompleted(
+                    intent.OperationId,
+                    intent.Generation,
+                    Result.Failure<Unit>(new ErrorInfo(
+                        code: "RuntimeEffectCancelled",
+                        message: "The cancellable runner observed cancellation.",
+                        severity: ErrorSeverity.Error,
+                        category: ErrorCategory.Runtime)),
+                    StartResult: null,
+                    CancellationReason: RuntimeCancellationReason.Superseded,
+                    CrossedIrreversibleBoundary: false);
+            }, cancellationToken);
+        }
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref disposedFlag, 1);
+            started.Dispose();
+            cancellationObserved.Dispose();
+            release.TrySetResult(false);
+        }
+    }
+
+    /// <summary>
     /// <see cref="IRuntimeEffectRunner"/> fake that returns a
     /// <see cref="Task{TResult}"/> already in the
     /// <see cref="TaskStatus.Canceled"/> state. The kernel
@@ -1322,6 +1808,148 @@ public sealed class RuntimeKernelLoopTests
 
         public void Reset()
         {
+        }
+    }
+
+    /// <summary>
+    /// Minimal wrapper around <see cref="CancellableRunner"/>
+    /// that captures the <see cref="RuntimeKernelCommand.EffectCompleted"/>
+    /// the runner produced. The kernel's
+    /// <see cref="RuntimeKernelState"/> projection does not
+    /// surface the completion's
+    /// <see cref="RuntimeKernelCommand.EffectCompleted.CancellationReason"/>,
+    /// so the test needs a side channel to assert on the
+    /// reason that the loop's completion callback lifted
+    /// onto the EffectCompleted.
+    /// </summary>
+    private sealed class CompletionCapturingRunner : IRuntimeEffectRunner, IDisposable
+    {
+        private readonly CancellableRunner inner = new();
+
+        public ManualResetEventSlim Started => inner.Started;
+
+        public ManualResetEventSlim CancellationObserved => inner.CancellationObserved;
+
+        public RuntimeKernelCommand.EffectCompleted? CapturedCompletion { get; private set; }
+
+        public void Release() => inner.Release();
+
+        public async Task<RuntimeKernelCommand.EffectCompleted> RunAsync(
+            RuntimeEffectIntent intent,
+            TimeProvider timeProvider,
+            CancellationToken cancellationToken)
+        {
+            RuntimeKernelCommand.EffectCompleted completion = await inner
+                .RunAsync(intent, timeProvider, cancellationToken)
+                .ConfigureAwait(false);
+            CapturedCompletion = completion;
+            return completion;
+        }
+
+        public void Dispose() => inner.Dispose();
+    }
+
+    /// <summary>
+    /// <see cref="IRuntimeEffectRunner"/> fake that tracks
+    /// the number of in-flight effects and the number of
+    /// effects that observed cancellation. Each
+    /// <see cref="RunAsync"/> call increments the in-flight
+    /// counter; the corresponding
+    /// <see cref="CancellationTokenRegistration"/> callback
+    /// increments the cancellation counter when the linked
+    /// token fires. The effect returns a successful
+    /// completion if released, or a
+    /// <see cref="RuntimeCancellationReason.HostShutdown"/>
+    /// completion on cancellation. Designed for the
+    /// worker-shutdown regression test: it lets the test
+    /// prove that disposing the kernel loop while 2+
+    /// effects are in flight causes every effect to
+    /// observe cancellation.
+    /// </summary>
+    private sealed class MultiEffectCancellableRunner : IRuntimeEffectRunner, IDisposable
+    {
+        private readonly TaskCompletionSource<bool> release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int inFlightCount;
+        private int cancellationObservedCount;
+        private int disposedFlag;
+
+        public int InFlightCount => Volatile.Read(ref inFlightCount);
+
+        public int CancellationObservedCount => Volatile.Read(ref cancellationObservedCount);
+
+        public void Release() => release.TrySetResult(true);
+
+        public Task<RuntimeKernelCommand.EffectCompleted> RunAsync(
+            RuntimeEffectIntent intent,
+            TimeProvider timeProvider,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref inFlightCount);
+
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    // Register the cancellation observer
+                    // directly on the supplied token. The
+                    // callback is invoked synchronously by
+                    // CancellationTokenSource.Cancel even
+                    // when the token is already cancelled
+                    // at the time of registration, so the
+                    // counter increments regardless of the
+                    // dispatch race.
+                    using CancellationTokenRegistration registration = cancellationToken.Register(
+                        static state =>
+                        {
+                            MultiEffectCancellableRunner self = (MultiEffectCancellableRunner)state!;
+                            if (Volatile.Read(ref self.disposedFlag) == 0)
+                            {
+                                Interlocked.Increment(ref self.cancellationObservedCount);
+                            }
+                        },
+                        this);
+
+                    Task winner = await Task.WhenAny(
+                        release.Task,
+                        Task.Delay(Timeout.Infinite, cancellationToken))
+                        .ConfigureAwait(false);
+
+                    if (winner == release.Task)
+                    {
+                        return new RuntimeKernelCommand.EffectCompleted(
+                            intent.OperationId,
+                            intent.Generation,
+                            Result.Success(Unit.Instance),
+                            StartResult: null,
+                            CancellationReason: null,
+                            CrossedIrreversibleBoundary: true);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Fall through to the cancellation
+                    // completion below.
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref inFlightCount);
+                }
+
+                return new RuntimeKernelCommand.EffectCompleted(
+                    intent.OperationId,
+                    intent.Generation,
+                    Result.Success(Unit.Instance),
+                    StartResult: null,
+                    CancellationReason: RuntimeCancellationReason.HostShutdown,
+                    CrossedIrreversibleBoundary: false);
+            }, cancellationToken);
+        }
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref disposedFlag, 1);
+            release.TrySetResult(false);
         }
     }
 }

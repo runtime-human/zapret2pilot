@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Channels;
@@ -135,6 +136,38 @@ public sealed class RuntimeKernelLoop : IDisposable
     private readonly CancellationTokenSource workerCts = new();
     private readonly Thread workerThread;
     private readonly InFlightEffectTracker inFlightEffects = new();
+
+    /// <summary>
+    /// Per-operation <see cref="CancellationTokenSource"/>s
+    /// the loop uses to flip the runner's token when a
+    /// <see cref="RuntimeKernelCommand.CancelOperation"/>
+    /// arrives. The dictionary is keyed by the effect's
+    /// <see cref="RuntimeOperationId"/> and is mutated only
+    /// from the kernel thread: the dispatch path inserts
+    /// the entry before kicking off the runner task; the
+    /// <see cref="TryCancelOperation"/> helper removes and
+    /// disposes the entry when the command is processed
+    /// and the completion callback removes / disposes the
+    /// entry after the runner task finishes. Removing
+    /// happens on the kernel thread too because completions
+    /// are posted back through the lifecycle channel and
+    /// are processed on the kernel reader.
+    /// </summary>
+    private readonly ConcurrentDictionary<RuntimeOperationId, CancellationTokenSource> _operationCancellations = new();
+
+    /// <summary>
+    /// Cancellation reason paired with each in-flight
+    /// operation. <see cref="TryCancelOperation"/> stores
+    /// the typed <see cref="RuntimeCancellationReason"/>
+    /// from the cancel command here, and the completion
+    /// callback lifts it onto the
+    /// <see cref="RuntimeKernelCommand.EffectCompleted"/>
+    /// so the reducer can observe
+    /// <see cref="RuntimeCancellationReason.Superseded"/>
+    /// even though the runner's linked token cannot
+    /// classify the cancellation itself.
+    /// </summary>
+    private readonly ConcurrentDictionary<RuntimeOperationId, RuntimeCancellationReason> _operationCancellationReasons = new();
 
     private int stoppingFlag;
     private int disposed;
@@ -333,6 +366,40 @@ public sealed class RuntimeKernelLoop : IDisposable
             logger.LogError(ex, "RuntimeKernelLoop: StopAsync failed during disposal.");
         }
 
+        // Sweep any per-operation CTSs that the completion
+        // callback did not have a chance to clean up — i.e.
+        // in-flight effects that the effect drain abandoned
+        // because they did not observe the worker-CTS
+        // cancellation within the drain timeout. Each
+        // remaining entry is cancelled (defensive; the worker
+        // CTS is already cancelled) and disposed so the
+        // dictionaries do not leak across a teardown cycle.
+        foreach (KeyValuePair<RuntimeOperationId, CancellationTokenSource> entry in _operationCancellations)
+        {
+            try
+            {
+                entry.Value.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already disposed by the completion
+                // callback in a race; nothing to do.
+            }
+            catch (AggregateException)
+            {
+                // CancellationTokenSource.Cancel
+                // aggregates any exceptions raised by
+                // registered callbacks. The runner does
+                // not register callbacks on this CTS, so
+                // this branch is defensive only.
+            }
+
+            entry.Value.Dispose();
+        }
+
+        _operationCancellations.Clear();
+        _operationCancellationReasons.Clear();
+
         try
         {
             publisher.Dispose();
@@ -416,7 +483,24 @@ public sealed class RuntimeKernelLoop : IDisposable
                 logger.LogWarning(ex, "RuntimeKernelLoop: failed to complete the observation channel writer in the worker finally.");
             }
 
-            workerCts.Cancel();
+            // The worker CTS may already be disposed if
+            // Dispose was called concurrently with the
+            // worker thread's natural exit. The Cancel call
+            // is best-effort: a disposed CTS is the natural
+            // terminal state and there is nothing to
+            // signal. Swallow the ObjectDisposedException
+            // so the test runner does not report a
+            // catastrophic failure for a benign teardown
+            // race.
+            try
+            {
+                workerCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The Dispose path has already torn down
+                // the worker CTS. Nothing to do.
+            }
         }
     }
 
@@ -539,6 +623,24 @@ public sealed class RuntimeKernelLoop : IDisposable
     {
         try
         {
+            // A CancelOperation is a control signal: it must
+            // flip the per-operation CTS so the in-flight
+            // effect observes cancellation BEFORE the reducer
+            // is even consulted. The reducer is still called
+            // for its timestamping and stale-rejection side
+            // effects, but the side effect that actually
+            // unwinds the in-flight effect lives here. The
+            // TryCancelOperation helper validates the
+            // operation / generation match against the
+            // pre-reducer state and is a no-op for stale
+            // cancels, so the contract "stale cancel is
+            // ignored" holds even though the cancel command
+            // is processed before the reducer.
+            if (command is RuntimeKernelCommand.CancelOperation cancel)
+            {
+                TryCancelOperation(cancel, state);
+            }
+
             var result = RuntimeKernelReducer.Reduce(
                 state,
                 command,
@@ -646,24 +748,82 @@ public sealed class RuntimeKernelLoop : IDisposable
     /// <see cref="RuntimeKernelCommand.EffectCompleted"/> back
     /// into the loop's channel.
     /// </summary>
+    /// <remarks>
+    /// The runner is invoked with a <em>linked</em>
+    /// <see cref="CancellationToken"/> that fires when
+    /// <i>either</i> the kernel worker CTS <i>or</i> the
+    /// per-operation CTS created here is cancelled. The
+    /// per-operation CTS lives in
+    /// <see cref="_operationCancellations"/> under the
+    /// effect's <see cref="RuntimeEffectIntent.OperationId"/>
+    /// and is removed by either the
+    /// <see cref="TryCancelOperation"/> helper (when a
+    /// <see cref="RuntimeKernelCommand.CancelOperation"/>
+    /// command targets it) or the completion callback (when
+    /// the runner task finishes). The completion callback
+    /// also lifts the stored
+    /// <see cref="RuntimeCancellationReason"/> (if any)
+    /// onto the
+    /// <see cref="RuntimeKernelCommand.EffectCompleted"/>
+    /// so the reducer can observe
+    /// <see cref="RuntimeCancellationReason.Superseded"/>
+    /// even when the runner cannot classify the
+    /// cancellation itself.
+    /// </remarks>
     /// <param name="effect">Process effect to dispatch.</param>
     private void DispatchAsyncEffect(RuntimeEffectIntent effect)
     {
-        CancellationToken token = workerCts.Token;
+        CancellationToken workerToken = workerCts.Token;
         IRuntimeEffectRunner runner = effectRunner;
+
+        CancellationTokenSource operationCts = new();
+        CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            workerToken, operationCts.Token);
+
+        // Insert the per-operation CTS into the registry
+        // BEFORE kicking off the runner task. A racing
+        // CancelOperation may already be sitting in the
+        // channel; storing the entry before Task.Run means
+        // the kernel thread can flip the CTS as soon as it
+        // processes the command, even if the runner has not
+        // yet observed the token.
+        if (!_operationCancellations.TryAdd(effect.OperationId, operationCts))
+        {
+            // Duplicate insertion is a logic bug: every
+            // effect has a fresh OperationId. Defensive
+            // cleanup so we never leak CTSs.
+            operationCts.Dispose();
+            linkedCts.Dispose();
+            logger.LogError(
+                "RuntimeKernelLoop: duplicate per-operation CTS insertion for operation {OperationId}.",
+                effect.OperationId);
+            return;
+        }
 
         Task<RuntimeKernelCommand.EffectCompleted> task;
         try
         {
-            task = Task.Run(() => runner.RunAsync(effect, timeProvider, token), token);
+            task = Task.Run(
+                () => runner.RunAsync(effect, timeProvider, linkedCts.Token),
+                linkedCts.Token);
         }
         catch (Exception ex)
         {
             // Task.Run should never throw synchronously here
-            // (we already verified `token` is not yet
+            // (we already verified `linkedCts` is not yet
             // cancelled), but defensive: surface the failure
-            // as a completion rather than letting it bubble up.
-            logger.LogError(ex, "RuntimeKernelLoop: failed to dispatch effect {EffectKind} to the runner.", effect.Kind);
+            // as a completion rather than letting it bubble
+            // up. Clean up the registry and the CTSs to
+            // avoid leaking them across a synchronous
+            // dispatch failure.
+            _operationCancellations.TryRemove(effect.OperationId, out CancellationTokenSource? _);
+            _operationCancellationReasons.TryRemove(effect.OperationId, out RuntimeCancellationReason _);
+            operationCts.Dispose();
+            linkedCts.Dispose();
+            logger.LogError(
+                ex,
+                "RuntimeKernelLoop: failed to dispatch effect {EffectKind} to the runner.",
+                effect.Kind);
             return;
         }
 
@@ -674,12 +834,186 @@ public sealed class RuntimeKernelLoop : IDisposable
             {
                 RuntimeKernelCommand.EffectCompleted completion = BuildCompletionFromTask(
                     completedTask, effect);
+
+                // If a CancelOperation flipped the
+                // per-operation CTS before the runner task
+                // finished, the stored reason wins over the
+                // runner's classification so the reducer
+                // observes Superseded (or whatever reason
+                // the cancel command specified) on the
+                // completion. The runner cannot tell the
+                // difference between a worker-CTS
+                // cancellation and a per-operation-CTS
+                // cancellation because both flow through
+                // the same linked token, so the loop must
+                // lift the per-operation reason onto the
+                // completion before posting it back to the
+                // reducer.
+                if (_operationCancellationReasons.TryRemove(
+                        effect.OperationId,
+                        out RuntimeCancellationReason cancelReason))
+                {
+                    completion = completion with
+                    {
+                        CancellationReason = cancelReason,
+                    };
+                }
+
+                // Release the per-operation CTS registry
+                // entry. The completion is now in flight
+                // through the lifecycle channel, so the
+                // kernel thread can no longer observe a
+                // CancelOperation for this operation id;
+                // removing the entry now keeps the
+                // dictionary bounded by the number of
+                // in-flight effects and lets the cancel
+                // path become a no-op for completed
+                // operations.
+                if (_operationCancellations.TryRemove(
+                        effect.OperationId,
+                        out CancellationTokenSource? storedCts))
+                {
+                    storedCts.Dispose();
+                }
+
+                // Dispose the linked CTS last so the
+                // runner can keep observing cancellation
+                // through the linked token until the very
+                // last statement (defensive: the runner
+                // has already returned at this point, so
+                // this is purely a resource hygiene
+                // step).
+                linkedCts.Dispose();
+
                 inFlightEffects.Remove(completedTask);
                 PostCompletion(completion);
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Flips the per-operation <see cref="CancellationTokenSource"/>
+    /// registered against <paramref name="command"/>'s
+    /// <see cref="RuntimeKernelCommand.CancelOperation.OperationId"/>
+    /// and records the
+    /// <see cref="RuntimeKernelCommand.CancelOperation.Reason"/>
+    /// for the completion callback to lift onto the
+    /// eventual <see cref="RuntimeKernelCommand.EffectCompleted"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Safe to call whether or not a matching entry exists
+    /// in <see cref="_operationCancellations"/>: the
+    /// TryGetValue / TryRemove pair means a no-op when the
+    /// effect has already completed. The method is invoked
+    /// from <see cref="ProcessCommand"/> BEFORE the reducer
+    /// runs so the cancellation is observable on the
+    /// runner's linked token even if the reducer is the
+    /// next slow step in the kernel thread's queue.
+    /// </para>
+    /// <para>
+    /// The helper validates the
+    /// <see cref="RuntimeKernelState.PendingOperationId"/>
+    /// and <see cref="RuntimeKernelState.Generation"/>
+    /// against the cancel command's identity: when either
+    /// does not match, the cancel is treated as stale and
+    /// the per-operation CTS is left intact. This is the
+    /// "stale cancel is ignored" contract — the
+    /// <see cref="RuntimeKernelReducer"/> emits an
+    /// <see cref="IgnoredStaleCompletion"/> event for the
+    /// audit log, but the in-flight effect is NOT
+    /// cancelled because the new generation has taken
+    /// over with a fresh pending operation id.
+    /// </para>
+    /// </remarks>
+    /// <param name="command">
+    /// Cancel command to honour. The helper matches
+    /// <see cref="RuntimeKernelCommand.CancelOperation.OperationId"/>
+    /// and
+    /// <see cref="RuntimeKernelCommand.CancelOperation.Generation"/>
+    /// against <paramref name="state"/>.
+    /// </param>
+    /// <param name="state">
+    /// Current kernel state at the moment the cancel
+    /// command was dequeued. Used to validate the
+    /// command's identity; not mutated by this method.
+    /// </param>
+    private void TryCancelOperation(RuntimeKernelCommand.CancelOperation command, RuntimeKernelState state)
+    {
+        if (state.PendingOperationId != command.OperationId
+            || state.Generation != command.Generation)
+        {
+            logger.LogDebug(
+                "RuntimeKernelLoop: CancelOperation for operation {OperationId} generation {Generation} does not match the current kernel state (pending {Pending}, generation {StateGeneration}); no-op.",
+                command.OperationId,
+                command.Generation.Value,
+                state.PendingOperationId,
+                state.Generation.Value);
+            return;
+        }
+
+        if (!_operationCancellations.TryGetValue(command.OperationId, out CancellationTokenSource? cts))
+        {
+            logger.LogDebug(
+                "RuntimeKernelLoop: CancelOperation arrived for unknown or already-completed operation {OperationId}; no-op.",
+                command.OperationId);
+            return;
+        }
+
+        bool cancelSucceeded = true;
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The effect completed between the lookup
+            // and the Cancel call and the completion
+            // callback already disposed the CTS. Safe
+            // to ignore: the runner observed
+            // cancellation through the linked token
+            // before disposal. Mark the cancel as a
+            // no-op so we do not leave an orphan
+            // reason entry in the per-operation
+            // dictionary — the completion callback
+            // will not run again to lift the reason
+            // onto a (non-existent) EffectCompleted.
+            cancelSucceeded = false;
+        }
+        catch (AggregateException)
+        {
+            // CancellationTokenSource.Cancel aggregates
+            // any exceptions raised by registered
+            // callbacks. The runner does not register
+            // callbacks on this CTS, so this branch
+            // is defensive only. Treat the same way
+            // as the disposed branch: the CTS is no
+            // longer trusted, so do not record an
+            // orphan reason.
+            cancelSucceeded = false;
+        }
+
+        if (cancelSucceeded)
+        {
+            _operationCancellationReasons[command.OperationId] = command.Reason;
+        }
+        else
+        {
+            // Defensive: if a previous run of this method
+            // already stored a reason for this operation,
+            // remove it so the dictionary never carries
+            // an entry whose EffectCompleted will never
+            // arrive.
+            _operationCancellationReasons.TryRemove(command.OperationId, out _);
+        }
+
+        logger.LogDebug(
+            "RuntimeKernelLoop: cancellation signal dispatched to operation {OperationId} with reason {Reason} (cancelSucceeded={CancelSucceeded}).",
+            command.OperationId,
+            command.Reason,
+            cancelSucceeded);
     }
 
     private static RuntimeKernelCommand.EffectCompleted BuildCompletionFromTask(
