@@ -134,7 +134,6 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
     private readonly BlockingCollection<Action> _continuationQueue = new(new ConcurrentQueue<Action>(), DefaultQueueCapacity);
     private readonly Thread _thread;
     private int _disposed;
-    private int _threadJoinFailed;
 
     /// <summary>
     /// Creates a new <see cref="RuntimeAffinityExecutor"/> and
@@ -288,12 +287,10 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
             // timeout. It may still be reading from the queues,
             // so completing or disposing them would race with
             // the live thread. Leave the resources alive for
-            // the process lifetime and record the failure so
-            // diagnostics can detect it. Setting _disposed=1
-            // (above) is sufficient to make ExecuteAsync throw
+            // the process lifetime. Setting _disposed=1 (above)
+            // is sufficient to make ExecuteAsync throw
             // ObjectDisposedException, which is the correct
             // public contract after Dispose().
-            Interlocked.Exchange(ref _threadJoinFailed, 1);
         }
     }
 
@@ -448,10 +445,14 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
             }
             catch (ObjectDisposedException)
             {
-                // _continuationQueue was disposed by a concurrent
-                // Dispose() racing with the pump. Stop pumping and
-                // cancel the user-visible TCS for the same reason
-                // as the OperationCanceledException branch.
+                // Defensive: Dispose() joins the affinity thread
+                // before completing or disposing _continuationQueue,
+                // so this catch is unreachable in normal flow. We
+                // keep the guard in case of future changes or
+                // abnormal paths (e.g. a manually-disposed queue).
+                // Stop pumping and cancel the user-visible TCS for
+                // the same reason as the OperationCanceledException
+                // branch.
                 // Note: ObjectDisposedException is a subclass of
                 // InvalidOperationException, so this catch must
                 // come before the more general one below.
@@ -460,10 +461,13 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
             }
             catch (InvalidOperationException)
             {
-                // _continuationQueue was completed (e.g. by
-                // Dispose() racing with the pump). Stop pumping
-                // and cancel the user-visible TCS for the same
-                // reason as the OperationCanceledException branch.
+                // Defensive: Dispose() joins the affinity thread
+                // before completing _continuationQueue, so this
+                // catch is unreachable in normal flow. We keep the
+                // guard in case of future changes or abnormal
+                // paths. Stop pumping and cancel the user-visible
+                // TCS for the same reason as the
+                // OperationCanceledException branch.
                 tcs.TrySetCanceled();
                 return;
             }
