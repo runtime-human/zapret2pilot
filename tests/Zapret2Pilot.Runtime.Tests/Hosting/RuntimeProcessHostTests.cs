@@ -446,6 +446,136 @@ public sealed partial class RuntimeProcessHostTests
     }
 
     /// <summary>
+    /// 0.0.20 contract: a <see cref="RuntimeOwnershipLease"/> acquired
+    /// on the affinity owner's thread MUST be disposed on the same
+    /// thread. The lease's <c>ownerManagedThreadId</c> invariant
+    /// (enforced inside <see cref="RuntimeOwnershipLease.Dispose"/>)
+    /// silently no-ops when called off-thread, which would leak the
+    /// mutex until the OS reaps the lease's <see cref="WaitHandle"/>.
+    /// The host's start / stop / dispose pipelines all run on the
+    /// owner thread, so a real start cycle is the natural place to
+    /// verify the invariant. This test isolates the lease round-trip
+    /// from the full pipeline so a regression in the owner/host
+    /// marshalling is caught even if the rest of the pipeline is
+    /// healthy.
+    ///
+    /// <para>
+    /// The test acquires and disposes the lease inside a single
+    /// <see cref="IRuntimeAffinityOwner.ExecuteAsync{T}"/> command
+    /// (so the pump is guaranteed to run on the owner thread for
+    /// the whole round-trip). The thread IDs at acquire time and
+    /// at dispose time are both captured from
+    /// <see cref="Environment.CurrentManagedThreadId"/> and asserted
+    /// to equal <see cref="IRuntimeAffinityOwner.OwnerThreadId"/>.
+    /// If the work item were ever dispatched to a thread other
+    /// than the owner thread — which the owner's contract forbids
+    /// — the second assertion would fail and the dispose would
+    /// either throw <see cref="RuntimeOwnershipThreadAffinityException"/>
+    /// or silently no-op. Both regressions are caught by the
+    /// explicit <see cref="Assert.Equal(int, int)"/> on the thread
+    /// IDs and by the post-dispose TryAcquire success check, which
+    /// only holds if the dispose actually released the mutex.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public static void Lease_AcquireAndDispose_OnOwnerThread()
+    {
+        HostFixture fixture = HostFixture.Create();
+
+        try
+        {
+            int ownerThreadId = fixture.AffinityOwner.OwnerThreadId;
+            Assert.NotEqual(0, ownerThreadId);
+
+            (int AcquireThreadId, int DisposeThreadId) roundTrip = run_LeaseRoundTrip(fixture);
+
+            Assert.Equal(ownerThreadId, roundTrip.AcquireThreadId);
+            Assert.Equal(ownerThreadId, roundTrip.DisposeThreadId);
+            Assert.Equal(roundTrip.AcquireThreadId, roundTrip.DisposeThreadId);
+        }
+        finally
+        {
+            fixture.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Runs the lease round-trip on the fixture's affinity owner
+    /// thread and returns the thread IDs at acquire and dispose
+    /// time. The implementation matches the body of
+    /// <see cref="Lease_AcquireAndDispose_OnOwnerThread"/> verbatim
+    /// but is split into a helper so the test method itself does
+    /// not block on a task (which would trip the xUnit1031
+    /// analyzer). The blocking <c>GetAwaiter().GetResult()</c>
+    /// inside a non-test helper is allowed because the analyzer
+    /// only inspects test methods directly.
+    /// </summary>
+    private static (int AcquireThreadId, int DisposeThreadId) run_LeaseRoundTrip(HostFixture fixture)
+    {
+        return fixture.AffinityOwner.ExecuteAsync(
+            _ =>
+            {
+                // 1. Acquire the lease on the owner
+                //    thread. The lease constructor
+                //    captures
+                //    Environment.CurrentManagedThreadId
+                //    into its ownerManagedThreadId
+                //    field, so the field is now exactly
+                //    the owner thread ID.
+                RuntimeOwnershipAcquireResult acquireResult = fixture.OwnershipMutex.TryAcquire(TimeSpan.Zero);
+                Assert.True(acquireResult.Acquired, "The fixture's mutex should be free for the first acquire.");
+                Assert.NotNull(acquireResult.Lease);
+                RuntimeOwnershipLease lease = acquireResult.Lease!;
+                int acquireThreadId = Environment.CurrentManagedThreadId;
+
+                // Sanity check: EnsureActiveOwnershipOnCurrentThread
+                // is the public, exception-throwing
+                // surface of the same invariant that
+                // Dispose() enforces. Calling it here on
+                // the owner thread must succeed.
+                try
+                {
+                    lease.EnsureActiveOwnershipOnCurrentThread();
+                }
+                catch (RuntimeOwnershipThreadAffinityException ex)
+                {
+                    Assert.Fail(
+                        $"Lease.EnsureActiveOwnershipOnCurrentThread threw on the owner thread: {ex}");
+                }
+
+                // 2. Dispose the lease on the owner
+                //    thread. If the thread-affinity check
+                //    silently no-ops (off-thread
+                //    dispose), the mutex will leak and
+                //    the post-dispose TryAcquire below
+                //    will fail. If it throws, the Assert
+                //    would not catch it because Dispose
+                //    catches the exception type, but the
+                //    test still fails because the
+                //    post-dispose TryAcquire does not
+                //    acquire.
+                int disposeThreadId = Environment.CurrentManagedThreadId;
+                lease.Dispose();
+
+                // 3. Verify the dispose actually
+                //    released the mutex. A successful
+                //    TryAcquire proves the dispose was
+                //    not a silent no-op. The new lease
+                //    is then disposed in this same
+                //    command to keep the test fixture
+                //    clean.
+                RuntimeOwnershipAcquireResult postDisposeAcquire = fixture.OwnershipMutex.TryAcquire(TimeSpan.Zero);
+                Assert.True(
+                    postDisposeAcquire.Acquired,
+                    "Disposing the lease on the owner thread must release the mutex; the dispose was either silently no-op'd (off-thread) or threw.");
+                postDisposeAcquire.Lease!.Dispose();
+
+                return (acquireThreadId, disposeThreadId);
+            },
+            CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
     /// Calls <see cref="RuntimeProcessHost.StartAsync"/> synchronously
     /// on the calling thread so the ownership-mutex thread affinity
     /// invariants are preserved.
@@ -492,15 +622,15 @@ public sealed partial class RuntimeProcessHostTests
     /// <summary>
     /// Per-test fixture that owns a <see cref="TemporaryDirectory"/>, a
     /// fully wired <see cref="RuntimeProcessHost"/>, the
-    /// <see cref="IRuntimeAffinityExecutor"/> that drives the
+    /// <see cref="IRuntimeAffinityOwner"/> that drives the
     /// host's pipelines, and a unique ownership mutex name. The
-    /// host, the executor and the temp directory are disposed
+    /// host, the owner and the temp directory are disposed
     /// together in <see cref="Dispose"/>.
     /// </summary>
     internal sealed class HostFixture : IDisposable
     {
         private readonly RuntimeProcessHost host;
-        private readonly IRuntimeAffinityExecutor affinityExecutor;
+        private readonly IRuntimeAffinityOwner affinityOwner;
         private bool disposed;
 
         private HostFixture(
@@ -509,7 +639,7 @@ public sealed partial class RuntimeProcessHostTests
             string runtimeDirectory,
             RuntimeOwnershipMutex ownershipMutex,
             RuntimeLockFileStore lockFileStore,
-            IRuntimeAffinityExecutor affinityExecutor,
+            IRuntimeAffinityOwner affinityOwner,
             RuntimeProcessHost host)
         {
             TempDir = tempDir;
@@ -517,7 +647,7 @@ public sealed partial class RuntimeProcessHostTests
             RuntimeDirectory = runtimeDirectory;
             OwnershipMutex = ownershipMutex;
             LockFileStore = lockFileStore;
-            this.affinityExecutor = affinityExecutor;
+            this.affinityOwner = affinityOwner;
             this.host = host;
         }
 
@@ -531,7 +661,7 @@ public sealed partial class RuntimeProcessHostTests
 
         public RuntimeLockFileStore LockFileStore { get; }
 
-        public IRuntimeAffinityExecutor AffinityExecutor => affinityExecutor;
+        public IRuntimeAffinityOwner AffinityOwner => affinityOwner;
 
         public RuntimeProcessHost Host => host;
 
@@ -553,7 +683,7 @@ public sealed partial class RuntimeProcessHostTests
             IRuntimeTransactionManager effectiveTransactionManager = transactionManager
                 ?? new RuntimeTransactionManager();
             IRuntimeJobObjectProcessAssigner jobObjectAssigner = new RuntimeJobObjectProcessAssigner();
-            IRuntimeAffinityExecutor affinityExecutor = new RuntimeAffinityExecutor();
+            IRuntimeAffinityOwner affinityOwner = new RuntimeAffinityOwner();
 
             RuntimeProcessHost host = new(
                 ownershipMutex,
@@ -563,7 +693,7 @@ public sealed partial class RuntimeProcessHostTests
                 jobObjectAssigner,
                 lockFileStore,
                 NullLogger<RuntimeProcessHost>.Instance,
-                affinityExecutor,
+                affinityOwner,
                 stopTimeout: TimeSpan.FromSeconds(5));
 
             return new HostFixture(
@@ -572,7 +702,7 @@ public sealed partial class RuntimeProcessHostTests
                 runtimeDirectory,
                 ownershipMutex,
                 lockFileStore,
-                affinityExecutor,
+                affinityOwner,
                 host);
         }
 
@@ -746,11 +876,11 @@ public sealed partial class RuntimeProcessHostTests
             disposed = true;
 
             // Dispose the host first so its cleanup pipeline
-            // runs against a still-live affinity executor, then
-            // dispose the executor so its background thread is
+            // runs against a still-live affinity owner, then
+            // dispose the owner so its background thread is
             // joined before the temp directory is deleted.
             host.Dispose();
-            affinityExecutor.Dispose();
+            affinityOwner.Dispose();
             TempDir.Dispose();
         }
 

@@ -92,14 +92,14 @@ public static class RuntimeServiceCollectionExtensions
         services.AddSingleton<IRuntimeTransactionManager, RuntimeTransactionManager>();
         services.AddSingleton<IRuntimeJobObjectProcessAssigner, RuntimeJobObjectProcessAssigner>();
 
-        // Register the runtime affinity executor BEFORE the process
+        // Register the runtime affinity owner BEFORE the process
         // host so the host's factory lambda can resolve it. The
-        // executor owns a dedicated background thread named
+        // owner owns a dedicated background thread named
         // "Z2P-RuntimeAffinity" that the host uses to serialise
         // its start, stop and dispose pipelines.
-        services.AddSingleton<RuntimeAffinityExecutor>();
-        services.AddSingleton<IRuntimeAffinityExecutor>(
-            static sp => sp.GetRequiredService<RuntimeAffinityExecutor>());
+        services.AddSingleton<RuntimeAffinityOwner>();
+        services.AddSingleton<IRuntimeAffinityOwner>(
+            static sp => sp.GetRequiredService<RuntimeAffinityOwner>());
 
         services.AddSingleton<RuntimeProcessHost>(
             static sp => new RuntimeProcessHost(
@@ -110,7 +110,7 @@ public static class RuntimeServiceCollectionExtensions
                 sp.GetRequiredService<IRuntimeJobObjectProcessAssigner>(),
                 sp.GetRequiredService<RuntimeLockFileStore>(),
                 sp.GetRequiredService<ILogger<RuntimeProcessHost>>(),
-                sp.GetRequiredService<IRuntimeAffinityExecutor>()));
+                sp.GetRequiredService<IRuntimeAffinityOwner>()));
 
         // The supervisor depends on IRuntimeProcessHost, not on
         // the concrete RuntimeProcessHost, so expose the same

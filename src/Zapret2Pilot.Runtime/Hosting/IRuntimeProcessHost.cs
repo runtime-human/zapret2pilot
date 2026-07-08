@@ -19,7 +19,7 @@ namespace Zapret2Pilot.Runtime.Hosting;
 /// <see cref="IDisposable.Dispose"/> may be called from any thread.
 /// The production <see cref="RuntimeProcessHost"/> marshals its
 /// start, stop and dispose pipelines onto the
-/// <see cref="Zapret2Pilot.Runtime.Threading.IRuntimeAffinityExecutor"/>'s
+/// <see cref="Zapret2Pilot.Runtime.Threading.IRuntimeAffinityOwner"/>'s
 /// dedicated <c>"Z2P-RuntimeAffinity"</c> thread, so the
 /// ownership-mutex and the Job Object lifetime are preserved
 /// regardless of the caller's thread, and the caller's thread
