@@ -127,11 +127,14 @@ public interface IRuntimeAffinityExecutor : IDisposable
 /// </summary>
 public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
 {
+    private const int DefaultQueueCapacity = 256;
+
     private readonly CancellationTokenSource _disposeCts = new();
-    private readonly BlockingCollection<Action> _workQueue = new(new ConcurrentQueue<Action>());
-    private readonly BlockingCollection<Action> _continuationQueue = new(new ConcurrentQueue<Action>());
+    private readonly BlockingCollection<Action> _workQueue = new(new ConcurrentQueue<Action>(), DefaultQueueCapacity);
+    private readonly BlockingCollection<Action> _continuationQueue = new(new ConcurrentQueue<Action>(), DefaultQueueCapacity);
     private readonly Thread _thread;
     private int _disposed;
+    private int _threadJoinFailed;
 
     /// <summary>
     /// Creates a new <see cref="RuntimeAffinityExecutor"/> and
@@ -181,13 +184,13 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
                 }
                 catch (OperationCanceledException)
                 {
+                    tcs.TrySetCanceled();
                     linkedCts.Dispose();
-                    tcs.TrySetCanceled(linkedCts.Token);
                 }
                 catch (Exception ex)
                 {
-                    linkedCts.Dispose();
                     tcs.TrySetException(ex);
+                    linkedCts.Dispose();
                 }
             }, CancellationToken.None);
         }
@@ -262,19 +265,36 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
         //    exit. The thread loops on GetConsumingEnumerable()
         //    and exits as soon as both CompleteAdding and an
         //    empty queue are observed.
+        bool threadJoined = true;
         if (_thread.IsAlive)
         {
-            _thread.Join(TimeSpan.FromSeconds(5));
+            threadJoined = _thread.Join(TimeSpan.FromSeconds(5));
         }
 
-        // 4. Now that the affinity thread has exited, no one is
-        //    reading from the continuation queue, so it is safe
-        //    to complete and dispose it.
-        _continuationQueue.CompleteAdding();
+        if (threadJoined)
+        {
+            // 4. The affinity thread has exited, so no one is
+            //    reading from the continuation queue. It is safe
+            //    to complete and dispose it.
+            _continuationQueue.CompleteAdding();
 
-        _disposeCts.Dispose();
-        _workQueue.Dispose();
-        _continuationQueue.Dispose();
+            _disposeCts.Dispose();
+            _workQueue.Dispose();
+            _continuationQueue.Dispose();
+        }
+        else
+        {
+            // The affinity thread did not exit within the join
+            // timeout. It may still be reading from the queues,
+            // so completing or disposing them would race with
+            // the live thread. Leave the resources alive for
+            // the process lifetime and record the failure so
+            // diagnostics can detect it. Setting _disposed=1
+            // (above) is sufficient to make ExecuteAsync throw
+            // ObjectDisposedException, which is the correct
+            // public contract after Dispose().
+            Interlocked.Exchange(ref _threadJoinFailed, 1);
+        }
     }
 
     /// <summary>
@@ -420,23 +440,31 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
             catch (OperationCanceledException)
             {
                 // _disposeCts was cancelled (Dispose() in
-                // progress). Stop pumping; the work item exits
-                // and the outer TCS will not be completed here.
+                // progress). Stop pumping; cancel the user-visible
+                // TCS so the caller does not hang on a task that
+                // will never otherwise complete.
+                tcs.TrySetCanceled();
                 return;
             }
             catch (ObjectDisposedException)
             {
                 // _continuationQueue was disposed by a concurrent
-                // Dispose() racing with the pump. Stop pumping.
+                // Dispose() racing with the pump. Stop pumping and
+                // cancel the user-visible TCS for the same reason
+                // as the OperationCanceledException branch.
                 // Note: ObjectDisposedException is a subclass of
                 // InvalidOperationException, so this catch must
                 // come before the more general one below.
+                tcs.TrySetCanceled();
                 return;
             }
             catch (InvalidOperationException)
             {
                 // _continuationQueue was completed (e.g. by
-                // Dispose() racing with the pump). Stop pumping.
+                // Dispose() racing with the pump). Stop pumping
+                // and cancel the user-visible TCS for the same
+                // reason as the OperationCanceledException branch.
+                tcs.TrySetCanceled();
                 return;
             }
         }
@@ -509,6 +537,17 @@ public sealed class RuntimeAffinityExecutor : IRuntimeAffinityExecutor
             ArgumentNullException.ThrowIfNull(d);
             if (_executor._disposed != 0 || _executor._continuationQueue.IsAddingCompleted)
             {
+                // Drop the continuation: the executor is either
+                // disposed or the continuation queue has been
+                // completed by Dispose(). Dropping here does NOT
+                // hang the caller, because the originating task
+                // is signalled to completion by the ContinueWith
+                // registered in PumpUntilCompleted; the pump's
+                // catch blocks (OperationCanceledException /
+                // ObjectDisposedException / InvalidOperationException)
+                // also call tcs.TrySetCanceled() before returning,
+                // so the caller always observes a terminal task
+                // state.
                 return;
             }
 
