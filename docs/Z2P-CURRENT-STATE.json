@@ -7,8 +7,8 @@
     "title": "Z2P v7 architecture rebase"
   },
   "currentWorkItem": {
-    "issue": 14,
-    "title": "v7-A: Canonical architecture docs, ADR supersession and repository-truth gate"
+    "issue": 13,
+    "title": "Z2P v7 architecture rebase orchestration"
   },
   "canonicalCanon": "docs/Z2P-CANON.md",
   "canonicalArchitecture": "docs/Z2P-ARCHITECTURE.md",
