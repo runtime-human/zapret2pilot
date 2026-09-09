@@ -100,8 +100,13 @@ if (-not (Test-Path -LiteralPath $nextPath -PathType Leaf)) {
     Fail-RepositoryTruth 'missing Z2P-NEXT compatibility pointer'
 }
 
-if (-not (Get-Content -LiteralPath $nextPath -Raw).Contains('<!-- Z2P:NON_CANONICAL_POINTER -->', [System.StringComparison]::Ordinal)) {
+$nextContent = Get-Content -LiteralPath $nextPath -Raw
+if (-not $nextContent.Contains('<!-- Z2P:NON_CANONICAL_POINTER -->', [System.StringComparison]::Ordinal)) {
     Fail-RepositoryTruth 'Z2P-NEXT.md can still be mistaken for current implementation guidance'
+}
+
+if ($nextContent -match '#\d+' -or $nextContent -match '\b0\.\d+\.\d+\b') {
+    Fail-RepositoryTruth 'Z2P-NEXT.md must not contain a static issue or version; resolve currentWorkItem from Z2P-CURRENT-STATE.json'
 }
 
 Write-Host "repository-truth: OK — architecture=$($state.architectureVersion), version=$($state.projectVersion), track=#$($state.activeTrack.issue), work=#$($state.currentWorkItem.issue)"
