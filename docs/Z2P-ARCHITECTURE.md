@@ -1,6 +1,6 @@
 # Zapret2Pilot / Z2P — Architecture v7
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#14 -->
+<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
 <!-- Z2P:CURRENT_MASTER_ARCHITECTURE -->
 
 Status: **CURRENT ARCHITECTURE CONTRACT**.  
@@ -237,4 +237,4 @@ Network identity/context is privacy-preserving local evidence/hint for recommend
 
 ## 13. #14 behavior boundary
 
-#14 changes documentation, ADR/indexing and repository validation only. It must not add broker/pipe/elevation/runtime behavior. The first implementation work after this handoff is chosen by the orchestrator/current-state contract; this issue does not autonomously advance to #15/#16/#17.
+#14 changes documentation, ADR/indexing and repository validation only. It must not add broker/pipe/elevation/runtime behavior. After #14 merges, orchestration returns to #13 until an explicit child issue is selected; this issue does not autonomously advance to #15/#16/#17.
