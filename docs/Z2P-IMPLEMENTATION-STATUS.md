@@ -1,6 +1,6 @@
 # Zapret2Pilot / Z2P — Implementation Status
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#14 -->
+<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
 
 Status captured for the v7 architecture rebase. This file is the concise current status; the exact prior per-milestone record is preserved at `docs/history/Z2P-IMPLEMENTATION-STATUS-through-0.0.25-v6.md`.
 
@@ -9,8 +9,9 @@ Status captured for the v7 architecture rebase. This file is the concise current
 - `VERSION`: `0.0.25`.
 - Exact v7-A base: `main@35e0356108efab6eceb96d613218bc15d2858da8`.
 - Active track: #13.
-- Current work: #14.
-- v7 architecture target is canonical after review of this PR; broker/runtime behavior remains unimplemented.
+- Current orchestration item: #13 until the orchestrator explicitly selects the next child issue after #14 review/merge.
+- #14 is completed by this repository contract and closes when PR #25 merges.
+- v7 architecture target is canonical after review/merge of PR #25; broker/runtime behavior remains unimplemented.
 - Real production `winws2`: still gated by #20.
 
 ## Implemented baseline — retained
