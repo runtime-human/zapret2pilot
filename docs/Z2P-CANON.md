@@ -1,317 +1,146 @@
-# Zapret2Pilot / Z2P — Project Canon
+# Zapret2Pilot / Z2P — Project Canon v7
 
-## 1. Product identity
+<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#14 -->
 
-Product name: **Zapret2Pilot**.  
-Short name: **Z2P**.  
-Main executable: **z2p.exe**.  
-Target platform: **Windows desktop**.  
-Main stack: **C# / .NET 10 / Avalonia UI**.
+## 1. Identity and implementation boundary
 
-Zapret2Pilot is a modern Windows desktop manager and control plane for zapret2/winws2.
+- Product: **Zapret2Pilot / Z2P**.
+- Main user-facing executable: `z2p.exe`.
+- Platform: Windows desktop.
+- Stack: C# / .NET 10 / Avalonia.
+- Current repository version: `0.0.25` plus runtime-kernel hardening commits on the same version.
+- v7 is a migration from that implementation, not a greenfield rewrite.
 
-It is not a VPN, proxy, MITM tool, packet engine, traffic router or per-URL routing layer.
+The v7 architecture contract is current, while the broker itself is **not yet implemented**. #14 changes docs/repository validation only.
 
-## 2. Source of truth and implementation model
+## 2. Privilege model
 
-GitHub repository: `MrFr3di/zapret2pilot`.
-
-Docs source of truth: `docs/` in GitHub.
-
-Project Sources are not the primary source of truth.
-
-Code is designed, written and reviewed through ChatGPT in small steps. Codex is not used as the implementation executor for this project.
-
-Every architecture-changing implementation step must keep these files consistent:
-
-- `docs/Z2P-CANON.md`;
-- `docs/Z2P-ARCHITECTURE.md`;
-- `docs/Z2P-CRITICAL-REVIEW.md`;
-- `docs/Z2P-ROADMAP.md`;
-- `docs/Z2P-DECISION-LOG.md`.
-
-## 3. Core architecture decision
-
-Zapret2Pilot is an **elevated single-process desktop application**.
-
-Initial architecture explicitly does **not** use Windows Service.
-
-Runtime model:
+Target v7 process boundary:
 
 ```text
-User starts z2p.exe
-  -> Windows shows UAC once
-  -> z2p.exe runs elevated
-  -> Z2P can start/stop/restart winws2 during the same app session
-  -> no repeated UAC while z2p.exe remains open or minimized to tray
+unelevated z2p.exe
+  -> bounded/authenticated/typed local IPC
+session-scoped elevated z2p-broker.exe
+  -> RuntimeKernelLoop as sole runtime mutation authority
+  -> fail-closed secure contained runtime launch
+winws2 + Lua/strategy payload + WinDivert
 ```
 
-When the application is fully closed and started again, Windows will show UAC again.
+Rules:
 
-## 4. Explicit non-goals
+- no persistent Windows Service for MVP;
+- broker lifetime is bounded by the application/tray session;
+- no generic privileged process/file/shell execution API;
+- broker does not download arbitrary remote content;
+- Rust is not an accepted rewrite or prerequisite.
 
-Do not build:
+`DEC-0003` (whole-process elevated app) is superseded by v7. The no-Windows-Service part of `DEC-0002` remains active.
 
-- Windows Service architecture in the initial version;
-- IPC service layer;
-- VPN;
-- local proxy-router;
-- MITM;
-- packet engine;
-- per-URL router;
-- full DPI research checker;
-- background DPI monitor;
-- `.bat` / `.cmd` wrapper architecture;
-- raw winws2 args editor as primary UX;
-- cloud telemetry.
+## 3. Runtime authority
 
-No arbitrary command execution from UI.
+There is exactly one production runtime lifecycle/mutation authority: **`RuntimeKernelLoop`**.
 
-## 5. Runtime Kernel
+Current `0.0.25+` code hosts it in the existing application process. During v7 broker migration the existing reducer, generation model, cancellation logic, ownership/recovery primitives and tests are **moved/recomposed** under the broker. They are not reimplemented in parallel.
 
-Because there is no service, Zapret2Pilot must have a strong internal Runtime Kernel inside `z2p.exe`.
+After migration `z2p.exe` owns desired state, user policy, projections and evidence. It must not contain a second authoritative runtime state machine.
 
-Runtime Kernel owns:
+The following post-`0.0.25` hardening is part of the preserved contract:
 
-- RuntimeSupervisor;
-- RuntimeProcessHost;
-- RuntimeTransactionManager;
-- RuntimeHealthMonitor;
-- RuntimeKernelStateStore;
-- RuntimeOwnershipMutex;
-- RuntimeLockFileStore;
-- RuntimeOwnershipDetector;
-- RuntimeCrashRecovery;
-- RuntimeExitCoordinator;
-- CrashLoopGuard.
+- Stop can supersede/cancel an in-flight Start;
+- stale effect completions cannot mutate newer generations;
+- lifecycle delivery is guaranteed while observations are coalesced;
+- `RuntimeAffinityOwner` retains serialized process/ownership affinity semantics;
+- cancellation after an irreversible stop boundary requires recovery rather than ordinary cancellation.
 
-The UI must never call `Process.Start`, `Process.Kill`, WinDivert or zapret2 directly.
+## 4. Truth model
 
-## 6. Windows process safety
+The following are distinct and must stay typed/separate:
 
-RuntimeProcessHost must use **Windows Job Objects**.
+- `DesiredState` — what user/policy requests;
+- `ObservedRuntimeState` — what runtime authority can prove for a generation;
+- `RuntimeLiveness` — process observation only;
+- `RuntimeReadiness` — startup/attachment contract satisfied;
+- `ServiceCapabilityHealth` — bounded capability evidence;
+- `Recommendation` — non-authoritative policy output.
 
-Required behavior:
+A live process is **not** proof that bypass/service capabilities work. UI must never promote liveness alone to a healthy/active claim.
 
-- create Job Object for winws2;
-- set kill-on-close behavior;
-- assign winws2 process to the Job Object;
-- keep job handle alive while runtime session is active;
-- if z2p.exe crashes, Windows must terminate winws2 through the Job Object.
+Health/evidence must be bound to the relevant runtime generation, network epoch and policy/endpoint versions so stale evidence cannot become current.
 
-Runtime lock metadata is recovery. Job Objects are prevention.
+## 5. Profiles and compiler
 
-## 7. Runtime ownership
-
-Runtime ownership uses two mechanisms:
+Preserve:
 
 ```text
-Global Mutex = atomic runtime ownership
-Lock file    = metadata for recovery and diagnostics
+ProfileDocument -> validated ProfileDefinition -> CompiledZapretPlan -> generated runtime artifacts
 ```
 
-Global mutex name:
+Raw `winws2` arguments remain generated artifacts, never source of truth. Deterministic canonicalization/cache/versioning and `TrafficImpact` analysis remain architectural requirements.
 
-```text
-Global\Z2P_RUNTIME_OWNER_v1
-```
+Profile Compiler v2 is deferred to #21 and must prove equivalence before production adoption.
 
-Lock file path:
+## 6. Trust, bundles and updates
 
-```text
-C:\ProgramData\Zapret2Pilot\runtime\z2p-runtime.lock
-```
+Retained v6 invariants:
 
-The lock file is not the source of truth. PID from lock file is only a hint.
+- upstream release != approved Z2P runtime;
+- only verified/accepted immutable bundle identity can reach privileged execution;
+- `Candidate`, `Current`, `PreviousKnownGood` remain distinct roles;
+- failure before activation cannot replace `Current` or delete `PreviousKnownGood`;
+- leased bundles/workspaces/artifacts cannot be deleted;
+- TUF remains the update metadata trust design;
+- portable whole-app staging remains required;
+- community code never crosses directly into privileged execution.
 
-Process ownership must verify:
+Runtime execution identity includes the behavior-affecting payload: executable/runtime artifacts **and relevant Lua/strategy content**, not merely a `winws2.exe` path or display version.
 
-- PID exists;
-- process name is expected;
-- executable path matches verified runtime path;
-- command line hash matches compiled plan;
-- plan hash matches;
-- process creation time is compatible with lock metadata.
+## 7. Secure launch and TOCTOU
 
-## 8. Internal hosting model
+Production launch invariant:
 
-Zapret2Pilot uses `Microsoft.Extensions.Hosting` inside the Avalonia app.
+> No child instruction may execute before mandatory Job containment is established.
 
-This does not mean Windows Service.
+`Process.Start -> AssignProcessToJobObject` is not a production-approved final path.
 
-Generic Host is used for:
+A previous SHA-256 result, `File.Exists`, or a typed verified path is not sufficient proof of the exact bytes later executed. v7 requires protected immutable staging plus broker-side revalidation/accepted prepared identity before secure launch, with reparse/replace-after-check cases addressed in #18/#19.
 
-- dependency injection;
-- configuration;
-- logging;
-- hosted background services;
-- lifecycle;
-- graceful startup/shutdown.
+## 8. Storage, files, diagnostics and privacy
 
-## 9. UI framework decision
+Preserve:
 
-Presentation Layer uses:
+- application SQLite ownership in the unelevated Control Plane unless a separate minimal broker recovery store is proven necessary;
+- WAL / foreign-key / busy-timeout discipline;
+- `SafePathResolver` at user/import boundaries;
+- atomic generated-file publication;
+- privacy-first local diagnostics and deterministic redaction;
+- no browsing-history, cookie, query-parameter or raw-packet collection by default.
 
-- Avalonia UI;
-- ReactiveUI;
-- System.Reactive.
+The broker must not simply become an elevated owner of general application SQLite.
 
-Do not mix ReactiveUI ViewModels with CommunityToolkit.Mvvm ViewModels.
+## 9. Product policy
 
-All UI updates must be marshalled to Avalonia UI thread through a central scheduler/dispatcher abstraction.
+Retain/rebase:
 
-## 10. UI design canon
+- capability-specific probes;
+- Traffic Impact Analyzer;
+- hard-gated/Pareto Auto Doctor;
+- Autopilot as a separate bounded policy layer;
+- curated Strategy Catalog;
+- privacy-first diagnostics;
+- network binding/context only as evidence/hint, never security authority.
 
-Final dashboard direction:
+Auto Doctor measures/recommends. It does not become runtime authority.
 
-- light theme;
-- left sidebar;
-- no status widget in lower-left sidebar;
-- lower-left sidebar contains only Documentation / About;
-- top-right contains only RU / settings / window controls;
-- no duplicate status chips in header;
-- main runtime status appears only in the large dashboard card;
-- main status title: `Обход активен`;
-- large green check icon in status card;
-- main actions: `Остановить`, `Проверить сейчас`, `Диагностика`;
-- cards: Режим работы, Текущий профиль обхода, Проверка ключевых сервисов, Диагностика обхода, Последние события.
+## 10. Hard gates
 
-Tray icon must show runtime state separately.
+- no broker implementation in #14;
+- no local IPC implementation before #16 contract/threat-model work;
+- no real `winws2` before #20 correctness/recovery evidence;
+- no Rust decision before optional #22 A/B/C;
+- no stale `NEXT`/historical roadmap may override `Z2P-CURRENT-STATE.json` + canonical roadmap.
 
-## 11. Application routing
+## 11. Documentation truth
 
-Allowed routing:
+Repository: `runtime-human/zapret2pilot`.
 
-- NavigationRouter;
-- CommandBus;
-- EventRouter;
-- ProfileSelector;
-- AutoDoctorStateMachine.
-
-Forbidden routing:
-
-- TrafficRouter;
-- UrlRouter;
-- PacketRouter;
-- ProxyRouter;
-- VPN-like route engine.
-
-## 12. Profiles and runtime plans
-
-Raw winws2 arguments are not the source of truth.
-
-Source of truth:
-
-```text
-ProfileDocument
-  -> validate/map
-ProfileDefinition
-  -> compile
-CompiledZapretPlan
-  -> execute
-winws2 arguments
-```
-
-Generated args are artifacts only.
-
-## 13. RuntimePlanCache
-
-RuntimePlanCache is allowed only with deterministic content-based keys.
-
-Cache key must include hashes of:
-
-- ProfileDocument;
-- StrategyPackDocument;
-- hostlist fingerprints;
-- runtime asset manifest;
-- compiler version;
-- compiler options.
-
-Do not cache by ProfileId only.
-
-## 14. File safety
-
-All generated runtime files must be written through AtomicFileWriter.
-
-Pattern:
-
-```text
-write temp file in same directory
-flush
-atomic move temp -> target
-verify final file readable
-```
-
-All user/import paths must pass through SafePathResolver.
-
-## 15. SQLite
-
-SQLite must be initialized with:
-
-```sql
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
-PRAGMA synchronous=NORMAL;
-PRAGMA foreign_keys=ON;
-```
-
-UI must not access SQLite directly. Event and diagnostic tables require retention.
-
-## 16. Auto Doctor
-
-Auto Doctor is bounded.
-
-It is not a full DPI checker.
-
-It must not:
-
-- run forever;
-- monitor every URL;
-- switch profiles on every request;
-- do MITM;
-- store browsing history;
-- silently apply aggressive profiles without clear confidence.
-
-ProbeClassifier must distinguish DPI/network artifacts from HTTP/application errors.
-
-## 17. Diagnostics and privacy
-
-Privacy-first defaults:
-
-- no cloud telemetry;
-- no readable URL history;
-- no query params in logs;
-- no cookies;
-- no raw packet dumps by default;
-- diagnostics export redacted by default.
-
-## 18. First implementation boundary
-
-First implementation version is `0.0.1`.
-
-`0.0.1` may create repo/bootstrap skeleton, Avalonia shell, ReactiveUI baseline, Generic Host baseline, Core/Application skeleton and tests.
-
-`0.0.1` must not:
-
-- start `winws2`;
-- implement RuntimeProcessHost;
-- implement Windows Job Objects;
-- implement SQLite storage;
-- implement Auto Doctor;
-- implement profile compiler;
-- add Windows Service;
-- add IPC service layer;
-- add `.bat` / `.cmd` wrapper architecture.
-
-## 19. 0.0.18 P0 canon compliance
-
-Every P0 task in the `0.0.18` milestone (P0-1 through P0-7, including the A/B/C implementation packets) must respect the forbidden list above. In particular, the 0.0.18 P0 work does **not** introduce:
-
-- a Windows Service registration or SCM interaction;
-- an IPC service layer (named pipes, sockets, shared memory, mailslots);
-- a VPN, proxy, MITM utility, or per-URL traffic filtering / routing layer;
-- a raw `bat` / `cmd` wrapper invoked from the application;
-- arbitrary command execution from the UI;
-- a real `winws2` launch against real network traffic.
-
-The 0.0.18 P0 work is bounded to Runtime Kernel safety primitives (Job Objects, VerifiedRuntimeExecutablePath, RuntimeTransactionManager, no rollback after kill, RuntimeKernelWorker) and to phased analyzer rollout (Meziantou, Roslynator, Avalonia 12.0.5) and documentation updates. No new attack surface is introduced beyond the surface already approved for `0.0.17` and earlier milestones.
+Current truth order is defined in `docs/README.md`. Historical v6/RFC text is preserved under `docs/history/`; supersession is recorded in `docs/Z2P-DECISION-LOG.md` rather than rewriting history.
