@@ -1,6 +1,6 @@
 # Zapret2Pilot / Z2P
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#14 -->
+<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
 
 Zapret2Pilot is a Windows desktop control plane for zapret2/winws2.
 
@@ -9,7 +9,8 @@ Zapret2Pilot is a Windows desktop control plane for zapret2/winws2.
 - Project version: `0.0.25`.
 - Architecture contract: **v7**.
 - Active architecture track: **#13 — Z2P v7 architecture rebase**.
-- Current work item: **#14 — v7-A canonical architecture docs / repository truth**.
+- Current orchestration item: **#13** until the orchestrator explicitly selects the next child issue after v7-A review/merge.
+- #14 is the documentation/truth migration represented by PR #25 and closes on merge; it must not remain the post-merge current work item.
 - Current code is still the pre-broker `0.0.25+` implementation. This PR changes documentation and validation only; it does not claim that the broker already exists.
 - User-facing real `winws2` execution remains forbidden until the correctness/evidence gate in **#20** is satisfied.
 
