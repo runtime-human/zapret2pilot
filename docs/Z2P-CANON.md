@@ -1,6 +1,6 @@
 # Zapret2Pilot / Z2P — Project Canon v7
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#14 -->
+<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
 
 ## 1. Identity and implementation boundary
 
@@ -143,4 +143,4 @@ Auto Doctor measures/recommends. It does not become runtime authority.
 
 Repository: `runtime-human/zapret2pilot`.
 
-Current truth order is defined in `docs/README.md`. Historical v6/RFC text is preserved under `docs/history/`; supersession is recorded in `docs/Z2P-DECISION-LOG.md` rather than rewriting history.
+Current truth order is defined in `docs/README.md`. Historical v6/RFC text is preserved under `docs/history/`; supersession is recorded in `docs/Z2P-DECISION-LOG.md` rather than rewriting history. After #14 merges, current orchestration returns to umbrella #13 until the orchestrator explicitly selects another child issue.
