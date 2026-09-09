@@ -10,4 +10,4 @@ Read, in order:
 2. `docs/Z2P-ROADMAP.md`;
 3. the issue named by `currentWorkItem`.
 
-At the v7-A contract snapshot the current work item is **#14**. Do not advance automatically to #15/#16/#17; the orchestrator must update the current-state contract explicitly.
+Do not encode a version or issue number here. Do not advance automatically to any child issue; the orchestrator must update `Z2P-CURRENT-STATE.json` explicitly.
