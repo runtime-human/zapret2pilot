@@ -1,6 +1,6 @@
 # Zapret2Pilot / Z2P — Documentation Index
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#14 -->
+<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
 
 `docs/` is the repository documentation source of truth. Current architectural state is deliberately separated from historical design sources.
 
@@ -23,4 +23,4 @@ No persistent Windows Service is introduced for MVP. No real production `winws2`
 
 ## Agent rule
 
-Implementation agents must read `Z2P-CURRENT-STATE.json` before choosing work. `Z2P-NEXT.md`, old milestone plans, archived RFCs and documents under `history/` are not authority for the next task.
+Implementation agents must read `Z2P-CURRENT-STATE.json` before choosing work. `Z2P-NEXT.md`, old milestone plans, archived RFCs and documents under `history/` are not authority for the next task. After #14 merges, the current orchestration item remains umbrella #13 until an orchestrator explicitly selects a child issue.
