@@ -1,12 +1,12 @@
 # Zapret2Pilot / Z2P — v7 Roadmap
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#14 -->
+<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
 <!-- Z2P:CURRENT_MASTER_ROADMAP -->
 
 Status: **CURRENT MASTER ROADMAP**.  
 Current repository version: `0.0.25`.  
 Active track: #13.  
-Current work item: #14.  
+Current orchestration item: #13 until the orchestrator explicitly selects a child issue.  
 
 The July v6 roadmap is preserved as historical design input under `docs/history/`. Its implemented work and safety invariants are retained; its post-`0.0.25` sequence is superseded by the v7 issue graph below.
 
@@ -20,7 +20,7 @@ This is a migration, not a reset.
 
 | Issue | Work | Status at this contract | Gate/result |
 |---|---|---|---|
-| #14 | v7-A canonical docs, ADR supersession, repository truth | **CURRENT** | v7 becomes reviewable repository contract; no behavior change |
+| #14 | v7-A canonical docs, ADR supersession, repository truth | **COMPLETED BY THIS CONTRACT; closes on PR #25 merge** | v7 becomes reviewable repository contract; no behavior change |
 | #15 | v7-B .NET/Avalonia servicing + presentation compatibility spike | queued | evidence-only servicing/compatibility |
 | #16 | v7-C broker threat model + bounded authenticated IPC contract | blocked by architecture prep | RED contracts; no generic privileged API |
 | #17 | v7-D C# session broker + existing Runtime Kernel + FakeRuntime | blocked by #16 | one authority across process boundary |
@@ -41,7 +41,7 @@ Hard dependency shape:
                                              +----------> #23 release trust
 ```
 
-Do not infer the next task from file names. The orchestrator/current-state contract advances `currentWorkItem` explicitly.
+Do not infer the next task from file names. The orchestrator/current-state contract advances `currentWorkItem` explicitly. After #14 merges, that pointer intentionally remains on umbrella #13 until a child is selected.
 
 ## 3. Implemented baseline retained
 
