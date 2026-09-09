@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "architectureVersion": "v7",
+  "projectVersion": "0.0.25",
+  "activeTrack": {
+    "issue": 13,
+    "title": "Z2P v7 architecture rebase"
+  },
+  "currentWorkItem": {
+    "issue": 14,
+    "title": "v7-A: Canonical architecture docs, ADR supersession and repository-truth gate"
+  },
+  "canonicalCanon": "docs/Z2P-CANON.md",
+  "canonicalArchitecture": "docs/Z2P-ARCHITECTURE.md",
+  "canonicalRoadmap": "docs/Z2P-ROADMAP.md",
+  "canonicalStatus": "docs/Z2P-IMPLEMENTATION-STATUS.md",
+  "rfcPointer": "docs/Z2P-V7-RFC.md",
+  "historicalV6Roadmap": "docs/history/Z2P-MVP-ROADMAP-2026-07-04-v6.md",
+  "realRuntimeGateIssue": 20,
+  "privilegeModel": "unelevated-control-plane+session-scoped-elevated-runtime-broker",
+  "windowsServiceMvp": "forbidden",
+  "rustDecision": "deferred-evidence-only"
+}
