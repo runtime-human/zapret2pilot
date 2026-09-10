@@ -97,6 +97,7 @@ public enum BrokerProtocolDecodeStatus
 {
     Success,
     Malformed,
+    InvalidSemantics,
     Oversized,
     UnknownMessage,
     UnsupportedProtocol,
@@ -117,6 +118,14 @@ public static class BrokerProtocolCodec
     public static byte[] EncodeRequest(BrokerRequestEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
+        BrokerRequestSemanticValidationResult semanticValidation = BrokerRequestSemanticValidator.Validate(envelope);
+        if (!semanticValidation.Accepted)
+        {
+            throw new ArgumentException(
+                $"Broker request violates semantic contract: {semanticValidation.RejectionReason}.",
+                nameof(envelope));
+        }
+
         (string kind, JsonElement body) = SerializeRequest(envelope.Request);
         BrokerWireEnvelope wire = new(
             envelope.Protocol,
@@ -184,6 +193,13 @@ public static class BrokerProtocolCodec
                 issuedAt,
                 deadline,
                 request!);
+
+            BrokerRequestSemanticValidationResult semanticValidation = BrokerRequestSemanticValidator.Validate(envelope);
+            if (!semanticValidation.Accepted)
+            {
+                return new(BrokerProtocolDecodeStatus.InvalidSemantics, null);
+            }
+
             return new(BrokerProtocolDecodeStatus.Success, envelope);
         }
         catch (JsonException)
