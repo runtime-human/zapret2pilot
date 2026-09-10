@@ -10,8 +10,13 @@ public static class BrokerProtocolLimits
 {
     public const int LengthPrefixBytes = 4;
     public const int MaxFrameBytes = 65_536;
+    public const int MaxChallengeFrameBytes = 1_024;
+    public const int MaxPreAuthHelloFrameBytes = 4_096;
     public const int MaxConcurrentConnections = 2;
     public const int MaxAuthenticatedConnections = 1;
+    public const int MaxPreAuthChallenges = MaxConcurrentConnections;
+    public const int MaxPreAuthChallengesPerSecond = 2;
+    public const int PreAuthChallengeBurstCapacity = 4;
     public const int MaxInFlightQueries = 8;
     public const int MaxConcurrentMutations = 1;
     public const int IngressQueueCapacity = 32;
@@ -47,8 +52,12 @@ public sealed record BrokerFrameDecodeResult(
 public static class BrokerFrameCodec
 {
     public static byte[] Encode(ReadOnlySpan<byte> payload)
+        => Encode(payload, BrokerProtocolLimits.MaxFrameBytes);
+
+    public static byte[] Encode(ReadOnlySpan<byte> payload, int maxPayloadBytes)
     {
-        if (payload.IsEmpty || payload.Length > BrokerProtocolLimits.MaxFrameBytes)
+        ValidateMaximum(maxPayloadBytes);
+        if (payload.IsEmpty || payload.Length > maxPayloadBytes)
         {
             throw new ArgumentOutOfRangeException(nameof(payload));
         }
@@ -62,7 +71,11 @@ public static class BrokerFrameCodec
     }
 
     public static BrokerFrameDecodeResult Decode(ReadOnlySpan<byte> input)
+        => Decode(input, BrokerProtocolLimits.MaxFrameBytes);
+
+    public static BrokerFrameDecodeResult Decode(ReadOnlySpan<byte> input, int maxPayloadBytes)
     {
+        ValidateMaximum(maxPayloadBytes);
         if (input.Length < BrokerProtocolLimits.LengthPrefixBytes)
         {
             return new(BrokerFrameDecodeStatus.NeedMoreData, null, 0);
@@ -75,7 +88,7 @@ public static class BrokerFrameCodec
             return new(BrokerFrameDecodeStatus.InvalidLength, null, 0);
         }
 
-        if (payloadLength > BrokerProtocolLimits.MaxFrameBytes)
+        if (payloadLength > maxPayloadBytes)
         {
             return new(BrokerFrameDecodeStatus.Oversized, null, 0);
         }
@@ -90,6 +103,12 @@ public static class BrokerFrameCodec
             BrokerFrameDecodeStatus.Success,
             input.Slice(BrokerProtocolLimits.LengthPrefixBytes, payloadLength).ToArray(),
             frameLength);
+    }
+
+    private static void ValidateMaximum(int maxPayloadBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPayloadBytes);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxPayloadBytes, BrokerProtocolLimits.MaxFrameBytes);
     }
 }
 
@@ -113,6 +132,7 @@ public static class BrokerProtocolCodec
     {
         PropertyNameCaseInsensitive = false,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        MaxDepth = 32,
     };
 
     public static byte[] EncodeRequest(BrokerRequestEnvelope envelope)
@@ -281,21 +301,28 @@ public sealed class BrokerOperationLedger
     private readonly Dictionary<BrokerOperationId, Entry> entries = [];
     private readonly int capacity;
     private readonly TimeSpan ttl;
+    private readonly TimeProvider timeProvider;
     private long highWatermark;
 
     public BrokerOperationLedger(int capacity, TimeSpan ttl)
+        : this(capacity, ttl, TimeProvider.System)
+    {
+    }
+
+    public BrokerOperationLedger(int capacity, TimeSpan ttl, TimeProvider timeProvider)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         this.capacity = capacity;
         this.ttl = ttl;
+        this.timeProvider = timeProvider;
     }
 
     public BrokerOperationRegistration Register(
         BrokerOperationId operationId,
         RequestSequence sequence,
-        Sha256Digest fingerprint,
-        DateTimeOffset now)
+        Sha256Digest fingerprint)
     {
         if (operationId.Value == Guid.Empty)
         {
@@ -314,6 +341,7 @@ public sealed class BrokerOperationLedger
 
         lock (sync)
         {
+            long now = timeProvider.GetTimestamp();
             RemoveExpired(now);
             if (entries.TryGetValue(operationId, out Entry? existing))
             {
@@ -357,10 +385,10 @@ public sealed class BrokerOperationLedger
         }
     }
 
-    private void RemoveExpired(DateTimeOffset now)
+    private void RemoveExpired(long now)
     {
         BrokerOperationId[] expired = entries
-            .Where(pair => now - pair.Value.CreatedAtUtc > ttl)
+            .Where(pair => timeProvider.GetElapsedTime(pair.Value.CreatedAtTimestamp, now) > ttl)
             .Select(static pair => pair.Key)
             .ToArray();
         foreach (BrokerOperationId operationId in expired)
@@ -372,11 +400,11 @@ public sealed class BrokerOperationLedger
     private sealed class Entry(
         RequestSequence sequence,
         Sha256Digest fingerprint,
-        DateTimeOffset createdAtUtc)
+        long createdAtTimestamp)
     {
         public RequestSequence Sequence { get; } = sequence;
         public Sha256Digest Fingerprint { get; } = fingerprint;
-        public DateTimeOffset CreatedAtUtc { get; } = createdAtUtc;
+        public long CreatedAtTimestamp { get; } = createdAtTimestamp;
         public bool Completed { get; set; }
     }
 }
