@@ -1,7 +1,7 @@
 using System;
-using System.Reactive;
 using FluentIcons.Common;
 using ReactiveUI;
+using ReactiveUI.Primitives;
 
 namespace Zapret2Pilot.App.Navigation;
 
@@ -16,7 +16,7 @@ public sealed class NavigationItemViewModel : ReactiveObject
         RouteId routeId,
         string title,
         bool isSelected,
-        ReactiveCommand<Unit, Unit> navigateCommand)
+        ReactiveCommand<RxVoid, RxVoid> navigateCommand)
     {
         ArgumentNullException.ThrowIfNull(routeId);
         ArgumentNullException.ThrowIfNull(title);
@@ -43,7 +43,7 @@ public sealed class NavigationItemViewModel : ReactiveObject
     /// </summary>
     public Icon Icon { get; }
 
-    public ReactiveCommand<Unit, Unit> NavigateCommand { get; }
+    public ReactiveCommand<RxVoid, RxVoid> NavigateCommand { get; }
 
     internal void SetSelected(bool value)
     {
