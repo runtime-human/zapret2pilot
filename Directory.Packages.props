@@ -22,6 +22,13 @@
     <PackageVersion Include="System.Reactive" Version="7.0.0" />
 
     <!--
+      #15 bounded presentation spike only. CommunityToolkit.Mvvm is consumed
+      by Zapret2Pilot.App.ViewModelTests with PrivateAssets=all; production
+      projects remain ReactiveUI-only while the alternative is evaluated.
+    -->
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+
+    <!--
       Analyzer packages remain on their existing major lines for #15.
       Analyzer-major migration is not required to service the runtime/UI
       stack and would change diagnostics independently of the compatibility
