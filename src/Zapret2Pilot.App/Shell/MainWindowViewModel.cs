@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.Reactive;
 using System.Reactive.Disposables;
-using System.Reactive.Disposables.Fluent; // Required for DisposeWith extension (System.Reactive 6.1.0).
+using System.Reactive.Disposables.Fluent; // Required for DisposeWith extension from System.Reactive.
 using System.Reactive.Linq;
 using System.Reflection;
 using Microsoft.Extensions.Logging;
 using ReactiveUI;
+using ReactiveUI.Primitives;
 using Zapret2Pilot.App.Diagnostics;
 using Zapret2Pilot.App.Lifecycle;
 using Zapret2Pilot.App.Navigation;
@@ -166,7 +166,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel
     public ViewModelActivator Activator { get; } = new();
 
     private static IDisposable ObserveCommandExceptions(
-        ReactiveCommand<Unit, Unit> command,
+        ReactiveCommand<RxVoid, RxVoid> command,
         IExceptionPolicy? policy)
     {
         // The Subscribe ensures the exception is observed and therefore
@@ -280,15 +280,15 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel
 
     public IReadOnlyList<RecentEventViewModel> RecentEvents { get; }
 
-    public ReactiveCommand<Unit, Unit> StopCommand { get; }
+    public ReactiveCommand<RxVoid, RxVoid> StopCommand { get; }
 
-    public ReactiveCommand<Unit, Unit> CheckNowCommand { get; }
+    public ReactiveCommand<RxVoid, RxVoid> CheckNowCommand { get; }
 
-    public ReactiveCommand<Unit, Unit> OpenDiagnosticsCommand { get; }
+    public ReactiveCommand<RxVoid, RxVoid> OpenDiagnosticsCommand { get; }
 
-    public ReactiveCommand<Unit, Unit> PinProfileCommand { get; }
+    public ReactiveCommand<RxVoid, RxVoid> PinProfileCommand { get; }
 
-    public ReactiveCommand<Unit, Unit> OpenProfileDetailsCommand { get; }
+    public ReactiveCommand<RxVoid, RxVoid> OpenProfileDetailsCommand { get; }
 
     public string LastAction
     {
