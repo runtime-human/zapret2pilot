@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using Xunit;
 using Zapret2Pilot.Contracts.Transport;
 
@@ -11,10 +12,13 @@ public sealed class BrokerSemanticValidationTests
     [Fact]
     public void StartPreparedPlanRejectsZeroRuntimeGeneration()
     {
-        Guid planId = Guid.NewGuid();
         AssertRejected(CreateRequestJson(
             "startPreparedPlan",
-            $$"""{"preparedPlanId":{"value":"{{planId}}"},"expectedGeneration":{"value":0}}"""));
+            new JsonObject
+            {
+                ["preparedPlanId"] = WrappedGuid(Guid.NewGuid()),
+                ["expectedGeneration"] = WrappedLong(0),
+            }));
     }
 
     [Fact]
@@ -22,7 +26,11 @@ public sealed class BrokerSemanticValidationTests
     {
         AssertRejected(CreateRequestJson(
             "startPreparedPlan",
-            """{"preparedPlanId":{"value":"00000000-0000-0000-0000-000000000000"},"expectedGeneration":{"value":1}}"""));
+            new JsonObject
+            {
+                ["preparedPlanId"] = WrappedGuid(Guid.Empty),
+                ["expectedGeneration"] = WrappedLong(1),
+            }));
     }
 
     [Fact]
@@ -30,7 +38,13 @@ public sealed class BrokerSemanticValidationTests
     {
         AssertRejected(CreateRequestJson(
             "prepareBundle",
-            """{"bundleId":{"digest":{"value":"sha256:ABCDEF"}}}"""));
+            new JsonObject
+            {
+                ["bundleId"] = new JsonObject
+                {
+                    ["digest"] = WrappedString("sha256:ABCDEF"),
+                },
+            }));
     }
 
     [Fact]
@@ -38,16 +52,23 @@ public sealed class BrokerSemanticValidationTests
     {
         AssertRejected(CreateRequestJson(
             "preparePlan",
-            $$"""{"preparedBundleId":{"value":"00000000-0000-0000-0000-000000000000"},"planHash":{"value":"{{CanonicalDigest}}"}}"""));
+            new JsonObject
+            {
+                ["preparedBundleId"] = WrappedGuid(Guid.Empty),
+                ["planHash"] = WrappedString(CanonicalDigest),
+            }));
     }
 
     [Fact]
     public void PreparePlanRejectsNonCanonicalPlanHash()
     {
-        Guid preparedBundleId = Guid.NewGuid();
         AssertRejected(CreateRequestJson(
             "preparePlan",
-            $$"""{"preparedBundleId":{"value":"{{preparedBundleId}}"},"planHash":{"value":"SHA256:0123"}}"""));
+            new JsonObject
+            {
+                ["preparedBundleId"] = WrappedGuid(Guid.NewGuid()),
+                ["planHash"] = WrappedString("SHA256:0123"),
+            }));
     }
 
     [Fact]
@@ -55,7 +76,11 @@ public sealed class BrokerSemanticValidationTests
     {
         AssertRejected(CreateRequestJson(
             "stopGeneration",
-            """{"generation":{"value":0},"reason":0}"""));
+            new JsonObject
+            {
+                ["generation"] = WrappedLong(0),
+                ["reason"] = 0,
+            }));
     }
 
     [Fact]
@@ -63,7 +88,11 @@ public sealed class BrokerSemanticValidationTests
     {
         AssertRejected(CreateRequestJson(
             "stopGeneration",
-            """{"generation":{"value":1},"reason":999}"""));
+            new JsonObject
+            {
+                ["generation"] = WrappedLong(1),
+                ["reason"] = 999,
+            }));
     }
 
     [Fact]
@@ -108,22 +137,20 @@ public sealed class BrokerSemanticValidationTests
         Assert.Null(result.Envelope);
     }
 
-    private static string CreateRequestJson(string kind, string body)
+    private static string CreateRequestJson(string kind, JsonObject body)
     {
-        Guid appSessionId = Guid.NewGuid();
-        return $$"""
-            {
-              "protocol":{"major":1,"minor":0},
-              "kind":"{{kind}}",
-              "appSessionId":"{{appSessionId}}",
-              "brokerSessionId":"{{Guid.NewGuid()}}",
-              "operationId":"{{Guid.NewGuid()}}",
-              "sequence":1,
-              "issuedAtUnixMs":1789027200000,
-              "deadlineUnixMs":1789027215000,
-              "body":{{body}}
-            }
-            """;
+        return new JsonObject
+        {
+            ["protocol"] = Protocol(1, 0),
+            ["kind"] = kind,
+            ["appSessionId"] = Guid.NewGuid().ToString(),
+            ["brokerSessionId"] = Guid.NewGuid().ToString(),
+            ["operationId"] = Guid.NewGuid().ToString(),
+            ["sequence"] = 1,
+            ["issuedAtUnixMs"] = 1789027200000,
+            ["deadlineUnixMs"] = 1789027215000,
+            ["body"] = body,
+        }.ToJsonString();
     }
 
     private static string CreateHelloJson(
@@ -136,26 +163,54 @@ public sealed class BrokerSemanticValidationTests
         ushort maximumMajor,
         ushort maximumMinor)
     {
-        return $$"""
+        JsonObject body = new()
+        {
+            ["supportedProtocols"] = new JsonObject
             {
-              "protocol":{"major":1,"minor":0},
-              "kind":"hello",
-              "appSessionId":"{{envelopeAppSessionId}}",
-              "brokerSessionId":"{{Guid.NewGuid()}}",
-              "operationId":"{{Guid.NewGuid()}}",
-              "sequence":1,
-              "issuedAtUnixMs":1789027200000,
-              "deadlineUnixMs":1789027215000,
-              "body":{
-                "supportedProtocols":{
-                  "minimum":{"major":{{minimumMajor}},"minor":{{minimumMinor}}},
-                  "maximum":{"major":{{maximumMajor}},"minor":{{maximumMinor}}}
-                },
-                "appSessionId":{"value":"{{bodyAppSessionId}}"},
-                "clientNonce":"{{Convert.ToBase64String(clientNonce)}}",
-                "proof":"{{Convert.ToBase64String(proof)}}"
-              }
-            }
-            """;
+                ["minimum"] = Protocol(minimumMajor, minimumMinor),
+                ["maximum"] = Protocol(maximumMajor, maximumMinor),
+            },
+            ["appSessionId"] = WrappedGuid(bodyAppSessionId),
+            ["clientNonce"] = Convert.ToBase64String(clientNonce),
+            ["proof"] = Convert.ToBase64String(proof),
+        };
+
+        return new JsonObject
+        {
+            ["protocol"] = Protocol(1, 0),
+            ["kind"] = "hello",
+            ["appSessionId"] = envelopeAppSessionId.ToString(),
+            ["brokerSessionId"] = Guid.NewGuid().ToString(),
+            ["operationId"] = Guid.NewGuid().ToString(),
+            ["sequence"] = 1,
+            ["issuedAtUnixMs"] = 1789027200000,
+            ["deadlineUnixMs"] = 1789027215000,
+            ["body"] = body,
+        }.ToJsonString();
     }
+
+    private static JsonObject Protocol(ushort major, ushort minor)
+        => new()
+        {
+            ["major"] = major,
+            ["minor"] = minor,
+        };
+
+    private static JsonObject WrappedGuid(Guid value)
+        => new()
+        {
+            ["value"] = value.ToString(),
+        };
+
+    private static JsonObject WrappedLong(long value)
+        => new()
+        {
+            ["value"] = value,
+        };
+
+    private static JsonObject WrappedString(string value)
+        => new()
+        {
+            ["value"] = value,
+        };
 }
