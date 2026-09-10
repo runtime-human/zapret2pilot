@@ -46,7 +46,7 @@ jobs:
         run: dotnet package list --project Zapret2Pilot.slnx --deprecated --include-transitive --no-restore
 
       - name: Package drift evidence
-        run: dotnet package list --project Zapret2Pilot.slnx --outdated --include-transitive --no-restore
+        run: dotnet package list --project Zapret2Pilot.slnx --outdated --include-transitive --no-restore --source https://api.nuget.org/v3/index.json
 
       # Temporary #15 evidence step. It makes the first generated lock graph
       # observable in CI so the exact files can be committed before the final
