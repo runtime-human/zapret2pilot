@@ -9,44 +9,51 @@ public sealed class BrokerRequestRateGate
     private readonly object sync = new();
     private readonly int requestsPerSecond;
     private readonly int burstCapacity;
+    private readonly TimeProvider timeProvider;
     private double availableTokens;
-    private DateTimeOffset lastRefillUtc;
+    private long lastRefillTimestamp;
     private bool initialized;
 
     public BrokerRequestRateGate(int requestsPerSecond, int burstCapacity)
+        : this(requestsPerSecond, burstCapacity, TimeProvider.System)
+    {
+    }
+
+    public BrokerRequestRateGate(
+        int requestsPerSecond,
+        int burstCapacity,
+        TimeProvider timeProvider)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(requestsPerSecond);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(burstCapacity);
         ArgumentOutOfRangeException.ThrowIfLessThan(burstCapacity, requestsPerSecond);
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
         this.requestsPerSecond = requestsPerSecond;
         this.burstCapacity = burstCapacity;
+        this.timeProvider = timeProvider;
         availableTokens = burstCapacity;
     }
 
-    public bool TryAcquire(DateTimeOffset nowUtc)
+    public bool TryAcquire()
     {
         lock (sync)
         {
+            long now = timeProvider.GetTimestamp();
             if (!initialized)
             {
                 initialized = true;
-                lastRefillUtc = nowUtc;
+                lastRefillTimestamp = now;
             }
             else
             {
-                if (nowUtc < lastRefillUtc)
-                {
-                    return false;
-                }
-
-                double elapsedSeconds = (nowUtc - lastRefillUtc).TotalSeconds;
-                if (elapsedSeconds > 0)
+                TimeSpan elapsed = timeProvider.GetElapsedTime(lastRefillTimestamp, now);
+                if (elapsed > TimeSpan.Zero)
                 {
                     availableTokens = Math.Min(
                         burstCapacity,
-                        availableTokens + (elapsedSeconds * requestsPerSecond));
-                    lastRefillUtc = nowUtc;
+                        availableTokens + (elapsed.TotalSeconds * requestsPerSecond));
+                    lastRefillTimestamp = now;
                 }
             }
 
