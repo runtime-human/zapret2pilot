@@ -124,16 +124,16 @@ public sealed class BrokerCodecAndBoundsTests
     [Fact]
     public void Ingress_queue_rejects_flood_when_capacity_is_reached()
     {
-        BrokerIngressQueue queue = new(BrokerProtocolLimits.IngressQueueCapacity);
+        BrokerIngressBuffer buffer = new(BrokerProtocolLimits.IngressQueueCapacity);
         BrokerRequestEnvelope request = CreateSnapshotRequest();
 
         for (int i = 0; i < BrokerProtocolLimits.IngressQueueCapacity; i++)
         {
-            Assert.True(queue.TryEnqueue(request));
+            Assert.True(buffer.TryEnqueue(request));
         }
 
-        Assert.False(queue.TryEnqueue(request));
-        Assert.Equal(BrokerProtocolLimits.IngressQueueCapacity, queue.Count);
+        Assert.False(buffer.TryEnqueue(request));
+        Assert.Equal(BrokerProtocolLimits.IngressQueueCapacity, buffer.Count);
     }
 
     [Fact]
