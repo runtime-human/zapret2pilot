@@ -1,5 +1,6 @@
 param(
-    [string]$StatePath
+    [string]$StatePath,
+    [string]$VersionPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -7,6 +8,9 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($StatePath)) {
     $StatePath = Join-Path $repoRoot 'docs/Z2P-CURRENT-STATE.json'
+}
+if ([string]::IsNullOrWhiteSpace($VersionPath)) {
+    $VersionPath = Join-Path $repoRoot 'VERSION'
 }
 
 function Fail-RepositoryTruth {
@@ -18,6 +22,9 @@ function Fail-RepositoryTruth {
 
 if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
     Fail-RepositoryTruth "missing current-state contract '$StatePath'"
+}
+if (-not (Test-Path -LiteralPath $VersionPath -PathType Leaf)) {
+    Fail-RepositoryTruth "missing VERSION contract '$VersionPath'"
 }
 
 try {
@@ -59,7 +66,7 @@ if ([int]$state.currentWorkItem.issue -le 0) {
     Fail-RepositoryTruth 'currentWorkItem.issue must be a positive issue number'
 }
 
-$version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
+$version = (Get-Content -LiteralPath $VersionPath -Raw).Trim()
 if ($version -ne $state.projectVersion) {
     Fail-RepositoryTruth "VERSION '$version' != repository state '$($state.projectVersion)'"
 }
