@@ -1,6 +1,7 @@
 using System.Reflection;
 using Xunit;
 using Zapret2Pilot.Contracts.Protocol;
+using Zapret2Pilot.Contracts.Security;
 using Zapret2Pilot.Contracts.Transport;
 
 namespace Zapret2Pilot.Contracts.Tests;
@@ -8,7 +9,7 @@ namespace Zapret2Pilot.Contracts.Tests;
 public sealed class BrokerProtocolContractTests
 {
     [Fact]
-    public void Protocol_surface_is_closed_and_contains_no_generic_privileged_execution()
+    public void ProtocolSurfaceIsClosedAndContainsNoGenericPrivilegedExecution()
     {
         BrokerMessageKind[] expected =
         [
@@ -57,7 +58,7 @@ public sealed class BrokerProtocolContractTests
     }
 
     [Fact]
-    public void Contracts_layer_has_no_forbidden_product_dependencies()
+    public void ContractsLayerHasNoForbiddenProductDependencies()
     {
         string[] referencedAssemblies = typeof(IBrokerRequest).Assembly
             .GetReferencedAssemblies()
@@ -72,7 +73,7 @@ public sealed class BrokerProtocolContractTests
     }
 
     [Fact]
-    public void Transport_limits_are_explicit_and_bounded()
+    public void TransportLimitsAreExplicitAndBounded()
     {
         Assert.Equal(65_536, BrokerProtocolLimits.MaxFrameBytes);
         Assert.Equal(2, BrokerProtocolLimits.MaxConcurrentConnections);
@@ -82,17 +83,32 @@ public sealed class BrokerProtocolContractTests
         Assert.Equal(32, BrokerProtocolLimits.IngressQueueCapacity);
         Assert.Equal(16, BrokerProtocolLimits.ResponseQueueCapacity);
         Assert.Equal(256, BrokerProtocolLimits.OperationLedgerCapacity);
+        Assert.Equal(16, BrokerProtocolLimits.MaxRequestsPerSecond);
+        Assert.Equal(32, BrokerProtocolLimits.RequestBurstCapacity);
         Assert.Equal(TimeSpan.FromMinutes(2), BrokerProtocolLimits.OperationLedgerTtl);
         Assert.Equal(TimeSpan.FromSeconds(3), BrokerProtocolLimits.HandshakeTimeout);
         Assert.Equal(TimeSpan.FromSeconds(2), BrokerProtocolLimits.FrameHeaderTimeout);
         Assert.Equal(TimeSpan.FromSeconds(5), BrokerProtocolLimits.FrameBodyTimeout);
         Assert.Equal(TimeSpan.FromSeconds(5), BrokerProtocolLimits.QueryDeadline);
         Assert.Equal(TimeSpan.FromSeconds(15), BrokerProtocolLimits.MaxRequestLifetime);
+        Assert.Equal(TimeSpan.FromSeconds(1), BrokerProtocolLimits.ResponseEnqueueTimeout);
         Assert.Equal(TimeSpan.FromSeconds(5), BrokerProtocolLimits.ResponseWriteTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(5), BrokerProtocolLimits.BrokerShutdownTimeout);
     }
 
     [Fact]
-    public void Version_negotiation_rejects_unknown_major_protocol()
+    public void PipeSecurityPolicyRequiresLocalOnlyExplicitDaclAndRejectsAclOnlyAuthorization()
+    {
+        BrokerPipeSecurityPolicy policy = BrokerPipeSecurityPolicy.Required;
+
+        Assert.True(policy.RejectRemoteClients);
+        Assert.True(policy.RequireExplicitDacl);
+        Assert.False(policy.SameUserAclIsAuthorization);
+        Assert.Equal(BrokerProtocolLimits.MaxConcurrentConnections, policy.MaximumPipeInstances);
+    }
+
+    [Fact]
+    public void VersionNegotiationRejectsUnknownMajorProtocol()
     {
         BrokerProtocolRange server = BrokerProtocolRange.Current;
         BrokerProtocolRange client = new(new BrokerProtocolVersion(2, 0), new BrokerProtocolVersion(2, 1));
@@ -104,7 +120,7 @@ public sealed class BrokerProtocolContractTests
     }
 
     [Fact]
-    public void Version_negotiation_selects_highest_common_version()
+    public void VersionNegotiationSelectsHighestCommonVersion()
     {
         BrokerProtocolRange server = new(new BrokerProtocolVersion(1, 0), new BrokerProtocolVersion(1, 2));
         BrokerProtocolRange client = new(new BrokerProtocolVersion(1, 0), new BrokerProtocolVersion(1, 1));
