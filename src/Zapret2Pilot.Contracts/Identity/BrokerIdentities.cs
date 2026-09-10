@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
 namespace Zapret2Pilot.Contracts.Identity;
@@ -67,4 +68,5 @@ public readonly record struct Sha256Digest(string Value)
 
 public readonly record struct RuntimeBundleId(Sha256Digest Digest);
 
+[StructLayout(LayoutKind.Auto)]
 public readonly record struct LogonSessionId(uint LowPart, int HighPart);
