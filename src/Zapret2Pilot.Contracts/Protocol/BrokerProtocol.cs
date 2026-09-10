@@ -1,13 +1,16 @@
+using System.Runtime.InteropServices;
 using Zapret2Pilot.Contracts.Identity;
 using Zapret2Pilot.Contracts.Transport;
 
 namespace Zapret2Pilot.Contracts.Protocol;
 
+[StructLayout(LayoutKind.Auto)]
 public readonly record struct BrokerProtocolVersion(ushort Major, ushort Minor)
 {
     public static BrokerProtocolVersion V1 => new(1, 0);
 }
 
+[StructLayout(LayoutKind.Auto)]
 public readonly record struct BrokerProtocolRange(
     BrokerProtocolVersion Minimum,
     BrokerProtocolVersion Maximum)
