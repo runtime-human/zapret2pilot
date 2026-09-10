@@ -88,6 +88,27 @@ public sealed class BrokerAdmissionTests
     }
 
     [Fact]
+    public void FailedAuthenticationAttemptAlsoConsumesChallenge()
+    {
+        BrokerClientBinding expected = CreateExpected();
+        BrokerPeerIdentity peer = CreatePeer();
+        BrokerAdmissionGate gate = CreateGate(expected);
+        BrokerHelloRequest valid = CreateHello(expected, peer, gate.Challenge);
+        byte[] forgedProof = valid.Proof.ToArray();
+        forgedProof[0] ^= 0xFF;
+
+        BrokerAdmissionDecision rejected = gate.TryAdmit(
+            peer,
+            valid with { Proof = forgedProof },
+            Now);
+        BrokerAdmissionDecision retry = gate.TryAdmit(peer, valid, Now);
+
+        Assert.Equal(BrokerAdmissionRejectionReason.InvalidBootstrapProof, rejected.RejectionReason);
+        Assert.False(retry.Accepted);
+        Assert.Equal(BrokerAdmissionRejectionReason.ReplayedChallenge, retry.RejectionReason);
+    }
+
+    [Fact]
     public void SuccessfulChallengeIsSingleUseAndReplayIsRejected()
     {
         BrokerClientBinding expected = CreateExpected();
