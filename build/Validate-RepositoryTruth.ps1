@@ -1,0 +1,161 @@
+param(
+    [string]$StatePath,
+    [string]$VersionPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($StatePath)) {
+    $StatePath = Join-Path $repoRoot 'docs/Z2P-CURRENT-STATE.json'
+}
+if ([string]::IsNullOrWhiteSpace($VersionPath)) {
+    $VersionPath = Join-Path $repoRoot 'VERSION'
+}
+
+function Fail-RepositoryTruth {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    Write-Error "repository-truth: $Message"
+    exit 1
+}
+
+if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
+    Fail-RepositoryTruth "missing current-state contract '$StatePath'"
+}
+if (-not (Test-Path -LiteralPath $VersionPath -PathType Leaf)) {
+    Fail-RepositoryTruth "missing VERSION contract '$VersionPath'"
+}
+
+try {
+    $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+}
+catch {
+    Fail-RepositoryTruth "invalid current-state JSON: $($_.Exception.Message)"
+}
+
+$requiredStateProperties = @(
+    'architectureVersion',
+    'projectVersion',
+    'activeTrack',
+    'currentWorkItem',
+    'canonicalCanon',
+    'canonicalArchitecture',
+    'canonicalRoadmap',
+    'canonicalStatus',
+    'rfcPointer',
+    'historicalV6Roadmap'
+)
+
+foreach ($propertyName in $requiredStateProperties) {
+    if ($null -eq $state.$propertyName) {
+        Fail-RepositoryTruth "current-state contract is missing '$propertyName'"
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace([string]$state.architectureVersion)) {
+    Fail-RepositoryTruth 'architectureVersion must be non-empty'
+}
+if ([string]::IsNullOrWhiteSpace([string]$state.projectVersion)) {
+    Fail-RepositoryTruth 'projectVersion must be non-empty'
+}
+if ([int]$state.activeTrack.issue -le 0) {
+    Fail-RepositoryTruth 'activeTrack.issue must be a positive issue number'
+}
+if ([int]$state.currentWorkItem.issue -le 0) {
+    Fail-RepositoryTruth 'currentWorkItem.issue must be a positive issue number'
+}
+
+$version = (Get-Content -LiteralPath $VersionPath -Raw).Trim()
+if ($version -ne $state.projectVersion) {
+    Fail-RepositoryTruth "VERSION '$version' != repository state '$($state.projectVersion)'"
+}
+
+$roleMarkers = [ordered]@{
+    'README.md' = '<!-- Z2P:REPOSITORY_OVERVIEW -->'
+    'docs/README.md' = '<!-- Z2P:DOCUMENTATION_INDEX -->'
+    ([string]$state.canonicalCanon) = '<!-- Z2P:CURRENT_CANON -->'
+    ([string]$state.canonicalArchitecture) = '<!-- Z2P:CURRENT_MASTER_ARCHITECTURE -->'
+    ([string]$state.canonicalRoadmap) = '<!-- Z2P:CURRENT_MASTER_ROADMAP -->'
+    ([string]$state.canonicalStatus) = '<!-- Z2P:IMPLEMENTATION_STATUS -->'
+}
+
+foreach ($entry in $roleMarkers.GetEnumerator()) {
+    $relativePath = [string]$entry.Key
+    $path = Join-Path $repoRoot $relativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Fail-RepositoryTruth "missing canonical/current document '$relativePath'"
+    }
+
+    $content = Get-Content -LiteralPath $path -Raw
+    if (-not $content.Contains([string]$entry.Value, [System.StringComparison]::Ordinal)) {
+        Fail-RepositoryTruth "'$relativePath' is missing stable role marker '$($entry.Value)'"
+    }
+
+    if ($content.Contains('<!-- Z2P-CURRENT-STATE:', [System.StringComparison]::Ordinal)) {
+        Fail-RepositoryTruth "'$relativePath' duplicates dynamic current-state data; use stable role markers and resolve dynamic state from docs/Z2P-CURRENT-STATE.json"
+    }
+
+    if ($content -match 'Master plan:\s*Version 6') {
+        Fail-RepositoryTruth "'$relativePath' still claims v6 is the current master plan"
+    }
+}
+
+$architectureMarker = '<!-- Z2P:CURRENT_MASTER_ARCHITECTURE -->'
+$roadmapMarker = '<!-- Z2P:CURRENT_MASTER_ROADMAP -->'
+$docsMarkdown = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs') -Filter '*.md' -File -Recurse
+
+$architectureOwners = @($docsMarkdown | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw).Contains($architectureMarker, [System.StringComparison]::Ordinal) })
+$roadmapOwners = @($docsMarkdown | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw).Contains($roadmapMarker, [System.StringComparison]::Ordinal) })
+
+if ($architectureOwners.Count -ne 1) {
+    Fail-RepositoryTruth "expected exactly one current master architecture marker; found $($architectureOwners.Count)"
+}
+if ($roadmapOwners.Count -ne 1) {
+    Fail-RepositoryTruth "expected exactly one current master roadmap marker; found $($roadmapOwners.Count)"
+}
+
+$expectedArchitecturePath = Join-Path $repoRoot $state.canonicalArchitecture
+$expectedRoadmapPath = Join-Path $repoRoot $state.canonicalRoadmap
+if ($architectureOwners[0].FullName -ne $expectedArchitecturePath) {
+    Fail-RepositoryTruth "master architecture marker is in '$($architectureOwners[0].FullName)', expected '$expectedArchitecturePath'"
+}
+if ($roadmapOwners[0].FullName -ne $expectedRoadmapPath) {
+    Fail-RepositoryTruth "master roadmap marker is in '$($roadmapOwners[0].FullName)', expected '$expectedRoadmapPath'"
+}
+
+$historicalV6Path = Join-Path $repoRoot $state.historicalV6Roadmap
+if (-not (Test-Path -LiteralPath $historicalV6Path -PathType Leaf)) {
+    Fail-RepositoryTruth "missing preserved historical v6 roadmap '$($state.historicalV6Roadmap)'"
+}
+
+$legacyV6Pointer = Join-Path $repoRoot 'docs/Z2P-MVP-ROADMAP-2026-07-04-v6.md'
+if (-not (Test-Path -LiteralPath $legacyV6Pointer -PathType Leaf)) {
+    Fail-RepositoryTruth 'missing v6 compatibility pointer'
+}
+if (-not (Get-Content -LiteralPath $legacyV6Pointer -Raw).Contains('<!-- Z2P:HISTORICAL_SUPERSEDED -->', [System.StringComparison]::Ordinal)) {
+    Fail-RepositoryTruth 'v6 compatibility path is not visibly marked historical/superseded'
+}
+
+$rfcPath = Join-Path $repoRoot $state.rfcPointer
+if (-not (Test-Path -LiteralPath $rfcPath -PathType Leaf)) {
+    Fail-RepositoryTruth "missing RFC pointer '$($state.rfcPointer)'"
+}
+if (-not (Get-Content -LiteralPath $rfcPath -Raw).Contains('<!-- Z2P:RFC_ARCHIVED -->', [System.StringComparison]::Ordinal)) {
+    Fail-RepositoryTruth 'RFC pointer does not state that the proposal is archived behind canonical v7 docs'
+}
+
+$nextPath = Join-Path $repoRoot 'docs/Z2P-NEXT.md'
+if (-not (Test-Path -LiteralPath $nextPath -PathType Leaf)) {
+    Fail-RepositoryTruth 'missing Z2P-NEXT compatibility pointer'
+}
+
+$nextContent = Get-Content -LiteralPath $nextPath -Raw
+if (-not $nextContent.Contains('<!-- Z2P:NON_CANONICAL_POINTER -->', [System.StringComparison]::Ordinal)) {
+    Fail-RepositoryTruth 'Z2P-NEXT.md can still be mistaken for current implementation guidance'
+}
+if ($nextContent -match '#\d+' -or $nextContent -match '\b0\.\d+\.\d+\b') {
+    Fail-RepositoryTruth 'Z2P-NEXT.md must not contain a static issue or version; resolve currentWorkItem from Z2P-CURRENT-STATE.json'
+}
+
+Write-Host "repository-truth CI validation: OK — dynamic state resolved only from Z2P-CURRENT-STATE.json; architecture=$($state.architectureVersion), version=$($state.projectVersion), track=#$($state.activeTrack.issue), work=#$($state.currentWorkItem.issue)"

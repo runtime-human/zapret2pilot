@@ -28,6 +28,14 @@ jobs:
       - name: Show .NET info
         run: dotnet --info
 
+      - name: Test repository truth contract
+        shell: pwsh
+        run: ./build/Test-RepositoryTruthContract.ps1
+
+      - name: Validate repository truth
+        shell: pwsh
+        run: ./build/Validate-RepositoryTruth.ps1
+
       - name: Restore
         run: dotnet restore Zapret2Pilot.slnx
 

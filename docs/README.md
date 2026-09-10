@@ -1,35 +1,34 @@
 # Zapret2Pilot / Z2P — Documentation Index
 
-This directory is the working source of truth for Zapret2Pilot architecture and planning.
+<!-- Z2P:DOCUMENTATION_INDEX -->
 
-## Documents
+`docs/` is the repository documentation source of truth. Dynamic orchestration state is deliberately separated from stable architecture/document roles and historical design sources.
 
-- `Z2P-CANON.md` — short project canon and non-negotiable architectural rules.
-- `Z2P-ARCHITECTURE.md` — current architecture overview.
-- `Z2P-CRITICAL-REVIEW.md` — accepted critical review findings and fixes.
-- `Z2P-ROADMAP.md` — versioned implementation plan.
-- `Z2P-UI-DESIGN.md` — UI and UX canon.
-- `Z2P-SOURCES-OFFICIAL.md` — official documentation sources for architecture decisions.
-- `Z2P-CHATGPT-HANDOFF.md` — implementation handoff for coding through ChatGPT.
-- `Z2P-DECISION-LOG.md` — lightweight decision log.
+## Authority order
 
-## Current direction
+1. `Z2P-CURRENT-STATE.json` — **sole dynamic authority** for project version, architecture version, active track, current work item and canonical paths.
+2. `Z2P-CANON.md` — current non-negotiable product/architecture rules.
+3. `Z2P-ARCHITECTURE.md` — the current master architecture.
+4. `Z2P-ROADMAP.md` — the current master roadmap/dependency graph.
+5. `Z2P-DECISION-LOG.md` — active decisions and explicit supersessions.
+6. `Z2P-IMPLEMENTATION-STATUS.md` — implementation baseline and evidence pointers.
+7. Feature/review documents — supporting evidence only.
+8. `history/` — historical/superseded sources; never current instructions.
 
-Zapret2Pilot is a Windows-first desktop control plane for zapret2/winws2:
+Canonical Markdown uses stable role markers; it does **not** mirror the dynamic `architectureVersion/projectVersion/activeTrack/currentWorkItem` tuple. An orchestration change therefore updates `Z2P-CURRENT-STATE.json` only, unless the architecture or roadmap content itself materially changes.
 
-- C# / .NET 10 / Avalonia UI.
-- Elevated single-process desktop app.
-- No Windows Service in the initial architecture.
-- Runtime Kernel inside `z2p.exe`.
-- Typed profiles and compiled runtime plans.
-- Auto Doctor is bounded and diagnostic, not a full DPI research engine.
-- No VPN/proxy/MITM/per-URL traffic router.
-- Privacy-first diagnostics and logs.
+## v7 direction
 
-All implementation tasks must keep these documents consistent.
+v7 accepts an unelevated `z2p.exe` Control Plane plus a minimal, session-scoped elevated Runtime Broker. `RuntimeKernelLoop` remains the sole runtime lifecycle authority and is moved/recomposed under that broker during the later migration; there is no second authoritative runtime state machine in the App.
 
-## Working model
+No persistent Windows Service is introduced for MVP. No real production `winws2` is enabled by the documentation rebase. Rust remains deferred/evidence-driven.
 
-Code is implemented through ChatGPT in small steps.
+After #14, #15 and #16 are independent parallel-ready branches. #17 is their join point and must not start until both are complete.
 
-Do not use Codex as the implementation executor for this project.
+## Validation versus enforcement
+
+`build/Test-RepositoryTruthContract.ps1` and `build/Validate-RepositoryTruth.ps1` run in CI and validate repository truth. A passing workflow is not equivalent to GitHub-enforced protection. #26 tracks branch/ruleset protection and required-check enforcement; until its acceptance is verified from GitHub configuration, do not call the validator a non-bypassable repository gate.
+
+## Agent rule
+
+Implementation agents must read `Z2P-CURRENT-STATE.json` before choosing work. `Z2P-NEXT.md`, old milestone plans, archived RFCs and documents under `history/` are not authority for the next task.

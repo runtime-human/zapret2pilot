@@ -1,33 +1,13 @@
-# Z2P — Next implementation step
+# Z2P — Current-work compatibility pointer
 
-## Next version
+<!-- Z2P:NON_CANONICAL_POINTER -->
 
-`0.0.8 — Job Objects foundation`
+This file is intentionally **not** an independent “next implementation step”. It is retained only so old links cannot silently direct an implementation agent to stale work.
 
-## Goal
+Read, in order:
 
-Add the next required Windows process-safety primitive before any real runtime process hosting is introduced.
+1. `docs/Z2P-CURRENT-STATE.json`;
+2. `docs/Z2P-ROADMAP.md`;
+3. the issue named by `currentWorkItem`.
 
-## Scope
-
-- Add a small Windows Job Object primitive under `Zapret2Pilot.Runtime`.
-- Configure close-time child process cleanup at the primitive level.
-- Use safe handle ownership for native handle lifetime.
-- Add explicit unsupported-platform handling.
-- Add focused unit tests.
-
-## Non-goals
-
-- No real runtime executable launch.
-- No full runtime process host orchestration.
-- No UI changes.
-- No Application-layer commands.
-- No profile compiler.
-- No network or adapter integration.
-
-## Acceptance
-
-- The primitive can be created and disposed safely on Windows.
-- Native handle ownership is deterministic.
-- Unsupported platforms are handled explicitly.
-- Production runtime code still contains no real process-launch integration.
+Do not encode a version or issue number here. Do not advance automatically to any child issue; the orchestrator must update `Z2P-CURRENT-STATE.json` explicitly.

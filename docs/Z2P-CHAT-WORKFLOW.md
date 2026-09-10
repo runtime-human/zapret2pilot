@@ -1,105 +1,35 @@
-# Zapret2Pilot / Z2P — ChatGPT Project Workflow
+# Z2P — Architecture / implementation workflow
 
-This document describes how to use specialized ChatGPT chats for Z2P development.
+The repository, not chat history, is authoritative.
 
-## Core chats
-
-Recommended minimum set:
-
-1. `00 — Z2P Control Room`
-2. `01 — Architecture Canon`
-3. `02 — Red Team Reviewer`
-4. `03 — Runtime Kernel`
-5. `04 — Avalonia UI / ReactiveUI`
-6. `09 — Codex Executor`
-
-Expanded set:
-
-- `05 — Domain Model & Profile Compiler`
-- `06 — Storage / Diagnostics / Privacy`
-- `07 — Auto Doctor / Probing`
-- `08 — Testing / CI / Quality Gates`
-- `10 — Release / Packaging / Trust`
-- `11 — Documentation / User Guide`
-- `12 — Product UX / Copywriting`
-- `13 — Research Watch / Official Docs Monitor`
-
-## Rule
-
-Only `00 — Control Room` and `01 — Architecture Canon` may change the project canon.
-
-Other chats produce proposals, risks and Codex-ready tasks.
-
-## Standard cycle
+Workflow:
 
 ```text
-Control Room defines task
-  -> specialized chat designs solution
-  -> Red Team attacks solution
-  -> Architecture Canon accepts/rejects
-  -> Codex Executor creates implementation task
-  -> Codex implements
-  -> Testing chat defines checks
-  -> Control Room updates docs
+verify exact main
+ -> read Z2P-CURRENT-STATE.json (sole dynamic state authority)
+ -> read canonical architecture/roadmap + issue named by currentWorkItem
+ -> design/RED evidence where required
+ -> minimal implementation
+ -> self-review against retained invariants
+ -> repository-truth CI validation + restore/build/tests
+ -> PR review
+ -> orchestrator updates currentWorkItem in Z2P-CURRENT-STATE.json only
 ```
 
-## Base prompt for specialized chats
+Do not mirror `architectureVersion/projectVersion/activeTrack/currentWorkItem` into canonical Markdown. Stable document-role markers identify canonical ownership; an orchestration switch must not require README/canon/roadmap/status churn.
+
+Do not infer current work from old `NEXT`, a versioned plan or historical RFC. Do not silently rewrite old decisions; supersede them in `Z2P-DECISION-LOG.md` and preserve historical text.
+
+v7 execution coordination after #14:
 
 ```text
-You work in the Zapret2Pilot / Z2P project.
-
-Product:
-- Windows desktop app on C# / .NET 10 / Avalonia.
-- Product name: Zapret2Pilot.
-- Short name: Z2P.
-- Main executable: z2p.exe.
-- Architecture: elevated single-process desktop app without Windows Service.
-- Runtime: zapret2 / winws2 / WinDivert.
-- Runtime is controlled only through typed runtime plans.
-- No Windows Service, IPC service layer, VPN, proxy-router, MITM, traffic router or per-URL router.
-- Z2P manages profiles, runtime lifecycle, diagnostics and UI.
-
-Mandatory decisions:
-- Generic Host inside Avalonia app.
-- ReactiveUI + System.Reactive for Presentation Layer.
-- Do not mix ReactiveUI and CommunityToolkit.Mvvm ViewModels.
-- Runtime Kernel inside z2p.exe.
-- RuntimeProcessHost uses Windows Job Objects with kill-on-close.
-- Runtime ownership: Global Mutex + metadata lock file.
-- SQLite: WAL, busy_timeout, synchronous=NORMAL, foreign_keys=ON.
-- Generated files: AtomicFileWriter.
-- User/import paths: SafePathResolver.
-- RuntimePlanCacheKey is deterministic.
-- Auto Doctor is bounded.
-- Fake runtime must not be in production Runtime project.
-
-Output format:
-1. Decisions
-2. Risks
-3. Required source updates
-4. Codex-ready tasks
-5. Open questions
+#15 --------+
+            +--> #17 -> #18 -> #19 -> #20
+#16 --------+
 ```
 
-## Red Team prompt
+#15 and #16 may be executed in parallel. #17 requires both. Selecting either branch is an orchestrator change in `Z2P-CURRENT-STATE.json`; this workflow does not select work automatically.
 
-```text
-Attack this Z2P design before implementation.
-Find P0/P1 race conditions, Windows-specific failures, elevated UI risks, stale cache bugs, SQLite concurrency problems, UI thread violations, Auto Doctor false positives and unsafe path/file handling.
-Return: P0/P1/P2, failure scenario, why current design fails, correct design, affected files/classes, tests.
-```
+Repository-truth scripts are CI validation. They are not evidence of non-bypassable GitHub enforcement. #26 tracks branch/ruleset protection + required CI; until its acceptance is verified from GitHub configuration, do not call CI an enforced repository gate.
 
-## Codex task prompt rule
-
-Each Codex task must include:
-
-1. Goal
-2. Scope
-3. Non-goals
-4. Files to create/change
-5. Public interfaces
-6. Implementation notes
-7. Tests
-8. Acceptance criteria
-9. Commands to run
-10. Commit message
+For v7, no implementation agent may introduce a second Runtime Kernel authority, a persistent Windows Service, generic privileged IPC, real `winws2` before #20, or an evidence-free Rust migration.
