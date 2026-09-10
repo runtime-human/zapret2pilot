@@ -1,18 +1,16 @@
 # Zapret2Pilot / Z2P — Implementation Status
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
+<!-- Z2P:IMPLEMENTATION_STATUS -->
 
-Status captured for the v7 architecture rebase. This file is the concise current status; the exact prior per-milestone record is preserved at `docs/history/Z2P-IMPLEMENTATION-STATUS-through-0.0.25-v6.md`.
+Live project version, architecture version, active track and current work item are resolved only from `docs/Z2P-CURRENT-STATE.json`. This file records implementation/evidence status and must not duplicate that dynamic tuple.
 
-## Current
+The exact prior per-milestone record is preserved at `docs/history/Z2P-IMPLEMENTATION-STATUS-through-0.0.25-v6.md`.
 
-- `VERSION`: `0.0.25`.
-- Exact v7-A base: `main@35e0356108efab6eceb96d613218bc15d2858da8`.
-- Active track: #13.
-- Current orchestration item: #13 until the orchestrator explicitly selects the next child issue after #14 review/merge.
-- #14 is completed by this repository contract and closes when PR #25 merges.
-- v7 architecture target is canonical after review/merge of PR #25; broker/runtime behavior remains unimplemented.
-- Real production `winws2`: still gated by #20.
+## v7-A implementation anchor
+
+- Exact architecture-rebase base: `main@35e0356108efab6eceb96d613218bc15d2858da8`.
+- The broker/runtime process split is architecture target only; broker, elevation IPC and real production `winws2` are not implemented by #14.
+- Real production `winws2` remains gated by #20.
 
 ## Implemented baseline — retained
 
@@ -26,17 +24,17 @@ Status captured for the v7 architecture rebase. This file is the concise current
 | `0.0.24` | implemented | `RuntimeKernelLoop` lifecycle closure / one reducer-driven authority |
 | `0.0.25` | implemented | trusted bootstrap, platform boundaries and UI composition |
 
-## Runtime hardening after the `0.0.25` milestone commit
+## Runtime hardening after the 0.0.25 milestone commit
 
-The following work exists on current `main` and is part of the migration baseline even though `VERSION` remains `0.0.25`:
+The following work exists on the v7-A base line and is a migration asset:
 
 1. supervisor disposal performs bounded/graceful stop semantics;
 2. runtime ownership mutex error/scope handling was hardened;
 3. cancellation during Stop after the irreversible boundary maps to `RecoveryRequired` rather than ordinary cancellation;
 4. `RuntimeCommandReceipt` removed supervisor-level lifecycle serialization as an authority and permits Stop to supersede Start;
-5. `RuntimeKernelLoop` transport was split into guaranteed lifecycle delivery and coalesced observation delivery so an effect completion is not lost under observation pressure;
-6. process-host affinity was replaced with the sync-only `RuntimeAffinityOwner` and a dedicated bounded owner queue;
-7. `CancelOperation` + per-operation cancellation source/reason tracking makes supersede cancellation reach the in-flight effect while generation/stale checks remain authoritative.
+5. `RuntimeKernelLoop` transport was split into guaranteed lifecycle delivery and coalesced observation delivery;
+6. process-host affinity uses the sync-only `RuntimeAffinityOwner` and a dedicated bounded owner queue;
+7. `CancelOperation` + per-operation cancellation tracking makes supersede cancellation reach in-flight effects while generation/stale checks remain authoritative.
 
 These are **KEEP/MOVE** inputs to v7, not work to repeat.
 
@@ -47,18 +45,23 @@ Changed by #14:
 - canonical architecture/roadmap/status/README alignment;
 - explicit decision supersession;
 - preserved historical v6/RFC sources;
-- machine-readable current-state contract;
-- repository-truth CI gate.
+- machine-readable single-source current-state contract;
+- repository-truth contract probe + CI validation;
+- corrected parallel dependency: #15 and #16 after #14, #17 after both;
+- explicit distinction between CI validation and GitHub-enforced governance; #26 tracks protection enforcement.
 
 Not changed by #14:
 
 - application/runtime code;
 - runtime process behavior;
 - elevation behavior;
-- IPC;
-- broker implementation;
+- IPC/broker implementation;
 - real `winws2` execution;
 - compiler/runtime updater implementation.
+
+## Governance status
+
+The repository-truth scripts run in CI and fail the CI job on contract violations. They do not themselves make CI non-bypassable. GitHub branch/ruleset + required-check enforcement is separately tracked by #26 and must be verified from GitHub configuration before being claimed as an enforced repository gate.
 
 ## Evidence location
 

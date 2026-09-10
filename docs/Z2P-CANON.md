@@ -1,6 +1,8 @@
 # Zapret2Pilot / Z2P — Project Canon v7
 
-<!-- Z2P-CURRENT-STATE: architecture=v7; version=0.0.25; track=#13; work=#13 -->
+<!-- Z2P:CURRENT_CANON -->
+
+Dynamic project state is resolved only from `docs/Z2P-CURRENT-STATE.json`. This canon intentionally does not mirror the live version/track/work-item tuple.
 
 ## 1. Identity and implementation boundary
 
@@ -8,10 +10,9 @@
 - Main user-facing executable: `z2p.exe`.
 - Platform: Windows desktop.
 - Stack: C# / .NET 10 / Avalonia.
-- Current repository version: `0.0.25` plus runtime-kernel hardening commits on the same version.
-- v7 is a migration from that implementation, not a greenfield rewrite.
+- v7 is a migration from the implemented Runtime Kernel baseline, not a greenfield rewrite.
 
-The v7 architecture contract is current, while the broker itself is **not yet implemented**. #14 changes docs/repository validation only.
+The v7 architecture contract describes a target boundary while the broker migration itself remains later work. Documentation/repository validation changes do not imply broker/runtime behavior already exists.
 
 ## 2. Privilege model
 
@@ -40,11 +41,11 @@ Rules:
 
 There is exactly one production runtime lifecycle/mutation authority: **`RuntimeKernelLoop`**.
 
-Current `0.0.25+` code hosts it in the existing application process. During v7 broker migration the existing reducer, generation model, cancellation logic, ownership/recovery primitives and tests are **moved/recomposed** under the broker. They are not reimplemented in parallel.
+During v7 broker migration the existing reducer, generation model, cancellation logic, ownership/recovery primitives and tests are **moved/recomposed** under the broker. They are not reimplemented in parallel.
 
 After migration `z2p.exe` owns desired state, user policy, projections and evidence. It must not contain a second authoritative runtime state machine.
 
-The following post-`0.0.25` hardening is part of the preserved contract:
+Preserved hardening includes:
 
 - Stop can supersede/cancel an in-flight Start;
 - stale effect completions cannot mutate newer generations;
@@ -131,16 +132,18 @@ Retain/rebase:
 
 Auto Doctor measures/recommends. It does not become runtime authority.
 
-## 10. Hard gates
+## 10. Hard architecture gates
 
-- no broker implementation in #14;
 - no local IPC implementation before #16 contract/threat-model work;
+- #15 and #16 may proceed independently after #14, but #17 requires both;
 - no real `winws2` before #20 correctness/recovery evidence;
 - no Rust decision before optional #22 A/B/C;
 - no stale `NEXT`/historical roadmap may override `Z2P-CURRENT-STATE.json` + canonical roadmap.
 
-## 11. Documentation truth
+## 11. Documentation and governance truth
 
 Repository: `runtime-human/zapret2pilot`.
 
-Current truth order is defined in `docs/README.md`. Historical v6/RFC text is preserved under `docs/history/`; supersession is recorded in `docs/Z2P-DECISION-LOG.md` rather than rewriting history. After #14 merges, current orchestration returns to umbrella #13 until the orchestrator explicitly selects another child issue.
+`docs/Z2P-CURRENT-STATE.json` is the sole dynamic state authority. Canonical Markdown uses stable role markers and references that contract rather than copying its dynamic tuple. Historical v6/RFC text is preserved under `docs/history/`; supersession is recorded in `docs/Z2P-DECISION-LOG.md` rather than rewriting history.
+
+Repository-truth scripts provide CI validation, not proof of GitHub enforcement. Enforced branch/ruleset + required-check governance is tracked in #26 and must be verified separately before being described as a non-bypassable repository gate.
