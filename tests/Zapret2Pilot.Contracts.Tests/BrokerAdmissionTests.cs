@@ -14,7 +14,7 @@ public sealed class BrokerAdmissionTests
     private static readonly DateTimeOffset Now = new(2026, 9, 10, 8, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public void Same_user_unrelated_process_is_not_authorized()
+    public void SameUserUnrelatedProcessIsNotAuthorized()
     {
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer() with { ProcessId = expected.ProcessId + 1 };
@@ -28,7 +28,7 @@ public sealed class BrokerAdmissionTests
     }
 
     [Fact]
-    public void Pid_reuse_is_rejected_by_creation_time_even_when_pid_matches()
+    public void PidReuseIsRejectedByCreationTimeEvenWhenPidMatches()
     {
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer() with
@@ -50,7 +50,7 @@ public sealed class BrokerAdmissionTests
     [InlineData(AdmissionMismatch.UserSid)]
     [InlineData(AdmissionMismatch.LogonSession)]
     [InlineData(AdmissionMismatch.Integrity)]
-    public void Wrong_security_identity_is_rejected(AdmissionMismatch mismatch)
+    public void WrongSecurityIdentityIsRejected(AdmissionMismatch mismatch)
     {
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = mismatch switch
@@ -71,7 +71,7 @@ public sealed class BrokerAdmissionTests
     }
 
     [Fact]
-    public void Invalid_bootstrap_proof_is_rejected()
+    public void InvalidBootstrapProofIsRejected()
     {
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
@@ -88,7 +88,7 @@ public sealed class BrokerAdmissionTests
     }
 
     [Fact]
-    public void Successful_challenge_is_single_use_and_replay_is_rejected()
+    public void SuccessfulChallengeIsSingleUseAndReplayIsRejected()
     {
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
@@ -106,7 +106,7 @@ public sealed class BrokerAdmissionTests
     }
 
     [Fact]
-    public void Expired_handshake_challenge_is_rejected()
+    public void ExpiredHandshakeChallengeIsRejected()
     {
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
