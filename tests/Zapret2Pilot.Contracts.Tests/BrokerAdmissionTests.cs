@@ -1,6 +1,8 @@
+using Xunit;
 using Zapret2Pilot.Contracts.Identity;
 using Zapret2Pilot.Contracts.Protocol;
 using Zapret2Pilot.Contracts.Security;
+using Zapret2Pilot.Contracts.Transport;
 
 namespace Zapret2Pilot.Contracts.Tests;
 

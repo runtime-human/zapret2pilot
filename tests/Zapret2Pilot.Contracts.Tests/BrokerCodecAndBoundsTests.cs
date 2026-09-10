@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using Xunit;
 using Zapret2Pilot.Contracts.Identity;
 using Zapret2Pilot.Contracts.Protocol;
 using Zapret2Pilot.Contracts.Transport;
