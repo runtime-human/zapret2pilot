@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Contracts</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Contracts</RootNamespace>
+  </PropertyGroup>
+</Project>
