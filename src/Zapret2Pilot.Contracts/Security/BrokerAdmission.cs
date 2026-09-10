@@ -168,7 +168,10 @@ public sealed class BrokerAdmissionGate
         ArgumentNullException.ThrowIfNull(peer);
         ArgumentNullException.ThrowIfNull(request);
 
-        if (Volatile.Read(ref challengeConsumed) != 0)
+        // A challenge represents exactly one authentication attempt. Burn it
+        // before evaluating attacker-controlled fields so concurrent/retried
+        // invalid proofs cannot turn one nonce into a reusable verification oracle.
+        if (Interlocked.CompareExchange(ref challengeConsumed, 1, 0) != 0)
         {
             return Reject(BrokerAdmissionRejectionReason.ReplayedChallenge);
         }
@@ -238,11 +241,6 @@ public sealed class BrokerAdmissionGate
         if (!BrokerAuthenticator.VerifyProof(bootstrapSecret, transcript, request.Proof.Span))
         {
             return Reject(BrokerAdmissionRejectionReason.InvalidBootstrapProof);
-        }
-
-        if (Interlocked.CompareExchange(ref challengeConsumed, 1, 0) != 0)
-        {
-            return Reject(BrokerAdmissionRejectionReason.ReplayedChallenge);
         }
 
         return new(
