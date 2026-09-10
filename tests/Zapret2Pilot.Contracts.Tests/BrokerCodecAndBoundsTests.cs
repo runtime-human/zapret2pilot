@@ -10,7 +10,7 @@ namespace Zapret2Pilot.Contracts.Tests;
 public sealed class BrokerCodecAndBoundsTests
 {
     [Fact]
-    public void Oversized_frame_is_rejected_before_payload_allocation()
+    public void OversizedFrameIsRejectedBeforePayloadAllocation()
     {
         byte[] prefix = new byte[BrokerProtocolLimits.LengthPrefixBytes];
         BinaryPrimitives.WriteInt32LittleEndian(prefix, BrokerProtocolLimits.MaxFrameBytes + 1);
@@ -22,7 +22,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Fragmented_frame_requests_more_data_without_consuming_input()
+    public void FragmentedFrameRequestsMoreDataWithoutConsumingInput()
     {
         byte[] partial = new byte[BrokerProtocolLimits.LengthPrefixBytes + 2];
         BinaryPrimitives.WriteInt32LittleEndian(partial, 10);
@@ -36,7 +36,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Malformed_json_is_rejected()
+    public void MalformedJsonIsRejected()
     {
         byte[] payload = "{ definitely-not-json"u8.ToArray();
 
@@ -47,7 +47,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Unknown_message_kind_is_rejected()
+    public void UnknownMessageKindIsRejected()
     {
         string json = $$"""
             {
@@ -69,7 +69,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Unknown_fields_are_rejected_instead_of_silently_ignored()
+    public void UnknownFieldsAreRejectedInsteadOfSilentlyIgnored()
     {
         string json = $$"""
             {
@@ -92,7 +92,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Operation_id_duplicate_and_stale_semantics_are_deterministic()
+    public void OperationIdDuplicateAndStaleSemanticsAreDeterministic()
     {
         BrokerOperationLedger ledger = new(BrokerProtocolLimits.OperationLedgerCapacity, BrokerProtocolLimits.OperationLedgerTtl);
         BrokerOperationId operationId = BrokerOperationId.New();
@@ -122,7 +122,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Ingress_queue_rejects_flood_when_capacity_is_reached()
+    public void IngressBufferRejectsFloodWhenCapacityIsReached()
     {
         BrokerIngressBuffer buffer = new(BrokerProtocolLimits.IngressQueueCapacity);
         BrokerRequestEnvelope request = CreateSnapshotRequest();
@@ -137,7 +137,22 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Mutation_concurrency_is_one_and_queries_are_bounded()
+    public void ResponseBufferAppliesBackpressureWhenCapacityIsReached()
+    {
+        BrokerResponseBuffer buffer = new(BrokerProtocolLimits.ResponseQueueCapacity);
+        BrokerResponseEnvelope response = CreateSnapshotResponse();
+
+        for (int i = 0; i < BrokerProtocolLimits.ResponseQueueCapacity; i++)
+        {
+            Assert.True(buffer.TryEnqueue(response));
+        }
+
+        Assert.False(buffer.TryEnqueue(response));
+        Assert.Equal(BrokerProtocolLimits.ResponseQueueCapacity, buffer.Count);
+    }
+
+    [Fact]
+    public void MutationConcurrencyIsOneAndQueriesAreBounded()
     {
         BrokerConcurrencyGate gate = new(
             BrokerProtocolLimits.MaxInFlightQueries,
@@ -166,7 +181,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Stale_runtime_generation_is_rejected_before_mutation_dispatch()
+    public void StaleRuntimeGenerationIsRejectedBeforeMutationDispatch()
     {
         RuntimeGeneration expected = new(12);
         RuntimeGeneration current = new(13);
@@ -178,7 +193,7 @@ public sealed class BrokerCodecAndBoundsTests
     }
 
     [Fact]
-    public void Request_deadline_is_fail_closed()
+    public void RequestDeadlineIsFailClosed()
     {
         DateTimeOffset now = new(2026, 9, 10, 8, 0, 20, TimeSpan.Zero);
         BrokerRequestEnvelope request = CreateSnapshotRequest() with
@@ -205,5 +220,20 @@ public sealed class BrokerCodecAndBoundsTests
             issuedAt,
             issuedAt + BrokerProtocolLimits.MaxRequestLifetime,
             new GetRuntimeSnapshotRequest());
+    }
+
+    private static BrokerResponseEnvelope CreateSnapshotResponse()
+    {
+        AppSessionId appSessionId = AppSessionId.New();
+        BrokerSessionId brokerSessionId = BrokerSessionId.New();
+        BrokerOperationId operationId = BrokerOperationId.New();
+        return new BrokerResponseEnvelope(
+            BrokerProtocolVersion.V1,
+            appSessionId,
+            brokerSessionId,
+            operationId,
+            BrokerResponseStatus.Ok,
+            new BrokerRuntimeSnapshotResponse(
+                new BrokerRuntimeSnapshot(new RuntimeGeneration(1), BrokerRuntimeState.Stopped, null, null)));
     }
 }
