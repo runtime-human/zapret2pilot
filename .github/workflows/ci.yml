@@ -39,6 +39,28 @@ jobs:
       - name: Restore
         run: dotnet restore Zapret2Pilot.slnx
 
+      - name: Vulnerability audit
+        run: dotnet package list --project Zapret2Pilot.slnx --vulnerable --include-transitive --no-restore
+
+      - name: Deprecated package evidence
+        run: dotnet package list --project Zapret2Pilot.slnx --deprecated --include-transitive --no-restore
+
+      - name: Package drift evidence
+        run: dotnet package list --project Zapret2Pilot.slnx --outdated --include-transitive --no-restore
+
+      # Temporary #15 evidence step. It makes the first generated lock graph
+      # observable in CI so the exact files can be committed before the final
+      # workflow switches restore to --locked-mode.
+      - name: Show generated package locks
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path . -Filter packages.lock.json -Recurse | Sort-Object FullName | ForEach-Object {
+            $relative = [System.IO.Path]::GetRelativePath($PWD.Path, $_.FullName)
+            Write-Host "Z2P_LOCK_BEGIN:$relative"
+            Get-Content -LiteralPath $_.FullName -Raw
+            Write-Host "Z2P_LOCK_END:$relative"
+          }
+
       - name: Build
         run: dotnet build Zapret2Pilot.slnx -c Release --no-restore
 
