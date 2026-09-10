@@ -20,8 +20,8 @@ try {
     $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tempStatePath -Encoding utf8
 
     & $validatorPath -StatePath $tempStatePath
-    if ($LASTEXITCODE -ne 0) {
-        throw "repository-truth single-source probe failed with exit code $LASTEXITCODE"
+    if (-not $?) {
+        throw 'repository-truth single-source probe failed'
     }
 
     Write-Host 'repository-truth contract: PASS — architectureVersion/activeTrack/currentWorkItem can change in the JSON contract without Markdown synchronization'
