@@ -54,7 +54,9 @@ public static class BrokerFrameCodec
         }
 
         byte[] frame = new byte[BrokerProtocolLimits.LengthPrefixBytes + payload.Length];
-        BinaryPrimitives.WriteInt32LittleEndian(frame.AsSpan(0, BrokerProtocolLimits.LengthPrefixBytes), payload.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            frame.AsSpan(0, BrokerProtocolLimits.LengthPrefixBytes),
+            payload.Length);
         payload.CopyTo(frame.AsSpan(BrokerProtocolLimits.LengthPrefixBytes));
         return frame;
     }
@@ -66,7 +68,8 @@ public static class BrokerFrameCodec
             return new(BrokerFrameDecodeStatus.NeedMoreData, null, 0);
         }
 
-        int payloadLength = BinaryPrimitives.ReadInt32LittleEndian(input[..BrokerProtocolLimits.LengthPrefixBytes]);
+        int payloadLength = BinaryPrimitives.ReadInt32LittleEndian(
+            input[..BrokerProtocolLimits.LengthPrefixBytes]);
         if (payloadLength <= 0)
         {
             return new(BrokerFrameDecodeStatus.InvalidLength, null, 0);
@@ -267,11 +270,7 @@ public sealed class BrokerOperationLedger
     public BrokerOperationLedger(int capacity, TimeSpan ttl)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
-        if (ttl <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(ttl));
-        }
-
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
         this.capacity = capacity;
         this.ttl = ttl;
     }
@@ -282,9 +281,19 @@ public sealed class BrokerOperationLedger
         Sha256Digest fingerprint,
         DateTimeOffset now)
     {
-        if (operationId.Value == Guid.Empty || sequence.Value <= 0 || !fingerprint.IsCanonical)
+        if (operationId.Value == Guid.Empty)
         {
-            throw new ArgumentException("Operation identity, sequence, and fingerprint must be valid.");
+            throw new ArgumentException("Operation ID must not be empty.", nameof(operationId));
+        }
+
+        if (sequence.Value <= 0)
+        {
+            throw new ArgumentException("Request sequence must be positive.", nameof(sequence));
+        }
+
+        if (!fingerprint.IsCanonical)
+        {
+            throw new ArgumentException("Request fingerprint must be a canonical SHA-256 digest.", nameof(fingerprint));
         }
 
         lock (sync)
@@ -356,13 +365,13 @@ public sealed class BrokerOperationLedger
     }
 }
 
-public sealed class BrokerIngressQueue
+public sealed class BrokerIngressBuffer
 {
     private readonly object sync = new();
     private readonly Queue<BrokerRequestEnvelope> queue;
     private readonly int capacity;
 
-    public BrokerIngressQueue(int capacity)
+    public BrokerIngressBuffer(int capacity)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
         this.capacity = capacity;
@@ -411,13 +420,13 @@ public sealed class BrokerIngressQueue
     }
 }
 
-public sealed class BrokerResponseQueue
+public sealed class BrokerResponseBuffer
 {
     private readonly object sync = new();
     private readonly Queue<BrokerResponseEnvelope> queue;
     private readonly int capacity;
 
-    public BrokerResponseQueue(int capacity)
+    public BrokerResponseBuffer(int capacity)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
         this.capacity = capacity;
