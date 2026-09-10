@@ -105,10 +105,32 @@ Governance distinction:
 
 Rationale: prevent both stale-document drift and the opposite failure mode where a “single source” still requires mass Markdown churn on every current-work change.
 
+### DEC-0057 — Runtime Broker admission is process-bound, replay-resistant and bounded before Runtime Kernel dispatch
+
+Date: 2026-09-10.  
+Status: **ACCEPTED SECURITY CONTRACT BASELINE; PRODUCTION TRANSPORT DEFERRED TO #17**.
+
+Decision:
+
+- same-user Named Pipe access or a successful DACL check is never sufficient authorization for privileged mutation;
+- the production pipe is local-only (`PIPE_REJECT_REMOTE_CLIENTS`) with an explicit bounded DACL/instance policy;
+- the broker obtains the actual client PID from the connected pipe and binds admission to the expected process identity: PID + process creation time + retained process handle + Windows session + user SID + logon `AuthenticationId` + integrity level;
+- PID alone is explicitly rejected as a stable identity because numeric PIDs can be reused after process lifetime;
+- every AppSession uses fresh 256-bit bootstrap material and one-use broker/client nonces with HMAC-SHA256 transcript binding;
+- protocol, AppSession, BrokerSession, OperationId, request sequence, RuntimeGeneration and prepared bundle/plan identities are typed and explicit;
+- protocol v1 exposes only `Hello`, `GetCapabilities`, `GetRuntimeSnapshot`, `PrepareBundle`, `PreparePlan`, `StartPreparedPlan`, `StopGeneration` and `ShutdownBroker`;
+- no arbitrary process, command, path, file, download, plugin, DLL or Lua execution authority exists in the privileged contract;
+- framing, connection/query/mutation concurrency, ingress/response buffering, request rate, replay ledger and timeouts are explicitly bounded;
+- duplicate/replayed operations are deterministic and never dispatch a second mutation;
+- disconnect/reconnect cannot become lifecycle authority: already-dispatched mutations remain owned by the single `RuntimeKernelLoop`, while reconnect performs fresh admission and reconciles against retained operation/generation state;
+- application hard-death handling in #17 must be driven by the retained expected-process handle and route terminal cleanup through the sole Runtime Kernel authority.
+
+The normative threat model, limits, Microsoft Win32 semantics and residual implementation obligations are in `docs/Z2P-RUNTIME-BROKER-SECURITY-CONTRACT.md`.
+
 ## Execution-order clarification
 
 After #14, #15 and #16 are independent branches and may proceed in parallel. #17 depends on **both** #15 and #16; then #18 -> #19 -> #20. This changes sequencing only and does not expand #15/#16 scope.
 
 ## Explicit non-decision
 
-Rust/NativeAOT is **not** selected by v7-A. Optional A/B/C remains deferred to #22 after correctness is frozen. No Windows Service is introduced. No broker/IPC/runtime behavior is implemented by these ADRs.
+Rust/NativeAOT is **not** selected by v7-A. Optional A/B/C remains deferred to #22 after correctness is frozen. No Windows Service is introduced. #16 does not implement the production broker process, Runtime Kernel relocation, real `winws2`, secure child-process creation or immutable staging.
