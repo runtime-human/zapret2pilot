@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Text;
 using Xunit;
 using Zapret2Pilot.Contracts.Identity;
 using Zapret2Pilot.Contracts.Protocol;
@@ -10,15 +11,14 @@ namespace Zapret2Pilot.Contracts.Tests;
 
 public sealed class BrokerHandshakeAndPreAuthTests
 {
-    private static readonly byte[] Secret = Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray();
-
     [Fact]
     public void SerializedChallengeToSerializedHelloCompletesAdmissionWithoutSharedChallengeObject()
     {
         ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), timeProvider);
 
         BrokerChallengeIssueResult issued = session.TryIssueChallenge(peer);
         Assert.Equal(BrokerChallengeIssueStatus.Issued, issued.Status);
@@ -32,7 +32,7 @@ public sealed class BrokerHandshakeAndPreAuthTests
         Assert.Equal(BrokerChallengeFrameDecodeStatus.Success, clientDecoded.Status);
         Assert.NotSame(serverChallenge, clientChallenge);
 
-        BrokerRequestEnvelope clientHello = CreateHelloEnvelope(expected, peer, clientChallenge, Secret);
+        BrokerRequestEnvelope clientHello = CreateHelloEnvelope(expected, peer, clientChallenge, clientSecret);
         byte[] helloPayload = BrokerProtocolCodec.EncodeRequest(clientHello);
         byte[] helloFrame = BrokerFrameCodec.Encode(helloPayload, BrokerProtocolLimits.MaxPreAuthHelloFrameBytes);
         BrokerFrameDecodeResult brokerFrame = BrokerFrameCodec.Decode(helloFrame, BrokerProtocolLimits.MaxPreAuthHelloFrameBytes);
@@ -73,14 +73,19 @@ public sealed class BrokerHandshakeAndPreAuthTests
     [Fact]
     public void ChallengeCodecRejectsProtocolMismatch()
     {
-        BrokerChallengeMessage challenge = new(
-            new BrokerProtocolVersion(2, 0),
-            new BrokerProtocolRange(new(2, 0), new(2, 0)),
-            BrokerSessionId.New(),
-            RandomNumberGenerator.GetBytes(BrokerAuthenticator.NonceSizeBytes),
-            checked((int)BrokerProtocolLimits.HandshakeTimeout.TotalMilliseconds));
+        string nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(BrokerAuthenticator.NonceSizeBytes));
+        string json = $$"""
+            {
+              "handshakeProtocol":{"major":2,"minor":0},
+              "kind":"brokerChallenge",
+              "supportedProtocols":{"minimum":{"major":2,"minor":0},"maximum":{"major":2,"minor":0}},
+              "brokerSessionId":"{{Guid.NewGuid()}}",
+              "serverNonce":"{{nonce}}",
+              "lifetimeMilliseconds":3000
+            }
+            """;
+        byte[] frame = BrokerFrameCodec.Encode(Encoding.UTF8.GetBytes(json), BrokerProtocolLimits.MaxChallengeFrameBytes);
 
-        byte[] frame = BrokerChallengeFrameCodec.EncodeUncheckedForTest(challenge);
         BrokerChallengeFrameDecodeResult result = BrokerChallengeFrameCodec.Decode(frame);
 
         Assert.Equal(BrokerChallengeFrameDecodeStatus.UnsupportedProtocol, result.Status);
@@ -93,11 +98,12 @@ public sealed class BrokerHandshakeAndPreAuthTests
         ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), timeProvider);
         BrokerChallengeIssueResult issued = session.TryIssueChallenge(peer);
         BrokerChallengeMessage challenge = Assert.IsType<BrokerChallengeMessage>(issued.Challenge);
         BrokerChallengeHandle handle = Assert.IsType<BrokerChallengeHandle>(issued.Handle);
-        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, Secret);
+        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, clientSecret);
 
         timeProvider.Advance(BrokerProtocolLimits.HandshakeTimeout + TimeSpan.FromMilliseconds(1));
         BrokerAdmissionDecision decision = session.TryAdmit(handle, peer, hello);
@@ -112,11 +118,12 @@ public sealed class BrokerHandshakeAndPreAuthTests
         ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), timeProvider);
         BrokerChallengeIssueResult issued = session.TryIssueChallenge(peer);
         BrokerChallengeMessage challenge = Assert.IsType<BrokerChallengeMessage>(issued.Challenge);
         BrokerChallengeHandle handle = Assert.IsType<BrokerChallengeHandle>(issued.Handle);
-        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, Secret);
+        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, clientSecret);
 
         timeProvider.JumpUtc(TimeSpan.FromDays(30));
         BrokerAdmissionDecision decision = session.TryAdmit(handle, peer, hello);
@@ -127,14 +134,14 @@ public sealed class BrokerHandshakeAndPreAuthTests
     [Fact]
     public void WrongBrokerSessionIdIsRejected()
     {
-        ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), new ManualTimeProvider());
         BrokerChallengeIssueResult issued = session.TryIssueChallenge(peer);
         BrokerChallengeMessage challenge = Assert.IsType<BrokerChallengeMessage>(issued.Challenge);
         BrokerChallengeHandle handle = Assert.IsType<BrokerChallengeHandle>(issued.Handle);
-        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, Secret) with
+        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, clientSecret) with
         {
             BrokerSessionId = BrokerSessionId.New(),
         };
@@ -148,18 +155,13 @@ public sealed class BrokerHandshakeAndPreAuthTests
     [Fact]
     public void WrongProofIsRejected()
     {
-        ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), new ManualTimeProvider());
         BrokerChallengeIssueResult issued = session.TryIssueChallenge(peer);
         BrokerChallengeMessage challenge = Assert.IsType<BrokerChallengeMessage>(issued.Challenge);
         BrokerChallengeHandle handle = Assert.IsType<BrokerChallengeHandle>(issued.Handle);
-        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, Secret);
-        BrokerHelloRequest body = Assert.IsType<BrokerHelloRequest>(hello.Request);
-        byte[] badProof = body.Proof.ToArray();
-        badProof[0] ^= 0xff;
-        hello = hello with { Request = body with { Proof = badProof } };
+        BrokerRequestEnvelope hello = CreateHelloEnvelope(expected, peer, challenge, new byte[32]);
 
         BrokerAdmissionDecision decision = session.TryAdmit(handle, peer, hello);
 
@@ -173,7 +175,8 @@ public sealed class BrokerHandshakeAndPreAuthTests
         ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), timeProvider);
         BrokerChallengeIssueResult first = session.TryIssueChallenge(peer);
         BrokerChallengeMessage firstChallenge = Assert.IsType<BrokerChallengeMessage>(first.Challenge);
         BrokerChallengeHandle firstHandle = Assert.IsType<BrokerChallengeHandle>(first.Handle);
@@ -185,7 +188,7 @@ public sealed class BrokerHandshakeAndPreAuthTests
         BrokerAdmissionDecision admitted = session.TryAdmit(
             Assert.IsType<BrokerChallengeHandle>(second.Handle),
             peer,
-            CreateHelloEnvelope(expected, peer, secondChallenge, Secret));
+            CreateHelloEnvelope(expected, peer, secondChallenge, clientSecret));
 
         Assert.Equal(BrokerAdmissionRejectionReason.InvalidBootstrapProof, rejected.RejectionReason);
         Assert.Equal(BrokerChallengeIssueStatus.Issued, second.Status);
@@ -195,17 +198,17 @@ public sealed class BrokerHandshakeAndPreAuthTests
     [Fact]
     public void SuccessfulAdmissionRejectsReplayAndInvalidatesParallelOutstandingChallenge()
     {
-        ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), new ManualTimeProvider());
         BrokerChallengeIssueResult first = session.TryIssueChallenge(peer);
         BrokerChallengeIssueResult parallel = session.TryIssueChallenge(peer);
         BrokerChallengeMessage firstChallenge = Assert.IsType<BrokerChallengeMessage>(first.Challenge);
         BrokerChallengeMessage parallelChallenge = Assert.IsType<BrokerChallengeMessage>(parallel.Challenge);
         BrokerChallengeHandle firstHandle = Assert.IsType<BrokerChallengeHandle>(first.Handle);
         BrokerChallengeHandle parallelHandle = Assert.IsType<BrokerChallengeHandle>(parallel.Handle);
-        BrokerRequestEnvelope firstHello = CreateHelloEnvelope(expected, peer, firstChallenge, Secret);
+        BrokerRequestEnvelope firstHello = CreateHelloEnvelope(expected, peer, firstChallenge, clientSecret);
 
         BrokerAdmissionDecision admitted = session.TryAdmit(firstHandle, peer, firstHello);
         BrokerAdmissionDecision replay = session.TryAdmit(firstHandle, peer, firstHello);
@@ -213,7 +216,7 @@ public sealed class BrokerHandshakeAndPreAuthTests
         BrokerAdmissionDecision staleParallel = session.TryAdmit(
             parallelHandle,
             peer,
-            CreateHelloEnvelope(expected, peer, parallelChallenge, Secret));
+            CreateHelloEnvelope(expected, peer, parallelChallenge, clientSecret));
 
         Assert.True(admitted.Accepted);
         Assert.False(replay.Accepted);
@@ -223,13 +226,44 @@ public sealed class BrokerHandshakeAndPreAuthTests
     }
 
     [Fact]
+    public async Task ParallelBadAndValidChallengesCannotCreateMultipleAdmissions()
+    {
+        BrokerClientBinding expected = CreateExpected();
+        BrokerPeerIdentity peer = CreatePeer();
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), new ManualTimeProvider());
+        BrokerChallengeIssueResult badIssue = session.TryIssueChallenge(peer);
+        BrokerChallengeIssueResult validIssue = session.TryIssueChallenge(peer);
+        BrokerChallengeMessage badChallenge = Assert.IsType<BrokerChallengeMessage>(badIssue.Challenge);
+        BrokerChallengeMessage validChallenge = Assert.IsType<BrokerChallengeMessage>(validIssue.Challenge);
+        BrokerChallengeHandle badHandle = Assert.IsType<BrokerChallengeHandle>(badIssue.Handle);
+        BrokerChallengeHandle validHandle = Assert.IsType<BrokerChallengeHandle>(validIssue.Handle);
+
+        Task<BrokerAdmissionDecision> bad = Task.Run(() => session.TryAdmit(
+            badHandle,
+            peer,
+            CreateHelloEnvelope(expected, peer, badChallenge, new byte[32])));
+        Task<BrokerAdmissionDecision> valid = Task.Run(() => session.TryAdmit(
+            validHandle,
+            peer,
+            CreateHelloEnvelope(expected, peer, validChallenge, clientSecret)));
+        BrokerAdmissionDecision[] decisions = await Task.WhenAll(bad, valid);
+
+        Assert.Single(decisions, static decision => decision.Accepted);
+        Assert.All(decisions, static decision =>
+            Assert.True(decision.Accepted
+                || decision.RejectionReason is BrokerAdmissionRejectionReason.InvalidBootstrapProof
+                    or BrokerAdmissionRejectionReason.ReplayedChallenge));
+    }
+
+    [Fact]
     public void WrongPeerCannotConsumeChallengeBudgetWhileExpectedClientCanAuthenticate()
     {
-        ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity expectedPeer = CreatePeer();
         BrokerPeerIdentity attacker = expectedPeer with { ProcessId = expectedPeer.ProcessId + 1 };
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        byte[] clientSecret = CreateSecret();
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), new ManualTimeProvider());
 
         for (int i = 0; i < 32; i++)
         {
@@ -243,19 +277,19 @@ public sealed class BrokerHandshakeAndPreAuthTests
         BrokerAdmissionDecision admitted = session.TryAdmit(
             Assert.IsType<BrokerChallengeHandle>(clientResult.Handle),
             expectedPeer,
-            CreateHelloEnvelope(expected, expectedPeer, challenge, Secret));
+            CreateHelloEnvelope(expected, expectedPeer, challenge, clientSecret));
 
         Assert.Equal(BrokerChallengeIssueStatus.Issued, clientResult.Status);
         Assert.True(admitted.Accepted);
     }
 
     [Fact]
-    public void PreAuthFloodIsBoundedByLiveChallengeAndIssueBudgets()
+    public void PreAuthFloodIsBoundedByLiveChallengeBurstAndRetryBudget()
     {
         ManualTimeProvider timeProvider = new();
         BrokerClientBinding expected = CreateExpected();
         BrokerPeerIdentity peer = CreatePeer();
-        using BrokerPreAuthenticationSession session = new(expected, Secret, timeProvider);
+        using BrokerPreAuthenticationSession session = new(expected, CreateSecret(), timeProvider);
 
         BrokerChallengeIssueResult first = session.TryIssueChallenge(peer);
         BrokerChallengeIssueResult second = session.TryIssueChallenge(peer);
@@ -274,18 +308,35 @@ public sealed class BrokerHandshakeAndPreAuthTests
         Assert.Equal(BrokerChallengeIssueStatus.Issued, third.Status);
         Assert.Equal(BrokerChallengeIssueStatus.Issued, fourth.Status);
         Assert.Equal(BrokerChallengeIssueStatus.RateLimited, rateLimited.Status);
+        Assert.Equal(BrokerProtocolLimits.PreAuthChallengeRetryAfter, rateLimited.RetryAfter);
 
-        timeProvider.Advance(TimeSpan.FromMilliseconds(500));
+        timeProvider.Advance(BrokerProtocolLimits.PreAuthChallengeRetryAfter - TimeSpan.FromMilliseconds(1));
+        Assert.Equal(BrokerChallengeIssueStatus.RateLimited, session.TryIssueChallenge(peer).Status);
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
         Assert.Equal(BrokerChallengeIssueStatus.Issued, session.TryIssueChallenge(peer).Status);
+    }
+
+    [Fact]
+    public void DisposeZeroesOwnedBootstrapSecretBuffer()
+    {
+        byte[] ownedSecret = CreateSecret();
+        BrokerPreAuthenticationSession session = new(CreateExpected(), ownedSecret, new ManualTimeProvider());
+
+        session.Dispose();
+
+        Assert.All(ownedSecret, static value => Assert.Equal((byte)0, value));
     }
 
     [Fact]
     public void DisposedPreAuthSessionRejectsFurtherChallengeIssuance()
     {
-        BrokerPreAuthenticationSession session = new(CreateExpected(), Secret, new ManualTimeProvider());
+        BrokerPreAuthenticationSession session = new(CreateExpected(), CreateSecret(), new ManualTimeProvider());
         session.Dispose();
 
-        Assert.Throws<ObjectDisposedException>(() => session.TryIssueChallenge(CreatePeer()));
+        Assert.Throws<ObjectDisposedException>(() =>
+        {
+            _ = session.TryIssueChallenge(CreatePeer());
+        });
     }
 
     private static BrokerRequestEnvelope CreateHelloEnvelope(
@@ -320,6 +371,11 @@ public sealed class BrokerHandshakeAndPreAuthTests
             issuedAt + BrokerProtocolLimits.MaxRequestLifetime,
             new BrokerHelloRequest(BrokerProtocolRange.Current, expected.AppSessionId, clientNonce, proof));
     }
+
+    private static byte[] CreateSecret()
+        => Enumerable.Range(1, BrokerAuthenticator.SecretSizeBytes)
+            .Select(static value => (byte)value)
+            .ToArray();
 
     private static BrokerClientBinding CreateExpected()
         => new(
