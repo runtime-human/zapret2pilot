@@ -42,7 +42,15 @@ public static class BrokerChallengeFrameCodec
             throw new ArgumentException($"Broker challenge violates wire contract: {status}.", nameof(challenge));
         }
 
-        return EncodeCore(challenge);
+        BrokerChallengeWireEnvelope wire = new(
+            challenge.HandshakeProtocol,
+            ChallengeKind,
+            challenge.SupportedProtocols,
+            challenge.BrokerSessionId.Value,
+            challenge.ServerNonce.ToArray(),
+            challenge.LifetimeMilliseconds);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(wire, StrictJson);
+        return BrokerFrameCodec.Encode(payload, BrokerProtocolLimits.MaxChallengeFrameBytes);
     }
 
     public static BrokerChallengeFrameDecodeResult Decode(ReadOnlySpan<byte> input)
@@ -82,25 +90,6 @@ public static class BrokerChallengeFrameCodec
         {
             return new(BrokerChallengeFrameDecodeStatus.Malformed, null, frame.ConsumedBytes);
         }
-    }
-
-    public static byte[] EncodeUncheckedForTest(BrokerChallengeMessage challenge)
-    {
-        ArgumentNullException.ThrowIfNull(challenge);
-        return EncodeCore(challenge);
-    }
-
-    private static byte[] EncodeCore(BrokerChallengeMessage challenge)
-    {
-        BrokerChallengeWireEnvelope wire = new(
-            challenge.HandshakeProtocol,
-            ChallengeKind,
-            challenge.SupportedProtocols,
-            challenge.BrokerSessionId.Value,
-            challenge.ServerNonce.ToArray(),
-            challenge.LifetimeMilliseconds);
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(wire, StrictJson);
-        return BrokerFrameCodec.Encode(payload, BrokerProtocolLimits.MaxChallengeFrameBytes);
     }
 
     private static BrokerChallengeFrameDecodeStatus Validate(BrokerChallengeMessage challenge)
