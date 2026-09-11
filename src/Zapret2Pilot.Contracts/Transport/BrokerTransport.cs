@@ -27,6 +27,7 @@ public static class BrokerProtocolLimits
 
     public static TimeSpan OperationLedgerTtl { get; } = TimeSpan.FromMinutes(2);
     public static TimeSpan HandshakeTimeout { get; } = TimeSpan.FromSeconds(3);
+    public static TimeSpan PreAuthChallengeRetryAfter { get; } = TimeSpan.FromMilliseconds(500);
     public static TimeSpan FrameHeaderTimeout { get; } = TimeSpan.FromSeconds(2);
     public static TimeSpan FrameBodyTimeout { get; } = TimeSpan.FromSeconds(5);
     public static TimeSpan QueryDeadline { get; } = TimeSpan.FromSeconds(5);
