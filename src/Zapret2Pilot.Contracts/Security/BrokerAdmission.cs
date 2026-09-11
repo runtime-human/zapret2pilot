@@ -23,13 +23,10 @@ public sealed record BrokerPeerIdentity(
     LogonSessionId LogonSessionId,
     int IntegrityLevelRid);
 
-public sealed record BrokerHandshakeChallenge(
-    BrokerSessionId BrokerSessionId,
-    ReadOnlyMemory<byte> Nonce,
-    DateTimeOffset ExpiresAtUtc);
-
 public sealed record BrokerAuthenticationTranscript(
     BrokerProtocolVersion Protocol,
+    BrokerProtocolRange ClientSupportedProtocols,
+    BrokerProtocolRange ServerSupportedProtocols,
     AppSessionId AppSessionId,
     BrokerSessionId BrokerSessionId,
     int ProcessId,
@@ -38,13 +35,37 @@ public sealed record BrokerAuthenticationTranscript(
     ReadOnlyMemory<byte> ChallengeNonce,
     ReadOnlyMemory<byte> ClientNonce)
 {
+    public static BrokerAuthenticationTranscript Create(
+        BrokerProtocolVersion protocol,
+        BrokerProtocolRange clientSupportedProtocols,
+        BrokerChallengeMessage challenge,
+        AppSessionId appSessionId,
+        BrokerPeerIdentity peer,
+        ReadOnlyMemory<byte> clientNonce)
+    {
+        ArgumentNullException.ThrowIfNull(challenge);
+        ArgumentNullException.ThrowIfNull(peer);
+        return new(
+            protocol,
+            clientSupportedProtocols,
+            challenge.SupportedProtocols,
+            appSessionId,
+            challenge.BrokerSessionId,
+            peer.ProcessId,
+            peer.ProcessCreationTimeFileTime,
+            peer.WindowsSessionId,
+            challenge.ServerNonce,
+            clientNonce);
+    }
+
     internal byte[] ToBytes()
     {
         using MemoryStream stream = new();
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
         {
-            writer.Write(Protocol.Major);
-            writer.Write(Protocol.Minor);
+            WriteVersion(writer, Protocol);
+            WriteRange(writer, ClientSupportedProtocols);
+            WriteRange(writer, ServerSupportedProtocols);
             writer.Write(AppSessionId.Value.ToByteArray());
             writer.Write(BrokerSessionId.Value.ToByteArray());
             writer.Write(ProcessId);
@@ -55,6 +76,18 @@ public sealed record BrokerAuthenticationTranscript(
         }
 
         return stream.ToArray();
+    }
+
+    private static void WriteRange(BinaryWriter writer, BrokerProtocolRange range)
+    {
+        WriteVersion(writer, range.Minimum);
+        WriteVersion(writer, range.Maximum);
+    }
+
+    private static void WriteVersion(BinaryWriter writer, BrokerProtocolVersion version)
+    {
+        writer.Write(version.Major);
+        writer.Write(version.Minor);
     }
 
     private static void WriteBytes(BinaryWriter writer, ReadOnlySpan<byte> value)
@@ -75,13 +108,16 @@ public static class BrokerAuthenticator
         BrokerAuthenticationTranscript transcript)
     {
         ArgumentNullException.ThrowIfNull(transcript);
-        if (bootstrapSecret.Length != SecretSizeBytes)
+        ValidateSecret(bootstrapSecret);
+        byte[] transcriptBytes = transcript.ToBytes();
+        try
         {
-            throw new ArgumentException("Bootstrap secret must contain exactly 256 bits.", nameof(bootstrapSecret));
+            return HMACSHA256.HashData(bootstrapSecret, transcriptBytes);
         }
-
-        using HMACSHA256 hmac = new(bootstrapSecret.ToArray());
-        return hmac.ComputeHash(transcript.ToBytes());
+        finally
+        {
+            CryptographicOperations.ZeroMemory(transcriptBytes);
+        }
     }
 
     public static bool VerifyProof(
@@ -89,19 +125,32 @@ public static class BrokerAuthenticator
         BrokerAuthenticationTranscript transcript,
         ReadOnlySpan<byte> proof)
     {
+        ArgumentNullException.ThrowIfNull(transcript);
+        ValidateSecret(bootstrapSecret);
         if (proof.Length != ProofSizeBytes)
         {
             return false;
         }
 
-        byte[] expected = CreateProof(bootstrapSecret, transcript);
+        byte[] transcriptBytes = transcript.ToBytes();
+        Span<byte> expected = stackalloc byte[ProofSizeBytes];
         try
         {
+            _ = HMACSHA256.HashData(bootstrapSecret, transcriptBytes, expected);
             return CryptographicOperations.FixedTimeEquals(expected, proof);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(expected);
+            CryptographicOperations.ZeroMemory(transcriptBytes);
+        }
+    }
+
+    private static void ValidateSecret(ReadOnlySpan<byte> bootstrapSecret)
+    {
+        if (bootstrapSecret.Length != SecretSizeBytes)
+        {
+            throw new ArgumentException("Bootstrap secret must contain exactly 256 bits.", nameof(bootstrapSecret));
         }
     }
 }
@@ -112,6 +161,8 @@ public enum BrokerAdmissionRejectionReason
     ReplayedChallenge,
     ExpiredChallenge,
     UnsupportedProtocol,
+    InvalidRequestSemantics,
+    WrongBrokerSession,
     StaleApplicationSession,
     WrongProcessId,
     ProcessCreationTimeMismatch,
@@ -130,129 +181,43 @@ public sealed record BrokerAdmissionDecision(
     BrokerSessionId? BrokerSessionId,
     BrokerProtocolVersion? Protocol);
 
-public sealed class BrokerAdmissionGate
+internal static class BrokerPeerIdentityValidator
 {
-    private readonly BrokerClientBinding expected;
-    private readonly byte[] bootstrapSecret;
-    private int challengeConsumed;
-
-    public BrokerAdmissionGate(
+    public static BrokerAdmissionRejectionReason Validate(
         BrokerClientBinding expected,
-        ReadOnlySpan<byte> bootstrapSecret,
-        BrokerHandshakeChallenge challenge)
+        BrokerPeerIdentity peer)
     {
         ArgumentNullException.ThrowIfNull(expected);
-        ArgumentNullException.ThrowIfNull(challenge);
-        if (bootstrapSecret.Length != BrokerAuthenticator.SecretSizeBytes)
-        {
-            throw new ArgumentException("Bootstrap secret must contain exactly 256 bits.", nameof(bootstrapSecret));
-        }
-
-        if (challenge.Nonce.Length != BrokerAuthenticator.NonceSizeBytes)
-        {
-            throw new ArgumentException("Broker challenge nonce must contain exactly 256 bits.", nameof(challenge));
-        }
-
-        this.expected = expected;
-        this.bootstrapSecret = bootstrapSecret.ToArray();
-        Challenge = challenge;
-    }
-
-    public BrokerHandshakeChallenge Challenge { get; }
-
-    public BrokerAdmissionDecision TryAdmit(
-        BrokerPeerIdentity peer,
-        BrokerHelloRequest request,
-        DateTimeOffset now)
-    {
         ArgumentNullException.ThrowIfNull(peer);
-        ArgumentNullException.ThrowIfNull(request);
-
-        // A challenge represents exactly one authentication attempt. Burn it
-        // before evaluating attacker-controlled fields so concurrent/retried
-        // invalid proofs cannot turn one nonce into a reusable verification oracle.
-        if (Interlocked.CompareExchange(ref challengeConsumed, 1, 0) != 0)
-        {
-            return Reject(BrokerAdmissionRejectionReason.ReplayedChallenge);
-        }
-
-        if (now > Challenge.ExpiresAtUtc)
-        {
-            return Reject(BrokerAdmissionRejectionReason.ExpiredChallenge);
-        }
-
-        BrokerProtocolNegotiationResult negotiation = BrokerProtocolNegotiator.Negotiate(
-            request.SupportedProtocols,
-            BrokerProtocolRange.Current);
-        if (!negotiation.Accepted || negotiation.SelectedVersion is null)
-        {
-            return Reject(BrokerAdmissionRejectionReason.UnsupportedProtocol);
-        }
-
-        if (request.AppSessionId != expected.AppSessionId)
-        {
-            return Reject(BrokerAdmissionRejectionReason.StaleApplicationSession);
-        }
-
         if (peer.ProcessId != expected.ProcessId)
         {
-            return Reject(BrokerAdmissionRejectionReason.WrongProcessId);
+            return BrokerAdmissionRejectionReason.WrongProcessId;
         }
 
         if (peer.ProcessCreationTimeFileTime != expected.ProcessCreationTimeFileTime)
         {
-            return Reject(BrokerAdmissionRejectionReason.ProcessCreationTimeMismatch);
+            return BrokerAdmissionRejectionReason.ProcessCreationTimeMismatch;
         }
 
         if (peer.WindowsSessionId != expected.WindowsSessionId)
         {
-            return Reject(BrokerAdmissionRejectionReason.WrongWindowsSession);
+            return BrokerAdmissionRejectionReason.WrongWindowsSession;
         }
 
         if (!string.Equals(peer.UserSid, expected.UserSid, StringComparison.Ordinal))
         {
-            return Reject(BrokerAdmissionRejectionReason.WrongUserSid);
+            return BrokerAdmissionRejectionReason.WrongUserSid;
         }
 
         if (peer.LogonSessionId != expected.LogonSessionId)
         {
-            return Reject(BrokerAdmissionRejectionReason.WrongLogonSession);
+            return BrokerAdmissionRejectionReason.WrongLogonSession;
         }
 
-        if (peer.IntegrityLevelRid != expected.IntegrityLevelRid)
-        {
-            return Reject(BrokerAdmissionRejectionReason.WrongIntegrityLevel);
-        }
-
-        if (request.ClientNonce.Length != BrokerAuthenticator.NonceSizeBytes)
-        {
-            return Reject(BrokerAdmissionRejectionReason.InvalidNonce);
-        }
-
-        BrokerAuthenticationTranscript transcript = new(
-            negotiation.SelectedVersion.Value,
-            expected.AppSessionId,
-            Challenge.BrokerSessionId,
-            peer.ProcessId,
-            peer.ProcessCreationTimeFileTime,
-            peer.WindowsSessionId,
-            Challenge.Nonce,
-            request.ClientNonce);
-        if (!BrokerAuthenticator.VerifyProof(bootstrapSecret, transcript, request.Proof.Span))
-        {
-            return Reject(BrokerAdmissionRejectionReason.InvalidBootstrapProof);
-        }
-
-        return new(
-            true,
-            BrokerAdmissionRejectionReason.None,
-            expected.AppSessionId,
-            Challenge.BrokerSessionId,
-            negotiation.SelectedVersion);
+        return peer.IntegrityLevelRid == expected.IntegrityLevelRid
+            ? BrokerAdmissionRejectionReason.None
+            : BrokerAdmissionRejectionReason.WrongIntegrityLevel;
     }
-
-    private static BrokerAdmissionDecision Reject(BrokerAdmissionRejectionReason reason)
-        => new(false, reason, null, null, null);
 }
 
 public sealed record BrokerPipeSecurityPolicy(
