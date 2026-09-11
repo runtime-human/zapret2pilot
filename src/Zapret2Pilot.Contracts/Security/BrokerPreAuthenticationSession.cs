@@ -17,6 +17,7 @@ public enum BrokerChallengeIssueStatus
     PeerRejected,
     CapacityExceeded,
     RateLimited,
+    SessionBudgetExhausted,
     AlreadyAuthenticated,
 }
 
@@ -33,6 +34,8 @@ public sealed record BrokerChallengeIssueResult(
 /// </summary>
 public sealed class BrokerPreAuthenticationSession : IDisposable
 {
+    public const int MaxChallengeIssuesPerSession = 8;
+
     private readonly object sync = new();
     private readonly BrokerClientBinding expected;
     private readonly byte[] bootstrapSecret;
@@ -40,6 +43,7 @@ public sealed class BrokerPreAuthenticationSession : IDisposable
     private readonly BrokerRequestRateGate challengeRateGate;
     private readonly Dictionary<BrokerChallengeHandle, ChallengeState> challenges = [];
     private readonly BrokerSessionId brokerSessionId = BrokerSessionId.New();
+    private int challengeIssues;
     private bool authenticated;
     private bool disposed;
 
@@ -89,6 +93,11 @@ public sealed class BrokerPreAuthenticationSession : IDisposable
                 return new(BrokerChallengeIssueStatus.CapacityExceeded, null, null, null);
             }
 
+            if (challengeIssues >= MaxChallengeIssuesPerSession)
+            {
+                return new(BrokerChallengeIssueStatus.SessionBudgetExhausted, null, null, null);
+            }
+
             if (!challengeRateGate.TryAcquire())
             {
                 return new(
@@ -98,6 +107,7 @@ public sealed class BrokerPreAuthenticationSession : IDisposable
                     BrokerProtocolLimits.PreAuthChallengeRetryAfter);
             }
 
+            challengeIssues++;
             BrokerChallengeHandle handle = BrokerChallengeHandle.New();
             byte[] nonce = RandomNumberGenerator.GetBytes(BrokerAuthenticator.NonceSizeBytes);
             BrokerChallengeMessage challenge = new(
