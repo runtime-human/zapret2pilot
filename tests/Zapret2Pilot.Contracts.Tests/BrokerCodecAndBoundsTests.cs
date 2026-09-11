@@ -97,22 +97,19 @@ public sealed class BrokerCodecAndBoundsTests
         BrokerOperationLedger ledger = new(BrokerProtocolLimits.OperationLedgerCapacity, BrokerProtocolLimits.OperationLedgerTtl);
         BrokerOperationId operationId = BrokerOperationId.New();
         Sha256Digest fingerprint = Sha256Digest.Compute("start-plan-A"u8);
-        DateTimeOffset now = new(2026, 9, 10, 8, 0, 0, TimeSpan.Zero);
 
-        BrokerOperationRegistration first = ledger.Register(operationId, new RequestSequence(10), fingerprint, now);
-        BrokerOperationRegistration duplicateInFlight = ledger.Register(operationId, new RequestSequence(10), fingerprint, now);
+        BrokerOperationRegistration first = ledger.Register(operationId, new RequestSequence(10), fingerprint);
+        BrokerOperationRegistration duplicateInFlight = ledger.Register(operationId, new RequestSequence(10), fingerprint);
         ledger.Complete(operationId);
-        BrokerOperationRegistration duplicateCompleted = ledger.Register(operationId, new RequestSequence(10), fingerprint, now);
+        BrokerOperationRegistration duplicateCompleted = ledger.Register(operationId, new RequestSequence(10), fingerprint);
         BrokerOperationRegistration staleUnknown = ledger.Register(
             BrokerOperationId.New(),
             new RequestSequence(9),
-            Sha256Digest.Compute("other"u8),
-            now);
+            Sha256Digest.Compute("other"u8));
         BrokerOperationRegistration conflict = ledger.Register(
             operationId,
             new RequestSequence(11),
-            Sha256Digest.Compute("different-request"u8),
-            now);
+            Sha256Digest.Compute("different-request"u8));
 
         Assert.Equal(BrokerOperationRegistration.New, first);
         Assert.Equal(BrokerOperationRegistration.DuplicateInFlight, duplicateInFlight);
