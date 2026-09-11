@@ -203,7 +203,7 @@ Capability health remains capability-specific. Traffic Impact remains typed plan
 
 `docs/Z2P-CURRENT-STATE.json` is the sole dynamic authority for architecture version, project version, active track and current work item. Canonical Markdown carries stable role markers only. Changing orchestration state does not require synchronizing README/canon/architecture/roadmap/status copies.
 
-CI runs a single-source contract probe and repository-truth validator. That validates content, but it is **not equivalent to enforced branch protection**. GitHub branch/ruleset + required-CI enforcement is tracked by #26; until its acceptance is verified from GitHub configuration, the validator must be described as CI validation, not a non-bypassable gate.
+CI runs a single-source contract probe and repository-truth validator; those scripts validate content but are not themselves branch enforcement. #26 verified from GitHub API state that active ruleset `main-required-ci` (id `22957088`) targets `main`, requires a pull request plus strict GitHub Actions `Build and test` (`integration_id=15368`), blocks deletion and non-fast-forward updates, and has no configured bypass actors. While that ruleset remains active, normal updates to `main` are protected by a GitHub-enforced required-CI merge gate.
 
 ## 14. #14 behavior boundary
 
