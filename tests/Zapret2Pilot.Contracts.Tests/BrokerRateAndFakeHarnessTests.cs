@@ -10,26 +10,26 @@ public sealed class BrokerRateAndFakeHarnessTests
     [Fact]
     public void RequestRateGateBoundsBurstAndSustainedRefill()
     {
+        ManualTimeProvider timeProvider = new();
         BrokerRequestRateGate gate = new(
             BrokerProtocolLimits.MaxRequestsPerSecond,
-            BrokerProtocolLimits.RequestBurstCapacity);
-        DateTimeOffset now = new(2026, 9, 10, 8, 0, 0, TimeSpan.Zero);
+            BrokerProtocolLimits.RequestBurstCapacity,
+            timeProvider);
 
         for (int i = 0; i < BrokerProtocolLimits.RequestBurstCapacity; i++)
         {
-            Assert.True(gate.TryAcquire(now));
+            Assert.True(gate.TryAcquire());
         }
 
-        Assert.False(gate.TryAcquire(now));
+        Assert.False(gate.TryAcquire());
+        timeProvider.Advance(TimeSpan.FromSeconds(1));
 
-        DateTimeOffset oneSecondLater = now + TimeSpan.FromSeconds(1);
         for (int i = 0; i < BrokerProtocolLimits.MaxRequestsPerSecond; i++)
         {
-            Assert.True(gate.TryAcquire(oneSecondLater));
+            Assert.True(gate.TryAcquire());
         }
 
-        Assert.False(gate.TryAcquire(oneSecondLater));
-        Assert.False(gate.TryAcquire(now));
+        Assert.False(gate.TryAcquire());
     }
 
     [Fact]
@@ -39,15 +39,13 @@ public sealed class BrokerRateAndFakeHarnessTests
         BrokerOperationId operationId = BrokerOperationId.New();
         PreparedPlanId planId = PreparedPlanId.New();
         Sha256Digest fingerprint = Sha256Digest.Compute("start-prepared-plan"u8);
-        DateTimeOffset now = new(2026, 9, 10, 8, 0, 0, TimeSpan.Zero);
 
         BrokerOperationRegistration first = broker.BeginStart(
             operationId,
             new RequestSequence(1),
             fingerprint,
             planId,
-            new RuntimeGeneration(7),
-            now);
+            new RuntimeGeneration(7));
 
         broker.Disconnect();
         broker.Reconnect();
@@ -57,8 +55,7 @@ public sealed class BrokerRateAndFakeHarnessTests
             new RequestSequence(1),
             fingerprint,
             planId,
-            new RuntimeGeneration(7),
-            now);
+            new RuntimeGeneration(7));
 
         Assert.Equal(BrokerOperationRegistration.New, first);
         Assert.Equal(BrokerOperationRegistration.DuplicateInFlight, replayWhileInFlight);
@@ -71,8 +68,7 @@ public sealed class BrokerRateAndFakeHarnessTests
             new RequestSequence(1),
             fingerprint,
             planId,
-            new RuntimeGeneration(7),
-            now);
+            new RuntimeGeneration(7));
 
         Assert.Equal(BrokerOperationRegistration.DuplicateCompleted, replayAfterCompletion);
         Assert.Equal(1, broker.RuntimeDispatchCount);
@@ -104,14 +100,12 @@ public sealed class BrokerRateAndFakeHarnessTests
             RequestSequence sequence,
             Sha256Digest fingerprint,
             PreparedPlanId planId,
-            RuntimeGeneration expectedGeneration,
-            DateTimeOffset now)
+            RuntimeGeneration expectedGeneration)
         {
             BrokerOperationRegistration registration = ledger.Register(
                 operationId,
                 sequence,
-                fingerprint,
-                now);
+                fingerprint);
             if (registration != BrokerOperationRegistration.New)
             {
                 return registration;
