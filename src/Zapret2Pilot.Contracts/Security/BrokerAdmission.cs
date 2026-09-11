@@ -32,6 +32,9 @@ public sealed record BrokerAuthenticationTranscript(
     int ProcessId,
     long ProcessCreationTimeFileTime,
     uint WindowsSessionId,
+    string UserSid,
+    LogonSessionId LogonSessionId,
+    int IntegrityLevelRid,
     ReadOnlyMemory<byte> ChallengeNonce,
     ReadOnlyMemory<byte> ClientNonce)
 {
@@ -54,6 +57,9 @@ public sealed record BrokerAuthenticationTranscript(
             peer.ProcessId,
             peer.ProcessCreationTimeFileTime,
             peer.WindowsSessionId,
+            peer.UserSid,
+            peer.LogonSessionId,
+            peer.IntegrityLevelRid,
             challenge.ServerNonce,
             clientNonce);
     }
@@ -71,6 +77,10 @@ public sealed record BrokerAuthenticationTranscript(
             writer.Write(ProcessId);
             writer.Write(ProcessCreationTimeFileTime);
             writer.Write(WindowsSessionId);
+            writer.Write(UserSid);
+            writer.Write(LogonSessionId.LowPart);
+            writer.Write(LogonSessionId.HighPart);
+            writer.Write(IntegrityLevelRid);
             WriteBytes(writer, ChallengeNonce.Span);
             WriteBytes(writer, ClientNonce.Span);
         }
