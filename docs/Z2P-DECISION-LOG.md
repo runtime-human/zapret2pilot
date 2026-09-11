@@ -120,6 +120,7 @@ Decision:
 - pre-authentication is fully serialized on the wire: a strict/versioned `BrokerChallenge` frame (server range, BrokerSessionId, fresh server nonce, bounded lifetime) precedes the client `Hello` proof;
 - challenge payload is capped at 1,024 bytes and pre-auth Hello at 4,096 bytes;
 - bad Hello consumes only its challenge, not the entire AppSession; at most two challenges are live, issuance is limited to 2/s with burst 4 and a 500 ms deterministic retry interval, and every challenge permits at most one HMAC verification;
+- no more than 8 challenges may ever be issued by one `BrokerPreAuthenticationSession`; this total budget does not refill with time, so one session cannot provide an unlimited HMAC oracle;
 - successful admission invalidates all parallel outstanding challenges;
 - elapsed challenge/rate/ledger timing uses `TimeProvider` monotonic timestamps; request UTC deadlines and process creation FILETIME remain absolute evidence with different semantics;
 - strict JSON parsing is followed by one explicit `BrokerRequestSemanticValidator` boundary before a decoded envelope may become an admitted/dispatchable typed request;
