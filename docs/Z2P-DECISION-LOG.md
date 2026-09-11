@@ -105,27 +105,35 @@ Governance distinction:
 
 Rationale: prevent both stale-document drift and the opposite failure mode where a “single source” still requires mass Markdown churn on every current-work change.
 
-### DEC-0057 — Runtime Broker admission is process-bound, replay-resistant and bounded before Runtime Kernel dispatch
+### DEC-0057 — Runtime Broker admission is process-bound, semantically validated, replay-resistant and bounded before Runtime Kernel dispatch
 
-Date: 2026-09-10.  
+Date: 2026-09-10; security-review refinement 2026-09-11.  
 Status: **ACCEPTED SECURITY CONTRACT BASELINE; PRODUCTION TRANSPORT DEFERRED TO #17**.
 
 Decision:
 
 - same-user Named Pipe access or a successful DACL check is never sufficient authorization for privileged mutation;
-- the production pipe is local-only (`PIPE_REJECT_REMOTE_CLIENTS`) with an explicit bounded DACL/instance policy;
-- the broker obtains the actual client PID from the connected pipe and binds admission to the expected process identity: PID + process creation time + retained process handle + Windows session + user SID + logon `AuthenticationId` + integrity level;
-- PID alone is explicitly rejected as a stable identity because numeric PIDs can be reused after process lifetime;
-- every AppSession uses fresh 256-bit bootstrap material and one-use broker/client nonces with HMAC-SHA256 transcript binding;
-- protocol, AppSession, BrokerSession, OperationId, request sequence, RuntimeGeneration and prepared bundle/plan identities are typed and explicit;
-- protocol v1 exposes only `Hello`, `GetCapabilities`, `GetRuntimeSnapshot`, `PrepareBundle`, `PreparePlan`, `StartPreparedPlan`, `StopGeneration` and `ShutdownBroker`;
+- the production pipe is local-only (`PIPE_REJECT_REMOTE_CLIENTS`) with an explicit bounded DACL and at most two concurrent pipe instances / one authenticated connection;
+- the broker obtains the actual client PID from the connected pipe and binds admission to PID + process creation time + retained process handle + Windows session + user SID + logon `AuthenticationId` + integrity;
+- PID alone is rejected as stable identity because numeric PIDs can be reused;
+- every AppSession uses fresh 256-bit bootstrap material; the broker-side pre-auth session has one explicit mutable secret owner, uses span-based HMAC and zeroes that owned buffer on disposal as best-effort hygiene rather than as a guarantee of memory erasure;
+- pre-authentication is fully serialized on the wire: a strict/versioned `BrokerChallenge` frame (server range, BrokerSessionId, fresh server nonce, bounded lifetime) precedes the client `Hello` proof;
+- challenge payload is capped at 1,024 bytes and pre-auth Hello at 4,096 bytes;
+- bad Hello consumes only its challenge, not the entire AppSession; at most two challenges are live, issuance is limited to 2/s with burst 4 and a 500 ms deterministic retry interval, and every challenge permits at most one HMAC verification;
+- successful admission invalidates all parallel outstanding challenges;
+- elapsed challenge/rate/ledger timing uses `TimeProvider` monotonic timestamps; request UTC deadlines and process creation FILETIME remain absolute evidence with different semantics;
+- strict JSON parsing is followed by one explicit `BrokerRequestSemanticValidator` boundary before a decoded envelope may become an admitted/dispatchable typed request;
+- typed wrappers do not authorize invalid representations: canonical SHA-256, non-empty prepared IDs, positive RuntimeGeneration, defined enums, Hello sizes/ranges/session correspondence and request-window invariants are validated explicitly;
+- protocol, AppSession, BrokerSession, OperationId, request sequence, RuntimeGeneration and prepared bundle/plan identities remain explicit;
+- `BrokerOperationId` is not an eternal/global anti-replay token: replay protection combines AppSession/BrokerSession binding, monotonic request sequence, operation ID + request fingerprint, bounded ledger, freshness/deadline and generation where applicable;
+- protocol v1 exposes only `Hello`, `GetCapabilities`, `GetRuntimeSnapshot`, `PrepareBundle`, `PreparePlan`, `StartPreparedPlan`, `StopGeneration` and `ShutdownBroker`; the server challenge is a pre-auth security frame, not a privileged command;
 - no arbitrary process, command, path, file, download, plugin, DLL or Lua execution authority exists in the privileged contract;
-- framing, connection/query/mutation concurrency, ingress/response buffering, request rate, replay ledger and timeouts are explicitly bounded;
+- connection/query/mutation concurrency, ingress/response buffering, request rate, replay ledger and timeouts are explicitly bounded;
 - duplicate/replayed operations are deterministic and never dispatch a second mutation;
 - disconnect/reconnect cannot become lifecycle authority: already-dispatched mutations remain owned by the single `RuntimeKernelLoop`, while reconnect performs fresh admission and reconciles against retained operation/generation state;
 - application hard-death handling in #17 must be driven by the retained expected-process handle and route terminal cleanup through the sole Runtime Kernel authority.
 
-The normative threat model, limits, Microsoft Win32 semantics and residual implementation obligations are in `docs/Z2P-RUNTIME-BROKER-SECURITY-CONTRACT.md`.
+The normative handshake, limits, threat model, Microsoft semantics and residual #17 obligations are in `docs/Z2P-RUNTIME-BROKER-SECURITY-CONTRACT.md`.
 
 ## Execution-order clarification
 
