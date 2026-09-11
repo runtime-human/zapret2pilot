@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Zapret2Pilot.Contracts.Identity;
 using Zapret2Pilot.Contracts.Protocol;
@@ -264,7 +265,7 @@ public sealed class BrokerPreAuthenticationSession : IDisposable
 
     private static void ZeroChallenge(ChallengeState state)
     {
-        if (state.Challenge.ServerNonce.TryGetArray(out ArraySegment<byte> segment)
+        if (MemoryMarshal.TryGetArray(state.Challenge.ServerNonce, out ArraySegment<byte> segment)
             && segment.Array is not null)
         {
             CryptographicOperations.ZeroMemory(segment.Array.AsSpan(segment.Offset, segment.Count));
