@@ -202,9 +202,11 @@ A challenge permits at most **one HMAC verification attempt**. It is removed ato
 
 A bad first Hello does **not** poison the whole Broker/AppSession. It burns only that challenge. A fresh challenge can be issued if the session remains within the bounded challenge budgets below.
 
+Across one `BrokerPreAuthenticationSession`, at most **8 challenges are ever issued**. This total session budget does not refill with elapsed time. After it is exhausted, challenge issuance returns `SessionBudgetExhausted`; recovery requires a new bootstrap/AppSession rather than an unbounded proof loop.
+
 Successful admission atomically marks the session authenticated and invalidates all other outstanding challenges. Therefore parallel challenge races cannot create two authenticated authorities.
 
-Reconnect after a released authenticated connection requires a fresh challenge. Old challenge handles remain invalid.
+Reconnect after a released authenticated connection requires a fresh challenge while the same pre-auth session still has remaining issuance budget. Old challenge handles remain invalid.
 
 ## 7. Pre-authentication DoS bounds
 
@@ -215,6 +217,7 @@ The contract fixes all pre-auth challenge work:
 | maximum concurrent pipe connections | 2 |
 | maximum authenticated connections | 1 |
 | maximum live challenges | 2 |
+| maximum challenge issues per pre-auth session | 8 |
 | challenge frame payload | 1,024 bytes |
 | pre-auth Hello payload | 4,096 bytes |
 | challenge lifetime | 3 seconds |
@@ -222,12 +225,13 @@ The contract fixes all pre-auth challenge work:
 | challenge issue burst | 4 |
 | deterministic retry interval after rate exhaustion | 500 ms |
 | HMAC verifications per challenge | 1 |
+| maximum HMAC verification opportunities per pre-auth session | 8 |
 
 Wrong process/session/SID/logon/integrity peers are rejected **before** challenge issuance and therefore do not consume challenge/HMAC budget. This does not replace the transport-level two-instance cap; #17 must enforce both layers.
 
-For the expected peer, abandoned/bad challenges consume issuance tokens. At burst exhaustion the broker returns rate-limited/busy behavior and does not allocate another challenge. The budget refills from monotonic elapsed time.
+For the expected peer, abandoned/bad challenges consume both issuance tokens and the non-refilling total session budget. At burst exhaustion the broker returns rate-limited behavior without allocating another challenge. The token bucket refills from monotonic elapsed time; the eight-issue session ceiling does not.
 
-There is no unlimited proof oracle: every proof attempt consumes a finite challenge, live challenges are capped, challenge creation is rate-limited, and proof attempts do not retry against the same nonce.
+There is no unlimited proof oracle for one AppSession/BrokerSession: every proof attempt consumes a one-use challenge, live challenges are capped, creation is rate-limited, and no more than eight challenges can ever be issued by the pre-auth session.
 
 ## 8. Semantic validation boundary
 
@@ -322,6 +326,8 @@ Elapsed security/availability semantics use `TimeProvider.GetTimestamp()` / `Get
 - authenticated request-rate refill;
 - operation-ledger TTL.
 
+The total eight-challenge pre-auth session budget is counter-based and never refills from either wall clock or monotonic elapsed time.
+
 Absolute UTC remains wire evidence for cross-process `IssuedAtUtc`/`DeadlineUtc` freshness. Windows process creation FILETIME remains absolute process-identity evidence. Those are intentionally separate from monotonic elapsed timers.
 
 ## 12. Operation, duplicate and replay semantics
@@ -384,8 +390,8 @@ Reconnect requires fresh pre-authentication against the same retained process id
 | bad first Hello | consumes only one challenge; bounded fresh rotation remains possible |
 | replayed successful challenge | consumed handle; reject as replay |
 | parallel bad/valid challenge race | at most one successful admission; success invalidates all outstanding handles |
-| pre-auth flood | 2 live challenges, 2/s rate, burst 4, 500 ms retry, max 2 connections |
-| HMAC oracle abuse | one verification per challenge; finite issuance/live budgets |
+| pre-auth flood | 2 live challenges, 8 total issues, 2/s rate, burst 4, 500 ms retry, max 2 connections |
+| HMAC oracle abuse | one verification per challenge and maximum 8 proof opportunities per pre-auth session |
 | stolen secret | still requires exact peer binding; publisher verification may add defense in depth |
 | malformed/undefined wire values | strict syntax + semantic validation before successful decode |
 | oversized frame | prefix rejection before declared-payload allocation |
@@ -413,7 +419,7 @@ The committed #16 tests cover or require:
 - replay after successful admission;
 - parallel attacker/expected-client challenge race with at most one success;
 - wrong peer rejected without challenge-budget consumption;
-- live-challenge capacity, token-bucket burst and deterministic retry interval;
+- live-challenge capacity, token-bucket burst, deterministic retry interval and non-refilling eight-issue session ceiling;
 - one HMAC attempt per challenge by consumption-before-proof-validation;
 - owned bootstrap-secret zeroing on session disposal;
 - monotonic request-rate and operation-ledger timing;
