@@ -76,8 +76,15 @@ public sealed class BrokerProtocolContractTests
     public void TransportLimitsAreExplicitAndBounded()
     {
         Assert.Equal(65_536, BrokerProtocolLimits.MaxFrameBytes);
+        Assert.Equal(1_024, BrokerProtocolLimits.MaxChallengeFrameBytes);
+        Assert.Equal(4_096, BrokerProtocolLimits.MaxPreAuthHelloFrameBytes);
         Assert.Equal(2, BrokerProtocolLimits.MaxConcurrentConnections);
         Assert.Equal(1, BrokerProtocolLimits.MaxAuthenticatedConnections);
+        Assert.Equal(2, BrokerProtocolLimits.MaxPreAuthChallenges);
+        Assert.Equal(2, BrokerProtocolLimits.MaxPreAuthChallengesPerSecond);
+        Assert.Equal(4, BrokerProtocolLimits.PreAuthChallengeBurstCapacity);
+        Assert.Equal(8, BrokerPreAuthenticationSession.MaxChallengeIssuesPerSession);
+        Assert.Equal(TimeSpan.FromMilliseconds(500), BrokerProtocolLimits.PreAuthChallengeRetryAfter);
         Assert.Equal(8, BrokerProtocolLimits.MaxInFlightQueries);
         Assert.Equal(1, BrokerProtocolLimits.MaxConcurrentMutations);
         Assert.Equal(32, BrokerProtocolLimits.IngressQueueCapacity);
