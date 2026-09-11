@@ -1,97 +1,88 @@
 # Z2P v7 Runtime Broker security contract and threat model
 
 Status: **v7-C contract baseline for #16; production broker implementation remains #17**.  
-Scope: protocol, admission, replay, framing, bounds, lifecycle ingress and test seams.  
-Out of scope here: production `z2p-broker.exe`, runtime relocation, real `winws2`, secure child creation (#18), immutable staging (#19).
+Scope: protocol, semantic validation, peer admission, serialized pre-authentication, replay, framing, bounds, lifecycle ingress and test seams.  
+Out of scope: production `z2p-broker.exe`, Runtime Kernel relocation, real `winws2`, secure child creation (#18), immutable staging (#19).
 
 ## 1. Security objective
 
-The v7 Runtime Broker is a narrow privileged runtime boundary. Its security property is **not** “the caller is the same Windows user”. Same-user access to a named pipe is only a coarse object-access filter and is not sufficient authorization for privileged runtime mutation.
+The Runtime Broker is a narrow privileged boundary. Its security property is **not** “the caller is the same Windows user”. Same-user access to a Named Pipe is only a coarse object-access filter and is not sufficient authorization for privileged runtime mutation.
 
-A request may reach privileged lifecycle authority only after all of the following have succeeded:
+A request may reach privileged lifecycle authority only after all applicable checks succeed:
 
-1. local-only transport admission;
-2. explicit pipe DACL access check;
-3. actual connected client PID acquisition from Windows, not from serialized input;
-4. binding to the expected application process object identity;
-5. Windows user/session/logon/integrity identity validation;
-6. fresh per-connection challenge/response proof using per-AppSession secret material;
-7. protocol/version validation;
-8. frame/message validation and bounds;
-9. request freshness, operation/replay and generation checks;
-10. ingress/concurrency admission.
+1. local-only Named Pipe transport;
+2. explicit DACL/object access;
+3. actual connected client PID obtained from Windows, never trusted from serialized input;
+4. process-object binding including PID reuse protection;
+5. user/session/logon/integrity identity checks;
+6. bounded serialized server challenge;
+7. strict syntactic decode and explicit semantic validation of hostile wire values;
+8. one-use HMAC proof bound to the negotiated protocol, sessions and peer identity;
+9. request freshness, sequence/operation replay and RuntimeGeneration checks;
+10. bounded ingress/concurrency admission;
+11. mutation dispatch only to the existing `RuntimeKernelLoop` authority.
 
-Only then may a validated mutation be dispatched to the existing `RuntimeKernelLoop` authority. IPC never becomes a second lifecycle authority.
+IPC is ingress and observation plumbing. It is never a second lifecycle authority.
 
 ## 2. Trust boundaries and assets
 
-### Trust boundaries
-
 ```text
-untrusted / unelevated                       privileged
+untrusted / unelevated                                privileged
 
 z2p.exe Control Plane
-  UI / config / storage / network
+  UI / storage / network
           |
-          | untrusted serialized IPC
+          | untrusted serialized bytes
           v
-+---------------------------+
-| transport + admission     |
-| frame bounds / protocol   |
-| peer identity / HMAC      |
-| replay / generation       |
-| queue / deadline bounds   |
-+---------------------------+
++------------------------------------+
+| local pipe object + peer probe     |
+| frame bounds + strict codecs       |
+| semantic validation                |
+| bounded challenge/HMAC admission   |
+| replay/freshness/generation        |
+| bounded queues/concurrency         |
++------------------------------------+
           |
           | validated typed requests only
           v
-+---------------------------+
-| Runtime Kernel authority  |
-| one serialized mutation   |
-| generation / supersede    |
-| cancellation / recovery   |
-+---------------------------+
++------------------------------------+
+| existing RuntimeKernelLoop         |
+| sole lifecycle mutation authority  |
+| generation / supersede / recovery  |
++------------------------------------+
           |
           v
 privileged runtime ownership / child process
 (#17/#18; not implemented by #16)
 ```
 
-### Protected assets
-
-- administrator/elevated token authority;
-- Runtime Kernel lifecycle authority and its generation ordering;
-- runtime process ownership and Job containment;
-- prepared runtime bundle/plan identities;
-- operation receipts and replay state;
-- AppSession/BrokerSession continuity;
-- bootstrap secret material and challenge nonces;
-- broker availability and bounded memory/CPU/queue resources;
-- future immutable runtime artifacts from #19.
+Protected assets include the elevated token, Runtime Kernel lifecycle authority, generation ordering, future runtime process/Job ownership, prepared bundle/plan identities, operation receipts/replay state, AppSession/BrokerSession continuity, bootstrap secret material, and broker CPU/memory/queue availability.
 
 ## 3. Attacker model
 
-The pipe peer and every serialized byte are untrusted. The model explicitly includes:
+The connected peer and every serialized byte are untrusted. The model includes:
 
-- unrelated same-user processes, including malicious same-user processes;
-- a peer with a forged/incorrect PID in its serialized message;
-- PID reuse after an earlier process exits;
-- another Windows/RDS session;
-- another user/SID or logon session;
-- stale AppSession/BrokerSession material;
+- unrelated or malicious same-user processes;
+- forged/wrong PID values;
+- PID reuse;
+- wrong Windows/RDS session;
+- wrong user SID, logon session or integrity level;
+- stale AppSession/BrokerSession values;
 - stolen, stale or replayed bootstrap material;
-- stolen/stale OperationId or request sequence;
-- remote named-pipe clients;
-- malformed, oversized, partial and fragmented messages;
-- duplicate/stale requests and protocol downgrade/version skew;
-- request flooding, ingress exhaustion, slow writers and slow readers;
+- stale/reused OperationId and request sequence;
+- remote Named Pipe clients;
+- malformed, oversized, partial or fragmented frames;
+- undefined enum values and typed wrappers containing invalid values;
+- protocol downgrade/version skew;
+- connect/challenge/request flooding and queue exhaustion;
+- slow writers/readers;
 - disconnect during mutation and reconnect after mutation;
-- broker shutdown races and application hard crashes;
-- attempts to turn the broker into arbitrary command/process/file/download/plugin/DLL/Lua execution authority.
+- broker shutdown races and application hard crash;
+- attempts to obtain arbitrary process/shell/file/network/plugin/DLL/Lua authority.
 
-Compromise/injection of the exact admitted `z2p.exe` process is outside what an IPC authentication protocol can distinguish from that process itself. Installed-distribution executable/publisher verification is therefore defense in depth, not a substitute for process/session/secret binding.
+Compromise or code injection into the exact admitted `z2p.exe` process is outside what IPC authentication can distinguish from that process itself. Installed-distribution executable/publisher verification is defense in depth, not a replacement for process/session/secret binding.
 
-## 4. Windows transport and admission requirements
+## 4. Windows transport and peer identity
 
 ### 4.1 Named Pipe object
 
@@ -99,107 +90,175 @@ Compromise/injection of the exact admitted `z2p.exe` process is outside what an 
 
 - `PIPE_REJECT_REMOTE_CLIENTS`;
 - an explicit security descriptor/DACL, never the default descriptor;
-- a bounded instance count matching the contract (`2` total, at most `1` authenticated connection);
+- at most **2** concurrent pipe instances;
+- at most **1** authenticated connection;
 - no `Everyone` or anonymous authorization grant;
-- the initiating logon SID/user context permitted only as the coarse pipe-open filter required for the unelevated client to connect.
+- only the initiating user/logon context needed as the coarse pipe-open filter.
 
-The DACL is **not** final authorization. A malicious process in the same logon session may pass the DACL and must still fail admission unless it is the expected process identity and possesses the fresh bootstrap proof.
+Passing the DACL is not authorization. A same-logon malicious process may pass the object ACL and still MUST fail before receiving privileged request authority.
 
-Microsoft documents that a named pipe security descriptor controls access to both ends, that the default descriptor grants broader access including Everyone/anonymous read access, and that a logon SID can be used to restrict access to a login/session context. Microsoft also documents that `PIPE_REJECT_REMOTE_CLIENTS` automatically rejects remote clients.
+### 4.2 Actual peer identity
 
-### 4.2 Actual client process identity
+The broker MUST obtain the connected process ID with `GetNamedPipeClientProcessId`. A serialized PID is never authoritative.
 
-The broker MUST call `GetNamedPipeClientProcessId` on the connected server-side pipe handle. A PID transmitted by the peer is never authoritative.
-
-Using that actual PID, #17 MUST open a non-inheritable process handle with only the rights needed for identity/lifetime checks (normally `PROCESS_QUERY_LIMITED_INFORMATION` plus synchronization/wait semantics as required by the final implementation). From that process/token it MUST establish at least:
+Using the actual PID, #17 MUST hold a non-inheritable process handle with only required rights and establish at least:
 
 - process creation time (`GetProcessTimes`);
-- Windows session (`ProcessIdToSessionId` and/or token session information, with consistency checked);
+- Windows session (`ProcessIdToSessionId` and/or consistent token session evidence);
 - user SID (`TokenUser`);
-- logon authentication LUID (`TokenStatistics.AuthenticationId`);
-- token integrity level (`TokenIntegrityLevel`).
+- logon `AuthenticationId` (`TokenStatistics.AuthenticationId`);
+- integrity level (`TokenIntegrityLevel`).
 
-The resulting `BrokerPeerIdentity` is compared with the bootstrap-time `BrokerClientBinding`.
+The resulting `BrokerPeerIdentity` is compared with the bootstrap-time `BrokerClientBinding` before challenge issuance and again before proof acceptance.
 
 ### 4.3 PID reuse
 
-Expected PID alone is insufficient. Windows process identifiers identify a process while that process exists; process handles remain references to the process object until closed. Therefore #17 MUST bind:
+Numeric PID is insufficient. The binding is:
 
-`PID + process creation time + held process handle + Windows session + user SID + AuthenticationId + integrity`.
+`PID + process creation FILETIME + retained process handle + Windows session + user SID + AuthenticationId + integrity`.
 
-The handle is retained for the broker/AppSession lifetime. Creation-time mismatch is a hard admission failure even when the numeric PID is equal. Closing/reopening by numeric PID is not allowed to silently rebind the session to a replacement process.
+#17 MUST retain the verified process handle for the AppSession lifetime and must not silently reopen/rebind by numeric PID. A creation-time mismatch is a hard admission failure even when the PID number matches.
 
-### 4.4 UAC/integrity boundary
+### 4.4 UAC/integrity
 
-The expected client is the unelevated Control Plane identity captured before broker admission. Its integrity level is part of the binding and a different integrity context is rejected. The broker itself is elevated; the client is not authorized merely because both tokens correspond to the same account.
-
-Microsoft Mandatory Integrity Control is additive to DACL checks and distinguishes standard medium-integrity and elevated high-integrity contexts. The broker must not treat UAC elevation as evidence that a pipe peer is trusted.
+The expected Control Plane is the unelevated process identity captured for the session. Its integrity is part of the binding. The elevated broker and unelevated UI belonging to the same account does not authorize any other same-user process.
 
 ### 4.5 Impersonation
 
-Client impersonation is **not required** for v7-C authentication. The primary design uses the actual client process handle and token. If #17 uses `ImpersonateNamedPipeClient` for an additional check, it MUST:
+Client impersonation is not required for v7-C authentication. If #17 adds `ImpersonateNamedPipeClient` as an additional check, it MUST verify the call result, execute no privileged request after impersonation failure, and always restore the broker security context with `RevertToSelf`.
 
-- call it only on the server end after a client message has been read;
-- check the return value;
-- execute no privileged client request after a failed impersonation call;
-- always call `RevertToSelf` after the check.
+## 5. Bootstrap secret lifetime
 
-This avoids accidentally continuing under the broker's privileged token when impersonation failed.
+The Control Plane creates fresh cryptographically random **32-byte / 256-bit AppSession material**.
 
-## 5. Bootstrap and authentication handshake
+The #16 broker-side contract has one explicit mutable secret owner: `BrokerPreAuthenticationSession` receives a `byte[]` by ownership transfer and does not create an additional stored copy. HMAC uses span-based `HMACSHA256.HashData`; the owned buffer is zeroed with `CryptographicOperations.ZeroMemory` on `Dispose`. Temporary expected-HMAC and serialized transcript buffers are also cleared where practical.
 
-### 5.1 Session identities
+This is memory-hygiene hardening, **not** a claim that managed-memory zeroization makes a secret unrecoverable. Other caller copies, client-side copies, crash dumps, paging, runtime/OS behavior or copies created before ownership transfer are outside what `ZeroMemory` can prove.
 
-Typed identities are:
+Concrete Windows bootstrap-secret transfer/storage is intentionally #17 work. #17 MUST avoid treating command-line or environment visibility as a secret-storage boundary and MUST not invent a different handshake protocol.
 
-- `BrokerProtocolVersion` / `BrokerProtocolRange`;
-- `AppSessionId`;
+A stolen secret alone is insufficient because admission also requires the exact expected process identity. Process identity alone is insufficient because a fresh HMAC proof is required.
+
+## 6. Complete serialized pre-authentication protocol
+
+### 6.1 Server challenge
+
+After a local connection is accepted and the actual peer identity matches the expected client binding, the broker may issue a `BrokerChallenge` frame.
+
+The frame is length-prefixed and capped at **1,024 bytes**. Its strict JSON body contains only:
+
+- handshake protocol version;
+- server-supported broker protocol range;
 - `BrokerSessionId`;
-- `BrokerOperationId`;
-- `RequestSequence`;
-- `RuntimeGeneration`;
-- `RuntimeBundleId`;
-- `PreparedBundleId`;
-- `PreparedPlanId`;
-- canonical `Sha256Digest`;
-- `LogonSessionId` (`AuthenticationId` LUID representation).
+- fresh **32-byte server nonce**;
+- challenge lifetime in milliseconds, currently **3,000 ms**.
 
-IDs are opaque authority-correlation values. They do not confer privilege on their own.
+Unknown members, malformed JSON, invalid/empty BrokerSessionId, invalid nonce length, invalid protocol range/version, non-positive lifetime or lifetime above 3 seconds fail closed.
 
-### 5.2 Bootstrap material
+### 6.2 Client Hello
 
-The Control Plane creates a fresh cryptographically random **32-byte AppSession secret**. #17 must transfer only the minimum bootstrap context necessary to the elevated broker and must avoid treating command-line/environment visibility as a security boundary.
+The client strictly decodes the challenge, negotiates a common version, creates a fresh **32-byte client nonce**, creates the HMAC proof and sends the normal v1 `Hello` request.
 
-A stolen secret alone is insufficient because admission also requires the exact Windows process binding. Conversely, process identity alone is insufficient because a fresh HMAC proof is required.
+Before authentication, the framed Hello payload is capped at **4,096 bytes**, not the ordinary 65,536-byte maximum.
 
-Installed distribution SHOULD additionally verify the expected Control Plane executable identity/publisher before completing admission. The exact Authenticode/publisher pinning policy is a #17 packaging/implementation decision and must fail closed when configured.
+The broker performs, in order:
 
-### 5.3 Challenge/response
+1. bounded frame decode;
+2. strict JSON decode with unknown-member rejection;
+3. `BrokerRequestSemanticValidator` on every decoded request representation;
+4. lookup of the opaque server-side challenge handle;
+5. atomic removal/consumption of that challenge;
+6. monotonic challenge-expiry check;
+7. peer identity revalidation;
+8. AppSession/BrokerSession and protocol checks;
+9. one HMAC verification;
+10. authenticated-connection transition.
 
-For each connection attempt the broker creates:
+The client never supplies or chooses the server-side `BrokerChallengeHandle`; it is transport/session correlation state. It is not a privileged wire capability.
 
-- `BrokerSessionId` (stable for the broker process/session);
-- a fresh 32-byte challenge nonce;
-- challenge expiry of **3 seconds**.
+### 6.3 HMAC transcript
 
-The client supplies:
+The HMAC-SHA256 transcript binds:
 
-- `AppSessionId`;
-- supported protocol range;
-- fresh 32-byte client nonce;
-- HMAC-SHA256 proof.
+`selected protocol`
+`|| client supported protocol range`
+`|| server supported protocol range`
+`|| AppSessionId`
+`|| BrokerSessionId`
+`|| actual client PID`
+`|| process creation FILETIME`
+`|| Windows session ID`
+`|| user SID`
+`|| logon AuthenticationId`
+`|| integrity level`
+`|| server nonce`
+`|| client nonce`.
 
-The proof transcript binds:
+The proof key is the 32-byte AppSession secret. Proof comparison is constant-time.
 
-`selected protocol || AppSessionId || BrokerSessionId || actual PID || process creation time || Windows session || broker nonce || client nonce`.
+### 6.4 One-use and retry policy
 
-The proof key is the 32-byte AppSession secret. Verification uses constant-time comparison. A challenge is consumed atomically exactly once; replay or expiry is rejected.
+A challenge permits at most **one HMAC verification attempt**. It is removed atomically before attacker-controlled Hello/proof evaluation. Reuse of the same handle is `ReplayedChallenge`.
 
-A new connection/reconnect receives a new challenge. Reconnect does **not** reset the RuntimeGeneration, request-sequence high-water mark or operation ledger. Therefore reconnect cannot replay a completed mutation as a new authority.
+A bad first Hello does **not** poison the whole Broker/AppSession. It burns only that challenge. A fresh challenge can be issued if the session remains within the bounded challenge budgets below.
 
-## 6. Protocol surface
+Successful admission atomically marks the session authenticated and invalidates all other outstanding challenges. Therefore parallel challenge races cannot create two authenticated authorities.
 
-Protocol v1 exposes exactly these request families:
+Reconnect after a released authenticated connection requires a fresh challenge. Old challenge handles remain invalid.
+
+## 7. Pre-authentication DoS bounds
+
+The contract fixes all pre-auth challenge work:
+
+| Pre-auth bound | v1 value |
+|---|---:|
+| maximum concurrent pipe connections | 2 |
+| maximum authenticated connections | 1 |
+| maximum live challenges | 2 |
+| challenge frame payload | 1,024 bytes |
+| pre-auth Hello payload | 4,096 bytes |
+| challenge lifetime | 3 seconds |
+| challenge issue rate | 2 / second |
+| challenge issue burst | 4 |
+| deterministic retry interval after rate exhaustion | 500 ms |
+| HMAC verifications per challenge | 1 |
+
+Wrong process/session/SID/logon/integrity peers are rejected **before** challenge issuance and therefore do not consume challenge/HMAC budget. This does not replace the transport-level two-instance cap; #17 must enforce both layers.
+
+For the expected peer, abandoned/bad challenges consume issuance tokens. At burst exhaustion the broker returns rate-limited/busy behavior and does not allocate another challenge. The budget refills from monotonic elapsed time.
+
+There is no unlimited proof oracle: every proof attempt consumes a finite challenge, live challenges are capped, challenge creation is rate-limited, and proof attempts do not retry against the same nonce.
+
+## 8. Semantic validation boundary
+
+Strict JSON syntax and typed record structs are not sufficient for hostile serialized input. `BrokerProtocolCodec.DecodeRequest` performs representation-level validation **before returning a successful `BrokerRequestEnvelope`**.
+
+Current v1 invariants include:
+
+- envelope protocol exactly v1;
+- non-empty AppSessionId, BrokerSessionId and OperationId;
+- positive request sequence;
+- valid absolute timestamp representation and `DeadlineUtc > IssuedAtUtc`;
+- request window no longer than 15 seconds;
+- valid Hello protocol range and selected/envelope protocol membership;
+- Hello body AppSessionId equals envelope AppSessionId;
+- client nonce exactly 32 bytes;
+- HMAC proof exactly 32 bytes;
+- `RuntimeBundleId` contains a canonical lowercase `sha256:` + 64-hex digest;
+- `PreparedBundleId != Guid.Empty`;
+- canonical plan SHA-256 digest;
+- `PreparedPlanId != Guid.Empty`;
+- `RuntimeGeneration > 0` for generation-bearing requests;
+- enum values such as `BrokerStopReason` must be defined;
+- unknown request/body shapes fail closed.
+
+No current v1 request body exposes variable user-controlled path/argument/string/collection authority. If a future version adds such a field, an explicit byte/count/character bound and semantic invariant are required before decode can return success.
+
+Context-dependent authorization checks that require trusted broker state — expected AppSession/BrokerSession, actual Windows peer identity, current RuntimeGeneration, freshness-at-receipt and replay ledger state — occur after semantic decode but still before admission/dispatch.
+
+## 9. Privileged protocol surface
+
+Protocol v1 request families remain exactly:
 
 1. `Hello` / negotiate;
 2. `GetCapabilities`;
@@ -210,44 +269,38 @@ Protocol v1 exposes exactly these request families:
 7. `StopGeneration(RuntimeGeneration, Reason)`;
 8. `ShutdownBroker`.
 
-The privileged protocol contains no generic execution/file/network/plugin primitive.
-
-### Explicitly forbidden surface
+The server `BrokerChallenge` is a pre-auth security frame, not an additional privileged command.
 
 The broker contract MUST NOT acquire any equivalent of:
 
-- `RunProcess(path,args)`;
-- `ExecuteCommand`;
-- shell/cmd/PowerShell execution;
+- `RunProcess(path,args)` or `ExecuteCommand`;
+- cmd/PowerShell/shell execution;
 - arbitrary executable path or command-line authority;
 - arbitrary file write/delete;
 - `Download(url)` or arbitrary URL fetch;
 - arbitrary plugin/DLL load;
-- arbitrary Lua/script path supplied by the Control Plane.
+- arbitrary Lua/script path supplied by the UI.
 
-Unknown message kinds and unknown JSON members are rejected. This is intentional: an attacker cannot smuggle a future/privileged field into an older decoder and have it silently ignored.
+`RuntimeBundleId`, `PreparedBundleId` and `PreparedPlanId` are identities, not raw filesystem authority. Bundle/staging realization and artifact revalidation remain #19.
 
-`RuntimeBundleId`, `PreparedBundleId` and `PreparedPlanId` are identity-based capabilities. They are not raw filesystem paths. Bundle/staging realization is deferred to #19; the broker must later revalidate the identity before privileged execution.
+## 10. Framing, limits and backpressure
 
-## 7. Framing, limits and backpressure
-
-The current v1 contract fixes:
-
-| Limit | Value |
+| Limit | v1 value |
 |---|---:|
 | length prefix | 4-byte little-endian signed length |
-| maximum payload/frame body | 65,536 bytes |
-| maximum concurrent pipe connections | 2 |
-| maximum authenticated connections | 1 |
-| maximum in-flight queries | 8 |
-| maximum concurrent mutations | 1 |
+| ordinary maximum payload | 65,536 bytes |
+| challenge payload | 1,024 bytes |
+| pre-auth Hello payload | 4,096 bytes |
+| concurrent pipe connections | 2 |
+| authenticated connections | 1 |
+| in-flight queries | 8 |
+| concurrent mutations | 1 |
 | ingress buffer | 32 requests |
 | response buffer | 16 responses |
 | operation ledger | 256 entries |
 | operation ledger TTL | 2 minutes |
-| sustained request rate target | 16 requests/second |
-| burst capacity | 32 requests |
-| handshake deadline | 3 seconds |
+| authenticated request rate | 16 requests/second |
+| authenticated request burst | 32 |
 | frame header deadline | 2 seconds |
 | frame body deadline | 5 seconds |
 | ordinary query deadline | 5 seconds |
@@ -256,140 +309,138 @@ The current v1 contract fixes:
 | response write deadline | 5 seconds |
 | broker shutdown budget | 5 seconds |
 
-Transport must not assume one `ReadFile`/stream read equals one logical message. The length-prefixed decoder returns `NeedMoreData` without consuming partial input. Invalid zero/negative lengths are rejected. Lengths above 65,536 bytes are rejected **before payload allocation**.
+Transport must not assume one read equals one message. Fragmented frames remain partial until complete. Zero/negative lengths fail. Oversize is rejected from the prefix before allocating the declared payload.
 
-A full ingress/response buffer results in backpressure/rejection; it must never become an unbounded allocation path. A slow reader cannot cause infinite response accumulation. A slow writer cannot hold a frame forever: header/body deadlines terminate the connection. A request whose own deadline or maximum lifetime has expired is rejected before lifecycle dispatch.
+Full ingress/response buffers produce bounded busy/backpressure behavior. Slow writers/readers cannot create unbounded queues or indefinite frame ownership.
 
-The v1 constants `MaxRequestsPerSecond=16` and `RequestBurstCapacity=32` are normative bounds for #17's connection admission/rate gate. #16 does not implement the production pipe pump; #17 must enforce them rather than treating them as diagnostics only.
+## 11. Timing model
 
-## 8. Operation, duplicate and replay semantics
+Elapsed security/availability semantics use `TimeProvider.GetTimestamp()` / `GetElapsedTime()` so wall-clock adjustment does not refill budgets or extend/expire challenges unexpectedly. This applies to:
 
-Within an AppSession, request sequence is monotonically increasing. The broker maintains a bounded operation ledger keyed by `BrokerOperationId` and request fingerprint.
+- challenge lifetime;
+- challenge issuance rate/refill and retry interval;
+- authenticated request-rate refill;
+- operation-ledger TTL.
 
-- first unseen operation with a fresh sequence -> `New`;
-- same OperationId + same sequence + same fingerprint while executing -> `DuplicateInFlight`;
-- same tuple after completion -> `DuplicateCompleted`;
+Absolute UTC remains wire evidence for cross-process `IssuedAtUtc`/`DeadlineUtc` freshness. Windows process creation FILETIME remains absolute process-identity evidence. Those are intentionally separate from monotonic elapsed timers.
+
+## 12. Operation, duplicate and replay semantics
+
+`BrokerOperationId` is **not** an eternal or globally sufficient anti-replay token.
+
+Replay safety is the combination of:
+
+- AppSessionId/BrokerSessionId binding;
+- strictly monotonic positive `RequestSequence` high-water mark within the AppSession;
+- OperationId plus request fingerprint;
+- bounded operation ledger;
+- request freshness/deadline;
+- RuntimeGeneration checks where applicable.
+
+The operation ledger returns deterministic states:
+
+- unseen operation + fresh sequence -> `New`;
+- same OperationId/sequence/fingerprint in flight -> `DuplicateInFlight`;
+- same tuple completed -> `DuplicateCompleted`;
 - same OperationId with different sequence/fingerprint -> `Conflict`;
-- unseen OperationId with sequence at/below the high-water mark -> `Stale`;
-- ledger full with no expired entry -> `CapacityExceeded` / busy; no unbounded growth.
+- unseen OperationId with sequence at/below high-water -> `Stale`;
+- full bounded ledger with no expired entry -> `CapacityExceeded`.
 
-Duplicate mutation requests are never executed twice. `DuplicateCompleted` means “the earlier operation already owns the mutation outcome”; a reconnecting client must reconcile via the operation response if retained by #17 and/or `GetRuntimeSnapshot`, not re-run the mutation.
+Ledger TTL is storage retention, not permission to replay. The sequence high-water mark survives entry expiry, so an expired ledger row does not make an old sequence fresh again. Reconnect does not reset sequence or operation state.
 
-The ledger TTL is not a replay window: the monotonically increasing sequence high-water mark survives entry expiry for the AppSession, so expiry of an old entry does not make its old sequence fresh again.
+## 13. Runtime generation and one-authority rule
 
-## 9. Runtime generation and one-authority rule
+Before `StartPreparedPlan`, the expected RuntimeGeneration is compared with current RuntimeGeneration. Lower is stale; higher is an invalid future reference; neither may dispatch.
 
-Lifecycle mutation stays serialized through existing Runtime Kernel authority.
+Existing Runtime Kernel invariants remain authoritative:
 
-Before `StartPreparedPlan`, the broker compares `ExpectedGeneration` with the current RuntimeGeneration. A lower generation is stale; a higher generation is an invalid future reference; both fail before dispatch.
+- one `RuntimeKernelLoop` mutation authority;
+- stale completions cannot mutate newer generations;
+- Stop supersedes/cancels Start as already defined;
+- lifecycle delivery remains guaranteed while observation may coalesce;
+- typed cancellation remains;
+- irreversible-boundary recovery semantics remain;
+- `RuntimeAffinityOwner` remains authoritative until #17 performs the approved relocation.
 
-`StopGeneration` names the generation it intends to stop. Existing Runtime Kernel rules remain authoritative:
+External ingress may reject/queue, but it never transitions runtime lifecycle state directly.
 
-- one `RuntimeKernelLoop` lifecycle authority;
-- stale effect completions cannot mutate a newer generation;
-- Stop can supersede/cancel an in-flight Start;
-- lifecycle delivery is guaranteed while observations may be coalesced;
-- typed cancellation is retained;
-- cancellation after an irreversible boundary keeps recovery-required semantics;
-- `RuntimeAffinityOwner` remains the process/ownership affinity authority until relocated by #17.
+## 14. Disconnect, reconnect and process lifetime
 
-IPC admission may reject or queue a request, but it may not independently transition runtime state.
+If disconnect occurs before validated dispatch, no lifecycle authority has been created. If disconnect occurs after Runtime Kernel accepts a mutation, transport does not roll back or repeat the mutation; Runtime Kernel owns completion/recovery.
 
-## 10. Disconnect, reconnect and lifetime
+Reconnect requires fresh pre-authentication against the same retained process identity and does not reset operation/generation state.
 
-### Disconnect before dispatch
+#17 MUST retain the admitted Control Plane process handle as the AppSession lifetime lease. On process death it must stop admitting requests and route any terminal cleanup through the sole Runtime Kernel authority, preserving existing Stop-supersedes-Start and recovery rules. The broker must not survive as an independent privileged product service.
 
-If the client disconnects before a validated mutation is handed to Runtime Kernel, the request has no lifecycle authority and is discarded/rejected.
-
-### Disconnect after dispatch
-
-Once Runtime Kernel has accepted a mutation, pipe disconnect does **not** roll it back, re-run it or create transport-owned state. Runtime Kernel continues to its deterministic terminal/recovery state. The operation ledger remains correlated with that operation. Reconnection reconciles through snapshot/receipt semantics.
-
-### Reconnect
-
-Reconnect requires a fresh challenge and the same AppSession process binding while the held process handle is still valid. It does not reset operation or generation state.
-
-### Application hard crash
-
-#17 MUST retain a handle to the admitted Control Plane process as a lifetime lease. If that process object becomes signaled/exits:
-
-1. stop admitting new requests;
-2. collapse any simultaneous explicit shutdown/app-death race to one terminal shutdown intent;
-3. route required runtime stop/cleanup through the sole Runtime Kernel authority;
-4. observe existing Stop-supersedes-Start and irreversible-boundary recovery semantics;
-5. exit the session-scoped broker within the bounded shutdown policy or surface the existing recovery path.
-
-The broker must not remain behind as an independent privileged product service.
-
-## 11. Threats and mitigations
+## 15. Threat disposition summary
 
 | Threat | Required disposition |
 |---|---|
-| same-user unrelated/malicious process | DACL is insufficient; reject unless exact process object + token/session identity + fresh HMAC proof match |
-| wrong serialized PID | ignored as authority; use `GetNamedPipeClientProcessId` |
-| PID reuse | creation-time check + retained process handle; no numeric-PID rebinding |
-| wrong Windows session | reject |
-| wrong user/SID | reject |
-| wrong logon session | reject by AuthenticationId/logon identity |
-| stale AppSession | reject |
-| replayed bootstrap proof/challenge | fresh nonce, 3 s expiry, atomic single-use challenge |
-| stolen secret | still requires exact process binding; installed publisher verification is defense in depth |
-| stale/stolen OperationId | fingerprint + sequence + bounded high-water-mark ledger |
-| remote pipe client | `PIPE_REJECT_REMOTE_CLIENTS` plus DACL |
-| malformed frame/JSON | fail closed; close/reject connection as appropriate |
-| oversized frame | reject from prefix before allocation |
-| fragmented message | bounded incremental framing; no partial dispatch |
-| duplicate request | deterministic duplicate status; no second mutation |
-| stale request | request deadline + max lifetime + sequence ledger |
-| downgrade/version skew | explicit range negotiation; unknown major rejected; protocol bound into authentication transcript |
-| flooding/queue exhaustion | connection/query/mutation/buffer/rate bounds; fail busy/close rather than allocate unboundedly |
-| slow writer | header/body deadlines |
-| slow reader | bounded response buffer + enqueue/write deadlines |
-| disconnect during mutation | Runtime Kernel remains owner; no transport rollback or second state machine |
-| reconnect after mutation | fresh auth challenge; existing ledger/generation retained |
-| broker shutdown race | one serialized terminal shutdown intent through Runtime Kernel |
-| app hard crash | held process-handle lease triggers bounded broker shutdown |
-| arbitrary path/argument attempt | impossible in typed v1 request surface; unknown members/messages rejected |
+| same-user malicious process | DACL alone insufficient; exact process/token binding + fresh proof required |
+| wrong/forged PID | use actual `GetNamedPipeClientProcessId`; serialized PID is not authority |
+| PID reuse | creation FILETIME + retained process handle; no numeric-PID rebinding |
+| wrong Windows session/user/logon/integrity | reject before challenge |
+| stale AppSession/BrokerSession | reject before admission |
+| bad first Hello | consumes only one challenge; bounded fresh rotation remains possible |
+| replayed successful challenge | consumed handle; reject as replay |
+| parallel bad/valid challenge race | at most one successful admission; success invalidates all outstanding handles |
+| pre-auth flood | 2 live challenges, 2/s rate, burst 4, 500 ms retry, max 2 connections |
+| HMAC oracle abuse | one verification per challenge; finite issuance/live budgets |
+| stolen secret | still requires exact peer binding; publisher verification may add defense in depth |
+| malformed/undefined wire values | strict syntax + semantic validation before successful decode |
+| oversized frame | prefix rejection before declared-payload allocation |
+| partial frame | no dispatch until complete bounded frame |
+| protocol downgrade/skew | explicit range negotiation; both ranges + selected version bound in HMAC |
+| duplicate/stale operation | session/sequence/fingerprint/ledger/freshness model; no second mutation |
+| remote Named Pipe client | `PIPE_REJECT_REMOTE_CLIENTS` plus explicit DACL |
+| queue/request flood | bounded connections, rates, queues, query/mutation concurrency |
+| slow writer/reader | frame/write deadlines + bounded response queue |
+| disconnect/reconnect | transport never becomes lifecycle authority |
+| broker/app shutdown race | one terminal intent through Runtime Kernel |
+| arbitrary command/path attempt | impossible in v1 typed privileged surface |
 
-## 12. RED/GREEN evidence contract
+## 16. RED -> GREEN evidence requirements
 
-RED was deliberately committed before production contract implementation. The RED suite requires:
+The committed #16 tests cover or require:
 
-- oversized frame rejection;
-- fragmented/malformed input rejection;
-- unknown message/field rejection;
-- unknown protocol rejection;
-- stale operation and deterministic duplicate handling;
-- no generic privileged process/file/network/script request type;
-- wrong process/PID reuse/session/SID/logon/integrity rejection;
-- invalid/replayed/expired bootstrap proof rejection;
-- bounded ingress and response backpressure;
-- one mutation at a time and bounded query concurrency;
-- stale generation rejection;
-- dependency-light Contracts assembly.
+- malformed/fragmented/oversized framing;
+- unknown protocol/message/member rejection;
+- semantic rejection of every currently representable invalid request body state;
+- serialized challenge -> client decode -> proof -> serialized Hello -> broker decode -> admission;
+- malformed/oversized/version-skew challenge rejection;
+- bad first Hello followed by bounded successful rotation;
+- monotonic challenge expiry and wall-clock-jump immunity;
+- replay after successful admission;
+- parallel attacker/expected-client challenge race with at most one success;
+- wrong peer rejected without challenge-budget consumption;
+- live-challenge capacity, token-bucket burst and deterministic retry interval;
+- one HMAC attempt per challenge by consumption-before-proof-validation;
+- owned bootstrap-secret zeroing on session disposal;
+- monotonic request-rate and operation-ledger timing;
+- deterministic duplicate/stale operation behavior;
+- bounded ingress/response and one mutation at a time;
+- stale RuntimeGeneration rejection;
+- disconnect/reconnect FakeBroker evidence showing no second mutation authority;
+- absence of a generic privileged execution primitive.
 
-The test/fake seam may model admission and dispatch in memory. It must not implement a second Runtime Kernel or real `winws2` process.
+## 17. Residual risks / #17 obligations
 
-## 13. Residual risks / #17 obligations
+Passing #16 contract tests does not prove a future Windows broker implementation secure. #17 still owns:
 
-This contract does **not** claim the future broker is secure merely because the tests pass. Remaining implementation risks include:
+1. exact Named Pipe DACL/ACE construction and `PIPE_REJECT_REMOTE_CLIENTS` use;
+2. safe Win32 PID/process/token/SID buffer handling;
+3. retaining the verified process object without accidental PID rebinding;
+4. concrete bootstrap-secret transfer/storage and avoidance of logs/command-line exposure;
+5. implementing the fixed pre-auth connection/challenge budgets in the actual pipe pump;
+6. request/read/write timeout enforcement and cancellation around real I/O;
+7. optional installed executable/publisher verification policy;
+8. process-death/shutdown integration with Runtime Kernel ownership.
 
-1. constructing the exact pipe DACL/ACE rights incorrectly;
-2. mishandling Windows token buffers/SIDs or comparing textual/normalized identities incorrectly;
-3. accidentally reopening by PID and losing the retained process-object binding;
-4. leaking bootstrap material through logs, diagnostics, command line or crash dumps;
-5. omitting the normative request-rate gate from the real pipe pump;
-6. authentication/operation state being reset incorrectly on reconnect;
-7. shutdown/app-death watchers racing Runtime Kernel ownership;
-8. installed-distribution executable/publisher verification policy not yet pinned;
-9. immutable bundle/plan storage and broker-side artifact revalidation are not solved until #19;
-10. child-process fail-closed creation/Job containment is not solved until #18.
+#18 remains owner of fail-closed child creation/Job containment. #19 remains owner of immutable staging and privileged artifact revalidation. Neither concern expands the v1 broker RPC surface.
 
-These are implementation obligations for downstream milestones, not reasons to widen the privileged RPC surface.
+## 18. Official sources
 
-## 14. Official Microsoft sources checked for #16
-
-Primary Win32 sources, checked 2026-09-10:
+Primary Microsoft sources checked for the contract:
 
 - Named Pipe Security and Access Rights: https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights
 - CreateNamedPipe / `PIPE_REJECT_REMOTE_CLIENTS`: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea
@@ -400,12 +451,13 @@ Primary Win32 sources, checked 2026-09-10:
 - ProcessIdToSessionId: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-processidtosessionid
 - OpenProcessToken: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken
 - GetTokenInformation: https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation
-- TOKEN_INFORMATION_CLASS (`TokenUser`, `TokenStatistics`, `TokenSessionId`, `TokenIntegrityLevel`, `TokenLogonSid`): https://learn.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-token_information_class
+- TOKEN_INFORMATION_CLASS: https://learn.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-token_information_class
 - TOKEN_STATISTICS / `AuthenticationId`: https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_statistics
 - Mandatory Integrity Control: https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control
-- TOKEN_MANDATORY_LABEL: https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_mandatory_label
 - ImpersonateNamedPipeClient: https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient
 - RevertToSelf: https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-reverttoself
-- SHELLEXECUTEINFO / `runas` / `SEE_MASK_NOCLOSEPROCESS` (downstream #17 launch/lifetime evidence): https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfoa
+- .NET `TimeProvider`: https://learn.microsoft.com/en-us/dotnet/api/system.timeprovider
+- .NET `HMACSHA256.HashData`: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.hmacsha256.hashdata
+- SHELLEXECUTEINFO / `runas` / `SEE_MASK_NOCLOSEPROCESS` (downstream evidence only): https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfoa
 
-No blog is normative for this security contract when Win32 documentation covers the semantic.
+No blog is normative where Microsoft platform documentation specifies the required semantics.
