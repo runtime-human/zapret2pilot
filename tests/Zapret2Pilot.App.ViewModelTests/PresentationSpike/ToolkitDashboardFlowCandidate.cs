@@ -24,10 +24,10 @@ internal sealed partial class ToolkitDashboardFlowCandidate : ObservableObject, 
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(CheckNowCommand))]
-    private bool isReady;
+    public partial bool IsReady { get; set; }
 
     [ObservableProperty]
-    private string lastAction = "Демо-режим: runtime ещё не подключён.";
+    public partial string LastAction { get; set; } = "Демо-режим: runtime ещё не подключён.";
 
     public ToolkitDashboardFlowCandidate(
         IZ2PApplicationLifecycleCoordinator coordinator,
@@ -41,7 +41,7 @@ internal sealed partial class ToolkitDashboardFlowCandidate : ObservableObject, 
         this.coordinator = coordinator;
         this.supervisor = supervisor;
         this.uiScheduler = uiScheduler;
-        isReady = coordinator.IsReady;
+        IsReady = coordinator.IsReady;
     }
 
     public void Activate()
