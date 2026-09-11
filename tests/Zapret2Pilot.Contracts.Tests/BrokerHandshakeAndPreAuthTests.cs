@@ -74,16 +74,13 @@ public sealed class BrokerHandshakeAndPreAuthTests
     public void ChallengeCodecRejectsProtocolMismatch()
     {
         string nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(BrokerAuthenticator.NonceSizeBytes));
-        string json = $$"""
-            {
-              "handshakeProtocol":{"major":2,"minor":0},
-              "kind":"brokerChallenge",
-              "supportedProtocols":{"minimum":{"major":2,"minor":0},"maximum":{"major":2,"minor":0}},
-              "brokerSessionId":"{{Guid.NewGuid()}}",
-              "serverNonce":"{{nonce}}",
-              "lifetimeMilliseconds":3000
-            }
-            """;
+        string brokerSessionId = Guid.NewGuid().ToString();
+        string json = "{\"handshakeProtocol\":{\"major\":2,\"minor\":0},"
+            + "\"kind\":\"brokerChallenge\","
+            + "\"supportedProtocols\":{\"minimum\":{\"major\":2,\"minor\":0},\"maximum\":{\"major\":2,\"minor\":0}},"
+            + "\"brokerSessionId\":\"" + brokerSessionId + "\","
+            + "\"serverNonce\":\"" + nonce + "\","
+            + "\"lifetimeMilliseconds\":3000}";
         byte[] frame = BrokerFrameCodec.Encode(Encoding.UTF8.GetBytes(json), BrokerProtocolLimits.MaxChallengeFrameBytes);
 
         BrokerChallengeFrameDecodeResult result = BrokerChallengeFrameCodec.Decode(frame);
