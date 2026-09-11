@@ -2,7 +2,7 @@
 
 Status: **ACCEPTED**  
 Date: 2026-09-09  
-Amended: 2026-09-10 after PR #25 orchestration review
+Amended: 2026-09-10 after PR #25 orchestration review; GitHub enforcement verified 2026-09-12 under #26
 
 ## Decision
 
@@ -34,11 +34,11 @@ CI runs two scripts:
 
 The validator explicitly rejects the old `<!-- Z2P-CURRENT-STATE: ... -->` dynamic tuple marker in current/canonical Markdown.
 
-## Validation is not enforcement
+## Validation and enforcement boundary
 
-These checks make CI fail on repository-truth violations; they do **not** by themselves make CI non-bypassable. GitHub branch/ruleset protection and required-check enforcement are separate repository configuration.
+The scripts make CI fail on repository-truth violations; they do **not** themselves make CI non-bypassable. GitHub branch/ruleset protection and required-check enforcement remain separate repository configuration.
 
-At this decision amendment, enforcement is tracked by #26. Until #26 acceptance is verified from GitHub protection/ruleset state, documentation must say **repository-truth CI validation**, not “enforced repository gate” or equivalent.
+#26 verified the enforcement layer from GitHub API state: active repository ruleset `main-required-ci` (id `22957088`) targets the default branch `main`, requires a pull request and the strict GitHub Actions check `Build and test` (`integration_id=15368`), blocks deletion and non-fast-forward updates, and has no configured bypass actors. While that ruleset remains active, normal updates to `main` are GitHub-enforced through the required CI gate. Documentation may therefore describe the repository-truth validation as participating in an enforced repository gate, while continuing to distinguish validation logic from GitHub enforcement configuration.
 
 ## RED evidence
 

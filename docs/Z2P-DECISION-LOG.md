@@ -84,7 +84,7 @@ Decision:
 
 ### DEC-0056 — Single dynamic repository-state authority + stable document roles
 
-Date: 2026-09-09; amended by PR #25 orchestration review.  
+Date: 2026-09-09; amended by PR #25 orchestration review; GitHub enforcement verified 2026-09-12 under #26.  
 Status: **ACCEPTED**.
 
 Decision:
@@ -99,9 +99,10 @@ Decision:
 
 Governance distinction:
 
-- repository-truth scripts are **CI validation**;
-- a passing CI workflow does not prove GitHub enforcement;
-- branch/ruleset protection + required CI is tracked by #26 and must be verified from GitHub configuration before the validator may be called a non-bypassable/enforced repository gate.
+- repository-truth scripts are the **CI validation** mechanism and do not themselves create branch enforcement;
+- #26 verified the active repository ruleset `main-required-ci` (id `22957088`) from GitHub API state;
+- the ruleset targets `main`, requires a pull request and strict `Build and test` from GitHub Actions (`integration_id=15368`), blocks deletion/non-fast-forward updates, and has no configured bypass actors;
+- while that ruleset remains active, normal updates to `main` are governed by a GitHub-enforced required-CI merge gate.
 
 Rationale: prevent both stale-document drift and the opposite failure mode where a “single source” still requires mass Markdown churn on every current-work change.
 
