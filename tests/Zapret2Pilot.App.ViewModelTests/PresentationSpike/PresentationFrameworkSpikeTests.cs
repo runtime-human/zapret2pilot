@@ -11,7 +11,7 @@ namespace Zapret2Pilot.App.ViewModelTests.PresentationSpike;
 public sealed class PresentationFrameworkSpikeTests
 {
     [Fact]
-    public void ToolkitCandidate_LifecycleReadinessGatesDashboardCommand()
+    public void ToolkitCandidateLifecycleReadinessGatesDashboardCommand()
     {
         using var coordinator = new FakeLifecycleCoordinator();
         using var supervisor = new FakeRuntimeSupervisor();
@@ -33,7 +33,7 @@ public sealed class PresentationFrameworkSpikeTests
     }
 
     [Fact]
-    public void ToolkitCandidate_RuntimeStateIsUiScheduledAndActivationOwnsSubscriptionLifetime()
+    public void ToolkitCandidateRuntimeStateIsUiScheduledAndActivationOwnsSubscriptionLifetime()
     {
         using var coordinator = new FakeLifecycleCoordinator();
         using var supervisor = new FakeRuntimeSupervisor();
