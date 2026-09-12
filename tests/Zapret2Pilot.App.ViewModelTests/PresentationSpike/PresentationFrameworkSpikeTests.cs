@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Xunit;
 using Zapret2Pilot.App.Lifecycle;
 using Zapret2Pilot.App.Threading;
 using Zapret2Pilot.App.ViewModelTests.Fakes;
