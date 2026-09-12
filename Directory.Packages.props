@@ -11,14 +11,17 @@
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
-    <PackageVersion Include="ReactiveUI" Version="24.2.0" />
+
     <!--
-      ReactiveUI.Avalonia 12.1.1 is the current stable Avalonia integration
-      package. Its net10.0 dependency floor is Avalonia >= 12.1.1 and
-      ReactiveUI >= 24.1.0, so Avalonia 12.1.2 + ReactiveUI 24.2.0 is inside
-      the package's published compatibility range.
+      ReactiveUI 24 ships two interchangeable distribution families. Z2P
+      already composes presentation code with System.Reactive observables,
+      Unit, subscriptions and schedulers, so use the matching .Reactive
+      family rather than mixing the default Primitives public API with Rx.
+      ReactiveUI.Avalonia.Reactive 12.1.2 is the stable Avalonia integration
+      released on 2026-09-08 and aligns with Avalonia 12.1.2 / ReactiveUI 24.2.
     -->
-    <PackageVersion Include="ReactiveUI.Avalonia" Version="12.1.1" />
+    <PackageVersion Include="ReactiveUI.Reactive" Version="24.2.0" />
+    <PackageVersion Include="ReactiveUI.Avalonia.Reactive" Version="12.1.2" />
     <PackageVersion Include="System.Reactive" Version="7.0.0" />
 
     <!--
