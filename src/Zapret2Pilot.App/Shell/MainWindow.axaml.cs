@@ -36,11 +36,11 @@ public sealed partial class MainWindow : Window, IViewFor<MainWindowViewModel>
         // (IActivatableViewModel) share an activation window managed by
         // ReactiveUI. Subscriptions created inside WhenActivated are
         // disposed when the window deactivates, so no ReactiveUI
-        // observer outlives the shell. The current implementation has
-        // no view-side subscriptions; the block is kept as the single
-        // hook for any future view-only wiring (e.g. focus / lifecycle
-        // events) and to document the activation contract.
-        this.WhenActivated(disposables => { });
+        // observer outlives the shell. ReactiveUI 24's .Reactive shim
+        // exposes both System.Reactive and primitives disposal overloads;
+        // select the System.Reactive registration callback explicitly so
+        // this existing activation contract is unambiguous.
+        this.WhenActivated((Action<Action<IDisposable>>)(_ => { }));
     }
 
     public MainWindowViewModel? ViewModel { get; set; }
