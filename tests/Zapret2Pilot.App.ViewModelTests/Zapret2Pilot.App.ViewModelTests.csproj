@@ -15,6 +15,11 @@
     <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
   </PropertyGroup>
 
+  <!-- Match the production presentation distribution for compatibility tests. -->
+  <ItemGroup>
+    <Using Include="ReactiveUI.Reactive" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" PrivateAssets="all" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
