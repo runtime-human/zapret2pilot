@@ -1,7 +1,7 @@
 using System;
 using System.Reactive;
 using FluentIcons.Common;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Zapret2Pilot.App.Navigation;
 

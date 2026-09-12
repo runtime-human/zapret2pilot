@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reactive;
 using System.Reactive.Disposables;
-using System.Reactive.Disposables.Fluent; // Required for DisposeWith extension (System.Reactive 6.1.0).
+using System.Reactive.Disposables.Fluent; // Required for DisposeWith extension from System.Reactive.
 using System.Reactive.Linq;
 using System.Reflection;
 using Microsoft.Extensions.Logging;
