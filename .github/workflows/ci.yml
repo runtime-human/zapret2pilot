@@ -9,7 +9,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-test:
@@ -48,9 +48,6 @@ jobs:
       - name: Package drift evidence
         run: dotnet package list --project Zapret2Pilot.slnx --outdated --include-transitive --no-restore --source https://api.nuget.org/v3/index.json
 
-      # Temporary #15 evidence step. It makes the first generated lock graph
-      # observable in CI so the exact files can be committed before the final
-      # workflow switches restore to --locked-mode.
       - name: Show generated package locks
         shell: pwsh
         run: |
@@ -81,3 +78,18 @@ jobs:
 
       - name: Test
         run: dotnet test Zapret2Pilot.slnx -c Release --no-build --logger trx --results-directory TestResults
+
+      - name: Commit validated package locks
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- ':(glob)**/packages.lock.json'
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Package locks already committed."
+            exit 0
+          }
+          git commit -m "chore(deps): commit validated NuGet lock graph"
+          git push origin "HEAD:${{ github.head_ref }}"
