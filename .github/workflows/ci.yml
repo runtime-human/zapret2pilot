@@ -9,7 +9,7 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-test:
@@ -58,6 +58,34 @@ jobs:
             Write-Host "Z2P_LOCK_END:$relative"
           }
 
+      - name: Validate committed package locks
+        shell: pwsh
+        run: |
+          $trackedLocks = @(git ls-files -- ':(glob)**/packages.lock.json')
+          if ($trackedLocks.Count -eq 0) {
+            Write-Error "No committed packages.lock.json files were found. Restore must produce a committed deterministic lock graph."
+            exit 1
+          }
+
+          $untrackedLocks = @(git ls-files --others --exclude-standard -- ':(glob)**/packages.lock.json')
+          if ($untrackedLocks.Count -ne 0) {
+            Write-Host "Restore produced untracked package locks:"
+            $untrackedLocks | ForEach-Object { Write-Host "  $_" }
+            Write-Error "Package lock graph is incomplete. Regenerate and commit the lock files in the PR branch."
+            exit 1
+          }
+
+          git diff --exit-code -- ':(glob)**/packages.lock.json'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Restore changed committed package locks. Regenerate and commit the deterministic lock graph in the PR branch; CI must not mutate repository state."
+            exit 1
+          }
+
+          Write-Host "Committed package locks match the restored dependency graph."
+
+      - name: Locked restore
+        run: dotnet restore Zapret2Pilot.slnx --locked-mode
+
       - name: Build
         shell: pwsh
         run: |
@@ -79,17 +107,14 @@ jobs:
       - name: Test
         run: dotnet test Zapret2Pilot.slnx -c Release --no-build --logger trx --results-directory TestResults
 
-      - name: Commit validated package locks
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      - name: Verify repository remains clean
         shell: pwsh
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- ':(glob)**/packages.lock.json'
-          git diff --cached --quiet
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Package locks already committed."
-            exit 0
+          $dirty = @(git status --porcelain)
+          if ($dirty.Count -ne 0) {
+            Write-Host "Repository changes after restore/build/test:"
+            $dirty | ForEach-Object { Write-Host $_ }
+            Write-Error "CI validation changed repository state. Generated dependency state must be committed explicitly in the PR branch."
+            exit 1
           }
-          git commit -m "chore(deps): commit validated NuGet lock graph"
-          git push origin "HEAD:${{ github.head_ref }}"
+          Write-Host "Repository remains clean after validation."
