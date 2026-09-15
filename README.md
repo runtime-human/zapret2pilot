@@ -45,7 +45,7 @@ dotnet build Zapret2Pilot.slnx -c Release --no-restore
 dotnet test Zapret2Pilot.slnx -c Release --no-build
 ```
 
-These scripts provide repository/CI validation. They are **not by themselves an enforced GitHub merge gate**. GitHub branch/ruleset enforcement is tracked separately in #26 and must be verified from repository protection configuration before anyone describes the CI check as non-bypassable.
+These scripts provide repository/CI validation; the scripts themselves are not the enforcement mechanism. GitHub enforcement is now supplied by the active `main-required-ci` repository ruleset (id `22957088`), verified under #26 from GitHub API state. It targets `main`, requires a pull request and the strict GitHub Actions check `Build and test` (`integration_id=15368`), blocks deletion and non-fast-forward updates, and has no configured bypass actors. While that ruleset remains active, normal updates to `main` are gated by the required CI check.
 
 ## Documentation authority
 
