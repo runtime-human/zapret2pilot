@@ -146,4 +146,4 @@ Repository: `runtime-human/zapret2pilot`.
 
 `docs/Z2P-CURRENT-STATE.json` is the sole dynamic state authority. Canonical Markdown uses stable role markers and references that contract rather than copying its dynamic tuple. Historical v6/RFC text is preserved under `docs/history/`; supersession is recorded in `docs/Z2P-DECISION-LOG.md` rather than rewriting history.
 
-Repository-truth scripts provide CI validation, not proof of GitHub enforcement. Enforced branch/ruleset + required-check governance is tracked in #26 and must be verified separately before being described as a non-bypassable repository gate.
+Repository-truth scripts provide CI validation; GitHub enforcement is a separate repository control. #26 verified the active `main-required-ci` ruleset (id `22957088`) targeting `main`, requiring a pull request and strict GitHub Actions check `Build and test` (`integration_id=15368`), with deletion/non-fast-forward updates blocked and no configured bypass actors. While that ruleset remains active, normal updates to `main` are governed by an enforced required-CI merge gate.

@@ -17,4 +17,4 @@ v7 invariant: the existing `RuntimeKernelLoop` is the sole runtime authority and
 
 Every architecture-changing PR must update canonical docs when the architecture actually changes; ordinary orchestration selection updates only the current-state contract. Run the repository-truth contract probe, validator, restore/build/tests on exact head.
 
-Repository-truth CI validation is not currently synonymous with a GitHub-enforced merge gate. #26 tracks required branch/ruleset protection; enforcement must be verified from GitHub configuration before it is relied on as non-bypassable.
+Repository-truth scripts provide CI validation; GitHub enforcement is supplied separately by the active `main-required-ci` repository ruleset (id `22957088`), verified under #26 from GitHub API state. Normal updates to `main` require a pull request and the strict GitHub Actions check `Build and test` (`integration_id=15368`), with no configured bypass actors and deletion/non-fast-forward updates blocked. This enforced merge gate may be relied on while that ruleset remains active.

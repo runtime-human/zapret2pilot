@@ -48,7 +48,7 @@ Changed by #14:
 - machine-readable single-source current-state contract;
 - repository-truth contract probe + CI validation;
 - corrected parallel dependency: #15 and #16 after #14, #17 after both;
-- explicit distinction between CI validation and GitHub-enforced governance; #26 tracks protection enforcement.
+- explicit distinction between CI validation and GitHub-enforced governance, with follow-up #26 created to establish enforcement.
 
 Not changed by #14:
 
@@ -61,7 +61,7 @@ Not changed by #14:
 
 ## Governance status
 
-The repository-truth scripts run in CI and fail the CI job on contract violations. They do not themselves make CI non-bypassable. GitHub branch/ruleset + required-check enforcement is separately tracked by #26 and must be verified from GitHub configuration before being claimed as an enforced repository gate.
+The repository-truth scripts run in CI and fail the CI job on contract violations; they remain the validation mechanism rather than the enforcement mechanism. GitHub enforcement is now provided by the active `main-required-ci` repository ruleset (id `22957088`), verified under #26 from GitHub API state. It targets `main`, requires a pull request and the strict GitHub Actions check `Build and test` (`integration_id=15368`), blocks deletion and non-fast-forward updates, and has no configured bypass actors. While that ruleset remains active, normal updates to `main` are GitHub-enforced through the required CI gate.
 
 ## Evidence location
 

@@ -27,7 +27,7 @@ After #14, #15 and #16 are independent parallel-ready branches. #17 is their joi
 
 ## Validation versus enforcement
 
-`build/Test-RepositoryTruthContract.ps1` and `build/Validate-RepositoryTruth.ps1` run in CI and validate repository truth. A passing workflow is not equivalent to GitHub-enforced protection. #26 tracks branch/ruleset protection and required-check enforcement; until its acceptance is verified from GitHub configuration, do not call the validator a non-bypassable repository gate.
+`build/Test-RepositoryTruthContract.ps1` and `build/Validate-RepositoryTruth.ps1` run in CI and validate repository truth; they are not themselves the enforcement mechanism. GitHub enforcement is now supplied by the active `main-required-ci` repository ruleset (id `22957088`), verified under #26 from GitHub API state. It targets `main`, requires a pull request plus the strict GitHub Actions check `Build and test` (`integration_id=15368`), blocks deletion and non-fast-forward updates, and has no configured bypass actors. While that ruleset remains active, normal updates to `main` are GitHub-gated by the required CI check.
 
 ## Agent rule
 

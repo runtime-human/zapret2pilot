@@ -94,13 +94,13 @@ The historical v6 document remains useful for detailed requirements where a v7 A
 - no real `winws2` before #20;
 - Rust is optional/evidence-driven only.
 
-## 6. Repository-truth CI validation
+## 6. Repository-truth validation and enforced main gate
 
 `docs/Z2P-CURRENT-STATE.json` is the sole dynamic state contract. Canonical documents carry stable role markers rather than duplicated state tuples. CI runs:
 
 1. `build/Test-RepositoryTruthContract.ps1` — proves architecture/track/work-item changes can be made in the JSON contract without Markdown synchronization;
 2. `build/Validate-RepositoryTruth.ps1` — checks `VERSION` ↔ state, canonical paths, unique architecture/roadmap markers, historical v6 supersession, archived RFC and non-canonical NEXT.
 
-This is **CI validation**, not automatically an enforced repository gate. A passing workflow does not prove direct pushes/merges cannot bypass it. #26 tracks branch/ruleset protection + required CI. Only after that GitHub configuration is verified may the repository describe this validation as an enforced/non-bypassable gate.
+The scripts remain **CI validation**; enforcement is a separate GitHub repository control. #26 verified an active `main-required-ci` ruleset (id `22957088`) targeting `main`, requiring a pull request plus strict `Build and test` from GitHub Actions (`integration_id=15368`), with deletion/non-fast-forward blocked and no configured bypass actors. While that ruleset remains active, normal updates to `main` are protected by the GitHub-enforced required-CI gate.
 
-#26 is a governance prerequisite, not an architectural dependency inserted between #14 and #15/#16.
+#26 is governance closure, not an architectural dependency inserted between #14 and #15/#16.
