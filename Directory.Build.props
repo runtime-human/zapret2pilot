@@ -12,6 +12,22 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
 
+    <!--
+      #15 dependency determinism: every PackageReference project generates a
+      versioned packages.lock.json. CI switches to locked mode once the
+      servicing graph produced by this spike is committed.
+    -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+
+    <!--
+      .NET 10 audits transitive dependencies by default; keep the intent
+      explicit and make every NU1901-NU1904 advisory a restore blocker.
+      There are no blanket audit suppressions in the supported baseline.
+    -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
+
     <RepositoryUrl>https://github.com/MrFr3di/zapret2pilot</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <Authors>Zapret2Pilot contributors</Authors>
@@ -34,14 +50,5 @@
     -->
     <PackageReference Include="Meziantou.Analyzer" PrivateAssets="all" />
     <PackageReference Include="Roslynator.Analyzers" PrivateAssets="all" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!--
-      Microsoft.Data.Sqlite 10.0.9 currently restores SQLitePCLRaw.lib.e_sqlite3 2.1.11 transitively.
-      The package is deprecated and renamed upstream, but there is no patched SQLitePCLRaw.lib.e_sqlite3 version to upgrade to.
-      Keep this exact advisory suppression narrow and remove it once Microsoft.Data.Sqlite moves off the deprecated package.
-    -->
-    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-2m69-gcr7-jv3q" />
   </ItemGroup>
 </Project>

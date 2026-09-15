@@ -8,7 +8,6 @@ using Avalonia.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ReactiveUI;
-using ReactiveUI.Avalonia;
 using Zapret2Pilot.App.Diagnostics;
 using Zapret2Pilot.App.Hosting;
 using Zapret2Pilot.App.Input;

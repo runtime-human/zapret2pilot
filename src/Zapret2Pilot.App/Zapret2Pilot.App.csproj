@@ -29,6 +29,18 @@
     <NoWarn>$(NoWarn);CA1848;CA1873</NoWarn>
   </PropertyGroup>
 
+  <!--
+    ReactiveUI 24's System.Reactive-compatible distribution recompiles
+    seam APIs under ReactiveUI.Reactive / ReactiveUI.Avalonia.Reactive.
+    Keep those namespaces presentation-local and global for this project
+    so the existing shell source composes with the supported .Reactive
+    family without leaking presentation concerns into lower layers.
+  -->
+  <ItemGroup>
+    <Using Include="ReactiveUI.Reactive" />
+    <Using Include="ReactiveUI.Avalonia.Reactive" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
@@ -37,8 +49,8 @@
     <PackageReference Include="FluentIcons.Avalonia" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
-    <PackageReference Include="ReactiveUI" />
-    <PackageReference Include="ReactiveUI.Avalonia" />
+    <PackageReference Include="ReactiveUI.Reactive" />
+    <PackageReference Include="ReactiveUI.Avalonia.Reactive" />
     <PackageReference Include="System.Reactive" />
   </ItemGroup>
 
