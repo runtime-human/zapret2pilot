@@ -1,4 +1,3 @@
-using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
@@ -21,9 +20,8 @@ public sealed class RuntimeAuthorityBoundaryTests
         Assert.DoesNotContain(builder.Services, descriptor => descriptor.ServiceType == typeof(IRuntimeProcessHost));
         Assert.DoesNotContain(builder.Services, descriptor => descriptor.ServiceType == typeof(RuntimeSupervisor));
         Assert.DoesNotContain(builder.Services, descriptor => descriptor.ServiceType == typeof(IRuntimeSupervisor));
-
-        Assert.False(builder.Services.Any(descriptor =>
+        Assert.DoesNotContain(builder.Services, descriptor =>
             descriptor.ServiceType == typeof(IHostedService)
-            && descriptor.ImplementationType == typeof(RuntimeSupervisor)));
+            && descriptor.ImplementationType == typeof(RuntimeSupervisor));
     }
 }
