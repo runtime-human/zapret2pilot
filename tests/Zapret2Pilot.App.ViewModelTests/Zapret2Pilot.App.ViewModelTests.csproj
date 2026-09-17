@@ -30,7 +30,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Zapret2Pilot.App\Zapret2Pilot.App.csproj" />
-    <ProjectReference Include="..\..\src\Zapret2Pilot.Contracts\Zapret2Pilot.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
   </ItemGroup>
 </Project>
