@@ -46,7 +46,18 @@ public static class AppServiceCollectionExtensions
 
         services.AddSingleton<IProcessLauncher, ProcessLauncher>();
         services.AddSingleton<IExternalLinkLauncher, ExternalLinkLauncher>();
-        services.AddSingleton<MainWindowViewModel>();
+
+        // #17 boundary transition: the App must not resolve the production
+        // RuntimeSupervisor. Until Task 3 introduces IRuntimeClient, keep the
+        // existing presentation behavior explicitly disconnected from runtime
+        // authority rather than registering an in-process supervisor.
+        services.AddSingleton(static sp => new MainWindowViewModel(
+            navigationRouter: sp.GetRequiredService<NavigationRouter>(),
+            uiScheduler: sp.GetRequiredService<IUiScheduler>(),
+            supervisor: null,
+            logger: sp.GetRequiredService<ILogger<MainWindowViewModel>>(),
+            coordinator: sp.GetRequiredService<IZ2PApplicationLifecycleCoordinator>(),
+            exceptionPolicy: sp.GetRequiredService<IExceptionPolicy>()));
         services.AddSingleton<MainWindow>();
 
         return services;
