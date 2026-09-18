@@ -531,6 +531,9 @@
           "Microsoft.Data.Sqlite": "[10.0.12, )"
         }
       },
+      "zapret2pilot.testing.fakeruntime": {
+        "type": "Project"
+      },
       "Microsoft.Data.Sqlite": {
         "type": "CentralTransitive",
         "requested": "[10.0.12, )",
