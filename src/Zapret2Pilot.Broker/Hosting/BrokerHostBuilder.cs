@@ -3,6 +3,8 @@ using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Zapret2Pilot.Broker.Runtime;
+using Zapret2Pilot.Contracts.Transport;
 
 namespace Zapret2Pilot.Broker.Hosting;
 
@@ -45,6 +47,18 @@ public static class BrokerHostBuilder
         builder.Services.AddCrashLoopGuard();
         builder.Services.AddRuntimeKernelLoop();
         builder.Services.AddRuntimeSupervisor();
+
+        // #17 Task 4: broker protocol admission is a façade over the
+        // existing kernel/supervisor authority, never a second state machine.
+        builder.Services.AddSingleton<IBrokerRuntimeStateProjection, RuntimeKernelStateProjection>();
+        builder.Services.AddSingleton<IPreparedRuntimePlanResolver, RejectingPreparedRuntimePlanResolver>();
+        builder.Services.AddSingleton(static _ => new BrokerOperationLedger(
+            BrokerProtocolLimits.OperationLedgerCapacity,
+            BrokerProtocolLimits.OperationLedgerTtl));
+        builder.Services.AddSingleton(static _ => new BrokerConcurrencyGate(
+            BrokerProtocolLimits.MaxInFlightQueries,
+            BrokerProtocolLimits.MaxConcurrentMutations));
+        builder.Services.AddSingleton<BrokerRuntimeDispatcher>();
 
         return builder;
     }
