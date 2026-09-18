@@ -26,7 +26,7 @@ public sealed class BrokerRuntimeDispatcherTests
     [Fact]
     public static async Task SnapshotQueryProjectsAuthoritativeKernelState()
     {
-        FakeRuntimeSupervisor supervisor = new();
+        using FakeRuntimeSupervisor supervisor = new();
         FakeRuntimeStateProjection projection = new(CreateKernelState(RuntimeKernelStatus.Running, 12));
         FakePreparedRuntimePlanResolver resolver = new();
         BrokerRuntimeDispatcher dispatcher = CreateDispatcher(supervisor, projection, resolver);
@@ -51,7 +51,7 @@ public sealed class BrokerRuntimeDispatcherTests
         BrokerResponseStatus expectedStatus,
         string expectedCode)
     {
-        FakeRuntimeSupervisor supervisor = new();
+        using FakeRuntimeSupervisor supervisor = new();
         FakeRuntimeStateProjection projection = new(CreateKernelState(RuntimeKernelStatus.Stopped, 7));
         using RuntimeContextFixture context = RuntimeContextFixture.Create();
         FakePreparedRuntimePlanResolver resolver = new(context.Context);
@@ -75,7 +75,7 @@ public sealed class BrokerRuntimeDispatcherTests
     public static async Task DuplicateInFlightAndCompletedStartNeverDispatchTwice()
     {
         TaskCompletionSource<bool> releaseStart = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        FakeRuntimeSupervisor supervisor = new(startGate: releaseStart.Task);
+        using FakeRuntimeSupervisor supervisor = new(startGate: releaseStart.Task);
         FakeRuntimeStateProjection projection = new(CreateKernelState(RuntimeKernelStatus.Stopped, 4));
         using RuntimeContextFixture context = RuntimeContextFixture.Create();
         FakePreparedRuntimePlanResolver resolver = new(context.Context);
@@ -87,7 +87,9 @@ public sealed class BrokerRuntimeDispatcherTests
             new StartPreparedPlanRequest(planId, new ContractGeneration(4)));
 
         Task<BrokerResponseEnvelope> first = dispatcher.DispatchAsync(request, CancellationToken.None);
-        await supervisor.StartEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await supervisor.StartEntered.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
 
         BrokerResponseEnvelope duplicateInFlight = await dispatcher.DispatchAsync(request, CancellationToken.None);
         Assert.Equal(BrokerResponseStatus.DuplicateInFlight, duplicateInFlight.Status);
@@ -106,7 +108,7 @@ public sealed class BrokerRuntimeDispatcherTests
     public static async Task ConcurrentMutationIsRejectedBusyWithoutSecondRuntimeDispatch()
     {
         TaskCompletionSource<bool> releaseStart = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        FakeRuntimeSupervisor supervisor = new(startGate: releaseStart.Task);
+        using FakeRuntimeSupervisor supervisor = new(startGate: releaseStart.Task);
         FakeRuntimeStateProjection projection = new(CreateKernelState(RuntimeKernelStatus.Stopped, 5));
         using RuntimeContextFixture context = RuntimeContextFixture.Create();
         FakePreparedRuntimePlanResolver resolver = new(context.Context);
@@ -117,7 +119,9 @@ public sealed class BrokerRuntimeDispatcherTests
                 1,
                 new StartPreparedPlanRequest(PreparedPlanId.New(), new ContractGeneration(5))),
             CancellationToken.None);
-        await supervisor.StartEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await supervisor.StartEntered.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
 
         BrokerResponseEnvelope second = await dispatcher.DispatchAsync(
             CreateRequest(
@@ -135,7 +139,7 @@ public sealed class BrokerRuntimeDispatcherTests
     [Fact]
     public static async Task ValidStartResolvesPreparedPlanAndDelegatesToSupervisor()
     {
-        FakeRuntimeSupervisor supervisor = new();
+        using FakeRuntimeSupervisor supervisor = new();
         FakeRuntimeStateProjection projection = new(CreateKernelState(RuntimeKernelStatus.Stopped, 2));
         using RuntimeContextFixture context = RuntimeContextFixture.Create();
         FakePreparedRuntimePlanResolver resolver = new(context.Context);
@@ -157,7 +161,7 @@ public sealed class BrokerRuntimeDispatcherTests
     [Fact]
     public static async Task ValidStopDelegatesToSupervisor()
     {
-        FakeRuntimeSupervisor supervisor = new();
+        using FakeRuntimeSupervisor supervisor = new();
         FakeRuntimeStateProjection projection = new(CreateKernelState(RuntimeKernelStatus.Running, 9));
         FakePreparedRuntimePlanResolver resolver = new();
         BrokerRuntimeDispatcher dispatcher = CreateDispatcher(supervisor, projection, resolver);
@@ -242,7 +246,7 @@ public sealed class BrokerRuntimeDispatcherTests
         }
     }
 
-    private sealed class FakeRuntimeSupervisor : IRuntimeSupervisor
+    private sealed class FakeRuntimeSupervisor : IRuntimeSupervisor, IDisposable
     {
         private readonly Task startGate;
         private readonly BehaviorSubject<RuntimeSupervisorState> states = new(
@@ -292,6 +296,11 @@ public sealed class BrokerRuntimeDispatcherTests
             cancellationToken.ThrowIfCancellationRequested();
             StopCallCount++;
             return Task.FromResult(Result.Success(Unit.Instance));
+        }
+
+        public void Dispose()
+        {
+            states.Dispose();
         }
     }
 
