@@ -318,7 +318,7 @@ public sealed class BrokerRuntimeDispatcher
         };
     }
 
-    private BrokerResponseEnvelope CreateCapabilitiesResponse(
+    private static BrokerResponseEnvelope CreateCapabilitiesResponse(
         BrokerRequestEnvelope request)
     {
         BrokerCapabilities capabilities = new(
@@ -383,7 +383,7 @@ public sealed class BrokerRuntimeDispatcher
                 observedGeneration));
     }
 
-    private BrokerResponseEnvelope CreateReplayResponse(
+    private static BrokerResponseEnvelope CreateReplayResponse(
         BrokerRequestEnvelope request,
         BrokerOperationRegistration registration)
     {
