@@ -726,6 +726,7 @@
           "ReactiveUI.Reactive": "[24.2.0, )",
           "System.Reactive": "[7.0.0, )",
           "Zapret2Pilot.Application": "[0.0.25, )",
+          "Zapret2Pilot.Contracts": "[0.0.25, )",
           "Zapret2Pilot.Runtime": "[0.0.25, )",
           "Zapret2Pilot.Storage": "[0.0.25, )"
         }
@@ -736,6 +737,9 @@
           "Microsoft.Extensions.Hosting": "[10.0.12, )",
           "Zapret2Pilot.Core": "[0.0.25, )"
         }
+      },
+      "zapret2pilot.contracts": {
+        "type": "Project"
       },
       "zapret2pilot.core": {
         "type": "Project"

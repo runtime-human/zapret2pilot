@@ -674,6 +674,9 @@
           "Zapret2Pilot.Core": "[0.0.25, )"
         }
       },
+      "zapret2pilot.contracts": {
+        "type": "Project"
+      },
       "zapret2pilot.core": {
         "type": "Project"
       },
