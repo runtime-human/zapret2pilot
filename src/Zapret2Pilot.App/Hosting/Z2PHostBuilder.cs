@@ -3,7 +3,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Zapret2Pilot.App.DependencyInjection;
-using Zapret2Pilot.Runtime;
 
 namespace Zapret2Pilot.App.Hosting;
 
@@ -40,12 +39,11 @@ internal static class Z2PHostBuilder
             StorageDatabasePath = Z2PConfigurationDefaults.DefaultStorageDatabasePath()
         };
 
+        // v7-D / #17: the unelevated App retains storage and application
+        // composition only. RuntimeProcessHost, RuntimeKernelLoop and
+        // RuntimeSupervisor are privileged runtime authority and are composed
+        // exclusively by z2p-broker.exe.
         builder.Services.AddRuntimeKernelStateStore(options.StorageDatabasePath);
-        builder.Services.AddRuntimeProcessHost();
-        builder.Services.AddRuntimeHealthMonitor();
-        builder.Services.AddCrashLoopGuard();
-        builder.Services.AddRuntimeKernelLoop();
-        builder.Services.AddRuntimeSupervisor();
 
         builder.Services.AddZ2PAppServices();
 

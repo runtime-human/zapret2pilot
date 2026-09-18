@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Zapret2Pilot.App/Zapret2Pilot.App.csproj" />
     <Project Path="src/Zapret2Pilot.Application/Zapret2Pilot.Application.csproj" />
+    <Project Path="src/Zapret2Pilot.Broker/Zapret2Pilot.Broker.csproj" />
     <Project Path="src/Zapret2Pilot.Contracts/Zapret2Pilot.Contracts.csproj" />
     <Project Path="src/Zapret2Pilot.Core/Zapret2Pilot.Core.csproj" />
     <Project Path="src/Zapret2Pilot.Engine.Zapret2/Zapret2Pilot.Engine.Zapret2.csproj" />
@@ -11,6 +12,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Zapret2Pilot.App.Tests/Zapret2Pilot.App.Tests.csproj" />
+    <Project Path="tests/Zapret2Pilot.Broker.Tests/Zapret2Pilot.Broker.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj" />
     <Project Path="tests/Zapret2Pilot.Application.Tests/Zapret2Pilot.Application.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Contracts.Tests/Zapret2Pilot.Contracts.Tests.csproj" />

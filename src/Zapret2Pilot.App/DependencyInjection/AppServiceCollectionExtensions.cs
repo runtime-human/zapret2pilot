@@ -5,9 +5,11 @@ using Zapret2Pilot.App.Input;
 using Zapret2Pilot.App.Lifecycle;
 using Zapret2Pilot.App.Lifecycle.Steps;
 using Zapret2Pilot.App.Navigation;
+using Zapret2Pilot.App.Runtime;
 using Zapret2Pilot.App.Shell;
 using Zapret2Pilot.App.Threading;
 using Zapret2Pilot.Application.UseCases;
+using Zapret2Pilot.Contracts.Client;
 
 namespace Zapret2Pilot.App.DependencyInjection;
 
@@ -46,7 +48,21 @@ public static class AppServiceCollectionExtensions
 
         services.AddSingleton<IProcessLauncher, ProcessLauncher>();
         services.AddSingleton<IExternalLinkLauncher, ExternalLinkLauncher>();
-        services.AddSingleton<MainWindowViewModel>();
+
+        // #17 Task 3: App owns only a bounded RuntimeClient projection.
+        // The session transport is intentionally not connected until Task 5;
+        // disconnected mode is fail-closed and cannot mutate runtime state.
+        services.AddSingleton<BrokerRuntimeClient>(static _ => new BrokerRuntimeClient(session: null));
+        services.AddSingleton<IRuntimeClient>(
+            static sp => sp.GetRequiredService<BrokerRuntimeClient>());
+
+        services.AddSingleton(static sp => new MainWindowViewModel(
+            navigationRouter: sp.GetRequiredService<NavigationRouter>(),
+            uiScheduler: sp.GetRequiredService<IUiScheduler>(),
+            runtimeClient: sp.GetRequiredService<IRuntimeClient>(),
+            logger: sp.GetRequiredService<ILogger<MainWindowViewModel>>(),
+            coordinator: sp.GetRequiredService<IZ2PApplicationLifecycleCoordinator>(),
+            exceptionPolicy: sp.GetRequiredService<IExceptionPolicy>()));
         services.AddSingleton<MainWindow>();
 
         return services;
