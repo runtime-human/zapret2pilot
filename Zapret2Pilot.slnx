@@ -12,6 +12,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Zapret2Pilot.App.Tests/Zapret2Pilot.App.Tests.csproj" />
+    <Project Path="tests/Zapret2Pilot.Broker.Tests/Zapret2Pilot.Broker.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.App.ViewModelTests/Zapret2Pilot.App.ViewModelTests.csproj" />
     <Project Path="tests/Zapret2Pilot.Application.Tests/Zapret2Pilot.Application.Tests.csproj" />
     <Project Path="tests/Zapret2Pilot.Contracts.Tests/Zapret2Pilot.Contracts.Tests.csproj" />
