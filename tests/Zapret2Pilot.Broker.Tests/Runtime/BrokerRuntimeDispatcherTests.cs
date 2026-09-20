@@ -177,10 +177,42 @@ public sealed class BrokerRuntimeDispatcherTests
         Assert.Equal(0, supervisor.StartCallCount);
     }
 
+    [Fact]
+    public static async Task ShutdownDelegatesToSingleLifetimeController()
+    {
+        using FakeRuntimeSupervisor supervisor = new();
+        FakeRuntimeStateProjection projection = new(CreateKernelState(RuntimeKernelStatus.Running, 11));
+        FakePreparedRuntimePlanResolver resolver = new();
+        FakeBrokerLifetimeController lifetime = new();
+        BrokerRuntimeDispatcher dispatcher = CreateDispatcher(
+            supervisor,
+            projection,
+            resolver,
+            lifetime);
+
+        BrokerRequestEnvelope request = CreateRequest(
+            1,
+            new ShutdownBrokerRequest());
+
+        BrokerResponseEnvelope response = await dispatcher.DispatchAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(BrokerResponseStatus.Accepted, response.Status);
+        Assert.Equal(1, lifetime.ShutdownCallCount);
+
+        BrokerResponseEnvelope duplicate = await dispatcher.DispatchAsync(
+            request,
+            CancellationToken.None);
+        Assert.Equal(BrokerResponseStatus.DuplicateCompleted, duplicate.Status);
+        Assert.Equal(1, lifetime.ShutdownCallCount);
+    }
+
     private static BrokerRuntimeDispatcher CreateDispatcher(
         IRuntimeSupervisor supervisor,
         IBrokerRuntimeStateProjection projection,
-        IPreparedRuntimePlanResolver resolver) =>
+        IPreparedRuntimePlanResolver resolver,
+        IBrokerLifetimeController? lifetimeController = null) =>
         new(
             supervisor,
             projection,
@@ -190,7 +222,8 @@ public sealed class BrokerRuntimeDispatcherTests
                 BrokerProtocolLimits.OperationLedgerTtl),
             new BrokerConcurrencyGate(
                 BrokerProtocolLimits.MaxInFlightQueries,
-                BrokerProtocolLimits.MaxConcurrentMutations));
+                BrokerProtocolLimits.MaxConcurrentMutations),
+            lifetimeController ?? new FakeBrokerLifetimeController());
 
     private static BrokerRequestEnvelope CreateRequest(long sequence, IBrokerRequest body)
     {
@@ -243,6 +276,18 @@ public sealed class BrokerRuntimeDispatcherTests
             LastRequestedPlanId = preparedPlanId;
             startContext = context;
             return startContext is not null;
+        }
+    }
+
+    private sealed class FakeBrokerLifetimeController : IBrokerLifetimeController
+    {
+        public int ShutdownCallCount { get; private set; }
+
+        public Task<Result<Unit>> ShutdownAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ShutdownCallCount++;
+            return Task.FromResult(Result.Success(Unit.Instance));
         }
     }
 
