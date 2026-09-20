@@ -252,7 +252,8 @@ Current v1 invariants include:
 - `PreparedBundleId != Guid.Empty`;
 - canonical plan SHA-256 digest;
 - `PreparedPlanId != Guid.Empty`;
-- `RuntimeGeneration > 0` for generation-bearing requests;
+- `StartPreparedPlan.ExpectedGeneration >= 0`; generation `0` is the canonical initial Kernel generation before the first start;
+- `StopGeneration.Generation > 0`; a stoppable runtime generation exists only after start has advanced the Kernel generation;
 - enum values such as `BrokerStopReason` must be defined;
 - unknown request/body shapes fail closed.
 

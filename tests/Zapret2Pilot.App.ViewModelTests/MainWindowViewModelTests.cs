@@ -9,8 +9,9 @@ using Zapret2Pilot.App.Navigation;
 using Zapret2Pilot.App.Shell;
 using Zapret2Pilot.App.Threading;
 using Zapret2Pilot.App.ViewModelTests.Fakes;
-using Zapret2Pilot.Runtime.Guard;
-using Zapret2Pilot.Runtime.Supervisor;
+using Zapret2Pilot.Contracts.Client;
+using Zapret2Pilot.Contracts.Identity;
+using Zapret2Pilot.Contracts.Protocol;
 
 namespace Zapret2Pilot.App.ViewModelTests;
 
@@ -127,34 +128,29 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
-    public static void StartBlocked_UpdatesLastAction()
+    public static void FaultedBrokerSnapshot_UpdatesLastAction()
     {
         NavigationRouter router = new(new NavigationPageFactory(), RouteId.Dashboard);
         ImmediateUiScheduler scheduler = new();
-        using FakeRuntimeSupervisor fakeSupervisor = new();
-        MainWindowViewModel viewModel = new(router, scheduler, fakeSupervisor, logger: null, coordinator: new FakeLifecycleCoordinator());
+        using FakeRuntimeClient fakeRuntimeClient = new();
+        MainWindowViewModel viewModel = new(
+            router,
+            scheduler,
+            fakeRuntimeClient,
+            logger: null,
+            coordinator: new FakeLifecycleCoordinator());
 
-        // The supervisor subscription is wired inside WhenActivated
-        // (Packet 6 — Scope F). Activate the view model so the
-        // subscription becomes live before we publish, then deactivate
-        // to dispose it cleanly at the end of the test.
         viewModel.Activator.Activate();
         try
         {
-            RuntimeSupervisorState blockedState = new(
-                status: RuntimeSupervisorStatus.StartBlocked,
-                lastStartResult: null,
-                guardResult: new CrashLoopGuardResult(
-                    isAllowed: false,
-                    backoffRemaining: TimeSpan.FromSeconds(5),
-                    consecutiveFailures: 1),
-                lastError: null,
-                timestamp: DateTimeOffset.UtcNow);
-
-            fakeSupervisor.Publish(blockedState);
+            fakeRuntimeClient.Publish(new RuntimeClientSnapshot(
+                new RuntimeGeneration(5),
+                BrokerRuntimeState.Faulted,
+                ActivePlanId: null,
+                ActiveOperationId: null));
 
             Assert.Equal(
-                "Запуск отложен: слишком много падений. Повтор через 5 с.",
+                "Ошибка runtime. Требуется восстановление.",
                 viewModel.LastAction);
         }
         finally
@@ -202,13 +198,13 @@ public sealed class MainWindowViewModelTests
     private static MainWindowViewModel CreateViewModel(
         NavigationRouter? router = null,
         IUiScheduler? scheduler = null,
-        IRuntimeSupervisor? supervisor = null,
+        IRuntimeClient? runtimeClient = null,
         IZ2PApplicationLifecycleCoordinator? coordinator = null,
         IExceptionPolicy? exceptionPolicy = null) =>
     new(
         router ?? new NavigationRouter(new NavigationPageFactory(), RouteId.Dashboard),
         scheduler ?? new ImmediateUiScheduler(),
-        supervisor,
+        runtimeClient,
         logger: null,
         coordinator ?? new FakeLifecycleCoordinator(),
         exceptionPolicy);

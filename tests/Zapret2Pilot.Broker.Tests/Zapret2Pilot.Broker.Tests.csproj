@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Broker.Tests</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Broker.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" IncludeAssets="runtime; build; native; contentfiles; analyzers" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Broker\Zapret2Pilot.Broker.csproj" />
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Contracts\Zapret2Pilot.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
+    <ProjectReference Include="..\Zapret2Pilot.Testing.FakeRuntime\Zapret2Pilot.Testing.FakeRuntime.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

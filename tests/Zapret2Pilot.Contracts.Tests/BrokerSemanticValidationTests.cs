@@ -10,14 +10,26 @@ public sealed class BrokerSemanticValidationTests
     private const string CanonicalDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     [Fact]
-    public void StartPreparedPlanRejectsZeroRuntimeGeneration()
+    public void StartPreparedPlanAcceptsInitialZeroRuntimeGeneration()
+    {
+        AssertAccepted(CreateRequestJson(
+            "startPreparedPlan",
+            new JsonObject
+            {
+                ["preparedPlanId"] = WrappedGuid(Guid.NewGuid()),
+                ["expectedGeneration"] = WrappedLong(0),
+            }));
+    }
+
+    [Fact]
+    public void StartPreparedPlanRejectsNegativeRuntimeGeneration()
     {
         AssertRejected(CreateRequestJson(
             "startPreparedPlan",
             new JsonObject
             {
                 ["preparedPlanId"] = WrappedGuid(Guid.NewGuid()),
-                ["expectedGeneration"] = WrappedLong(0),
+                ["expectedGeneration"] = WrappedLong(-1),
             }));
     }
 
@@ -127,6 +139,16 @@ public sealed class BrokerSemanticValidationTests
     {
         Guid appSessionId = Guid.NewGuid();
         AssertRejected(CreateHelloJson(appSessionId, appSessionId, new byte[32], new byte[32], 2, 0, 2, 0));
+    }
+
+    private static void AssertAccepted(string json)
+    {
+        BrokerProtocolDecodeResult result =
+            BrokerProtocolCodec.DecodeRequest(
+                Encoding.UTF8.GetBytes(json));
+
+        Assert.Equal(BrokerProtocolDecodeStatus.Success, result.Status);
+        Assert.NotNull(result.Envelope);
     }
 
     private static void AssertRejected(string json)

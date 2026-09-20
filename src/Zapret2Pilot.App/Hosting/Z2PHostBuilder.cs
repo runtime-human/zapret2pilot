@@ -3,7 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Zapret2Pilot.App.DependencyInjection;
-using Zapret2Pilot.Runtime;
+using Zapret2Pilot.Storage.Sqlite;
 
 namespace Zapret2Pilot.App.Hosting;
 
@@ -40,12 +40,12 @@ internal static class Z2PHostBuilder
             StorageDatabasePath = Z2PConfigurationDefaults.DefaultStorageDatabasePath()
         };
 
-        builder.Services.AddRuntimeKernelStateStore(options.StorageDatabasePath);
-        builder.Services.AddRuntimeProcessHost();
-        builder.Services.AddRuntimeHealthMonitor();
-        builder.Services.AddCrashLoopGuard();
-        builder.Services.AddRuntimeKernelLoop();
-        builder.Services.AddRuntimeSupervisor();
+        // v7-D / #17: the unelevated Control Plane owns general application
+        // storage, but it must not register writable Runtime Kernel authority.
+        // Runtime lifecycle state is broker-owned across the privilege boundary.
+        builder.Services.AddSingleton(new SqliteStorageOptions(options.StorageDatabasePath));
+        builder.Services.AddSingleton<SqliteConnectionFactory>();
+        builder.Services.AddSingleton<SqliteDbInitializer>();
 
         builder.Services.AddZ2PAppServices();
 
