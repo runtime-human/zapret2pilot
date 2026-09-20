@@ -326,6 +326,18 @@ public sealed class NamedPipeRuntimeBrokerSession :
         {
             await DisconnectCoreAsync().ConfigureAwait(false);
 
+            // Wait until every request that acquired a bounded slot has
+            // unwound after DisconnectCore failed its pending response. This
+            // prevents a caller from racing requestSlots.Release() against
+            // SemaphoreSlim.Dispose().
+            for (int slot = 0;
+                 slot < BrokerProtocolLimits.IngressQueueCapacity;
+                 slot++)
+            {
+                await requestSlots.WaitAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
             lock (snapshotSync)
             {
                 snapshots.OnCompleted();
