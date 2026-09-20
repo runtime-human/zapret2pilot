@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Threading;
@@ -280,45 +281,24 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
         NamedPipeServerStream pipe,
         CancellationToken cancellationToken)
     {
-        // Authenticated transport is full-duplex: a Start request may remain
-        // in-flight while a later Stop request is admitted so the existing
-        // RuntimeSupervisor can apply Stop-supersedes-Start semantics.
-        //
-        // Reads stay single-threaded to preserve wire sequence order.
-        // Dispatch tasks may overlap, while writes are serialized and every
-        // request occupies one bounded ingress slot until its response has
-        // either been flushed or failed.
-        using SemaphoreSlim ingressSlots = new(
+        using SemaphoreSlim requestSlots = new(
             BrokerProtocolLimits.IngressQueueCapacity,
             BrokerProtocolLimits.IngressQueueCapacity);
         using SemaphoreSlim responseWriteGate = new(1, 1);
-        HashSet<Task> inFlightResponses = [];
+
+        HashSet<Task> inFlight = [];
 
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await ingressSlots.WaitAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                byte[]? payload;
-                try
-                {
-                    payload = await BrokerPipeFrameIO.ReadPayloadAsync(
-                        pipe,
-                        BrokerProtocolLimits.MaxFrameBytes,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch
-                {
-                    ingressSlots.Release();
-                    throw;
-                }
-
+                byte[]? payload = await BrokerPipeFrameIO.ReadPayloadAsync(
+                    pipe,
+                    BrokerProtocolLimits.MaxFrameBytes,
+                    cancellationToken).ConfigureAwait(false);
                 if (payload is null)
                 {
-                    ingressSlots.Release();
-                    return;
+                    break;
                 }
 
                 BrokerProtocolDecodeResult decode =
@@ -326,108 +306,107 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
                 if (decode.Status != BrokerProtocolDecodeStatus.Success
                     || decode.Envelope is null)
                 {
-                    ingressSlots.Release();
                     LogRequestRejected(logger, decode.Status);
-                    return;
+                    break;
                 }
+
+                await requestSlots.WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
 
                 BrokerRequestEnvelope request = decode.Envelope;
 
-                // Invoke DispatchAsync on the reader thread before moving on to
-                // the next frame. Its synchronous admission prefix therefore
-                // observes requests in wire/sequence order even though the
-                // terminal lifecycle work may complete out of order.
-                Task<BrokerResponseEnvelope> dispatchTask =
-                    session.DispatchAsync(request, cancellationToken);
-
-                Task responseTask = CompleteAuthenticatedRequestAsync(
+                // Do not await the runtime dispatch on the reader loop.
+                // A Start may legitimately remain in-flight until a later
+                // Stop supersedes it; the Stop must therefore be readable
+                // and dispatchable over the same authenticated connection.
+                Task dispatch = DispatchAndWriteAsync(
                     pipe,
                     request,
-                    dispatchTask,
                     responseWriteGate,
-                    ingressSlots,
+                    requestSlots,
                     cancellationToken);
 
-                inFlightResponses.Add(responseTask);
-                inFlightResponses.RemoveWhere(
-                    static task => task.IsCompleted);
+                inFlight.Add(dispatch);
+                RemoveCompleted(inFlight);
+
+                if (request.Request is ShutdownBrokerRequest)
+                {
+                    // No new request should be admitted after terminal
+                    // shutdown intent. The shutdown response itself is still
+                    // written by the dispatch task and only then calls
+                    // OnResponseFlushed -> TerminateBroker.
+                    break;
+                }
             }
         }
         finally
         {
-            if (inFlightResponses.Count != 0)
+            if (inFlight.Count != 0)
             {
                 try
                 {
-                    await Task.WhenAll(inFlightResponses)
-                        .ConfigureAwait(false);
+                    await Task.WhenAll(inFlight).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (
-                    cancellationToken.IsCancellationRequested)
+                catch (Exception ex) when (
+                    ex is IOException
+                        or ObjectDisposedException
+                        or OperationCanceledException)
                 {
-                    // Broker shutdown cancels outstanding dispatch/write work.
+                    // A disconnected client may make pending response writes
+                    // impossible. Runtime operations that already crossed
+                    // dispatcher admission continue under the Kernel; transport
+                    // loss never rolls them back or creates a second authority.
+                    LogPendingResponseDrainFailed(logger, ex);
                 }
             }
         }
     }
 
-    private async Task CompleteAuthenticatedRequestAsync(
+    private async Task DispatchAndWriteAsync(
         NamedPipeServerStream pipe,
         BrokerRequestEnvelope request,
-        Task<BrokerResponseEnvelope> dispatchTask,
         SemaphoreSlim responseWriteGate,
-        SemaphoreSlim ingressSlots,
-        CancellationToken cancellationToken)
+        SemaphoreSlim requestSlots,
+        CancellationToken serverCancellationToken)
     {
         try
         {
-            BrokerResponseEnvelope response = await dispatchTask
+            // Do not bind accepted runtime work to ordinary client
+            // disconnect. The server lifetime token cancels only when the
+            // Broker itself is shutting down.
+            BrokerResponseEnvelope response = await session
+                .DispatchAsync(request, serverCancellationToken)
                 .ConfigureAwait(false);
 
-            await responseWriteGate.WaitAsync(cancellationToken)
+            byte[] responsePayload =
+                BrokerResponseProtocolCodec.EncodeResponse(response);
+
+            await responseWriteGate.WaitAsync(serverCancellationToken)
                 .ConfigureAwait(false);
             try
             {
-                byte[] responsePayload =
-                    BrokerResponseProtocolCodec.EncodeResponse(response);
                 await BrokerPipeFrameIO.WritePayloadAsync(
                     pipe,
                     responsePayload,
                     BrokerProtocolLimits.MaxFrameBytes,
-                    cancellationToken).ConfigureAwait(false);
+                    serverCancellationToken).ConfigureAwait(false);
+
+                session.OnResponseFlushed(request, response);
             }
             finally
             {
                 responseWriteGate.Release();
             }
-
-            session.OnResponseFlushed(request, response);
-        }
-        catch (OperationCanceledException) when (
-            cancellationToken.IsCancellationRequested)
-        {
-            // Normal Broker shutdown. The runtime operation token is the
-            // Broker lifetime token, never a transient client disconnect token.
-        }
-        catch (IOException ex)
-        {
-            // A disconnected reader cannot consume this response. The
-            // admitted runtime operation remains owned by RuntimeKernelLoop;
-            // transport loss does not roll it back or replay it.
-            LogIoFailure(logger, ex);
-        }
-        catch (InvalidDataException ex)
-        {
-            LogMalformedFrame(logger, ex);
-        }
-        catch (Exception ex)
-        {
-            LogConnectionFailure(logger, ex);
         }
         finally
         {
-            ingressSlots.Release();
+            requestSlots.Release();
         }
+    }
+
+    private static void RemoveCompleted(HashSet<Task> inFlight)
+    {
+        inFlight.RemoveWhere(static task => task.IsCompleted);
     }
 
     [LoggerMessage(
@@ -479,4 +458,12 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
     private static partial void LogRequestRejected(
         ILogger logger,
         BrokerProtocolDecodeStatus status);
+
+    [LoggerMessage(
+        EventId = 1808,
+        Level = LogLevel.Debug,
+        Message = "One or more Broker responses could not be written after transport disconnect.")]
+    private static partial void LogPendingResponseDrainFailed(
+        ILogger logger,
+        Exception exception);
 }
