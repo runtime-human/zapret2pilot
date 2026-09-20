@@ -133,11 +133,26 @@ public sealed class BrokerRuntimeDispatcher : IBrokerRequestDispatcher
         }
 
         bool mutation = request.Request is IBrokerMutationRequest;
-        BrokerConcurrencyLease? lease = mutation
-            ? concurrencyGate.TryAcquireMutation()
-            : concurrencyGate.TryAcquireQuery();
 
-        if (lease is null)
+        // Stop and Shutdown are terminal control operations, not ordinary
+        // competing mutations. They must be able to enter while Start is
+        // still awaiting its terminal receipt so RuntimeSupervisor can apply
+        // the preserved Stop-supersedes-Start / shared-Stop semantics.
+        //
+        // The generic mutation gate still protects Start/Prepare-style
+        // mutations from concurrent admission. Lifecycle controls remain
+        // bounded by the authenticated request-rate / ingress limits and by
+        // RuntimeSupervisor's single receipt authority.
+        bool lifecycleControl = request.Request is StopGenerationRequest
+            or ShutdownBrokerRequest;
+
+        BrokerConcurrencyLease? lease = lifecycleControl
+            ? null
+            : mutation
+                ? concurrencyGate.TryAcquireMutation()
+                : concurrencyGate.TryAcquireQuery();
+
+        if (!lifecycleControl && lease is null)
         {
             _ = operationLedger.Complete(request.OperationId);
             return CreateErrorResponse(
@@ -149,17 +164,15 @@ public sealed class BrokerRuntimeDispatcher : IBrokerRequestDispatcher
                     : "The broker query concurrency limit is reached.");
         }
 
-        using (lease)
+        try
         {
-            try
-            {
-                return await DispatchAdmittedAsync(request, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                _ = operationLedger.Complete(request.OperationId);
-            }
+            return await DispatchAdmittedAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            lease?.Dispose();
+            _ = operationLedger.Complete(request.OperationId);
         }
     }
 
