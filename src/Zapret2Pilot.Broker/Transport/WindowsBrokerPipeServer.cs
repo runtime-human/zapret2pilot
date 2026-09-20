@@ -289,7 +289,6 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
 
         HashSet<Task> inFlight = [];
         bool terminalShutdownRequest = false;
-        bool resourcesTransferredToDrain = false;
 
         try
         {
@@ -382,14 +381,11 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
                 // alive only until already-admitted operations unwind. Their
                 // late responses may fail because the old pipe is gone; that
                 // has no effect on Kernel state and is observed by the drain.
-                resourcesTransferredToDrain = true;
                 ScheduleDetachedDrain(
                     inFlight,
                     responseWriteGate,
                     requestSlots);
             }
-
-            _ = resourcesTransferredToDrain;
         }
     }
 
