@@ -533,6 +533,15 @@ public sealed class NamedPipeRuntimeBrokerSession :
         {
             // Normal local disconnect/disposal.
         }
+        catch (OperationCanceledException ex)
+        {
+            // Frame read deadlines use a linked timeout token. A timeout must
+            // fault every pending waiter; treating it as a caller-request
+            // cancellation would strand their TaskCompletionSources.
+            terminalError = new TimeoutException(
+                "Runtime Broker response frame exceeded its read deadline.",
+                ex);
+        }
         catch (Exception ex) when (
             ex is IOException
                 or InvalidDataException
