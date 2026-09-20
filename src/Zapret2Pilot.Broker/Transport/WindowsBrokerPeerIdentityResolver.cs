@@ -22,19 +22,15 @@ public sealed record BrokerResolvedPeer(
 public interface IBrokerPeerIdentityResolver
 {
     BrokerResolvedPeer Resolve(SafePipeHandle pipeHandle);
+
+    BrokerResolvedPeer ResolveServer(SafePipeHandle pipeHandle);
 }
 
 public sealed class WindowsBrokerPeerIdentityResolver : IBrokerPeerIdentityResolver
 {
     public BrokerResolvedPeer Resolve(SafePipeHandle pipeHandle)
     {
-        ArgumentNullException.ThrowIfNull(pipeHandle);
-        if (pipeHandle.IsInvalid || pipeHandle.IsClosed)
-        {
-            throw new ArgumentException(
-                "The Named Pipe handle must be open and valid.",
-                nameof(pipeHandle));
-        }
+        ValidatePipeHandle(pipeHandle);
 
         if (!WindowsBrokerNativeMethods.GetNamedPipeClientProcessId(
                 pipeHandle,
@@ -43,6 +39,36 @@ public sealed class WindowsBrokerPeerIdentityResolver : IBrokerPeerIdentityResol
             throw NewWin32Exception("GetNamedPipeClientProcessId");
         }
 
+        return ResolveProcess(processId);
+    }
+
+    public BrokerResolvedPeer ResolveServer(SafePipeHandle pipeHandle)
+    {
+        ValidatePipeHandle(pipeHandle);
+
+        if (!WindowsBrokerNativeMethods.GetNamedPipeServerProcessId(
+                pipeHandle,
+                out uint processId))
+        {
+            throw NewWin32Exception("GetNamedPipeServerProcessId");
+        }
+
+        return ResolveProcess(processId);
+    }
+
+    private static void ValidatePipeHandle(SafePipeHandle pipeHandle)
+    {
+        ArgumentNullException.ThrowIfNull(pipeHandle);
+        if (pipeHandle.IsInvalid || pipeHandle.IsClosed)
+        {
+            throw new ArgumentException(
+                "The Named Pipe handle must be open and valid.",
+                nameof(pipeHandle));
+        }
+    }
+
+    private static BrokerResolvedPeer ResolveProcess(uint processId)
+    {
         IntPtr rawProcessHandle = WindowsBrokerNativeMethods.OpenProcess(
             WindowsBrokerNativeMethods.ProcessQueryLimitedInformation
                 | WindowsBrokerNativeMethods.Synchronize,
@@ -371,6 +397,12 @@ internal static partial class WindowsBrokerNativeMethods
     internal static partial bool GetNamedPipeClientProcessId(
         SafePipeHandle pipe,
         out uint clientProcessId);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetNamedPipeServerProcessId(
+        SafePipeHandle pipe,
+        out uint serverProcessId);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     internal static partial IntPtr OpenProcess(
