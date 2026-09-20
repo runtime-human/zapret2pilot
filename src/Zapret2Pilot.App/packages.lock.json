@@ -680,29 +680,6 @@
       "zapret2pilot.core": {
         "type": "Project"
       },
-      "zapret2pilot.engine.zapret2": {
-        "type": "Project",
-        "dependencies": {
-          "Zapret2Pilot.Core": "[0.0.25, )"
-        }
-      },
-      "zapret2pilot.infrastructure": {
-        "type": "Project",
-        "dependencies": {
-          "Zapret2Pilot.Core": "[0.0.25, )"
-        }
-      },
-      "zapret2pilot.runtime": {
-        "type": "Project",
-        "dependencies": {
-          "Microsoft.Extensions.Hosting": "[10.0.12, )",
-          "Microsoft.Extensions.Logging.Abstractions": "[10.0.12, )",
-          "System.Reactive": "[7.0.0, )",
-          "Zapret2Pilot.Engine.Zapret2": "[0.0.25, )",
-          "Zapret2Pilot.Infrastructure": "[0.0.25, )",
-          "Zapret2Pilot.Storage": "[0.0.25, )"
-        }
-      },
       "zapret2pilot.storage": {
         "type": "Project",
         "dependencies": {
