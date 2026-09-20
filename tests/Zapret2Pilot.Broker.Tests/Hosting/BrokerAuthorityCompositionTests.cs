@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
 using Zapret2Pilot.Broker.Hosting;
+using Zapret2Pilot.Broker.Runtime;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.Kernel;
 using Zapret2Pilot.Runtime.Supervisor;
@@ -46,11 +47,22 @@ public sealed class BrokerAuthorityCompositionTests
             builder.Services,
             static descriptor => descriptor.ServiceType == typeof(SqliteDbInitializer));
 
-        // RuntimeHealthMonitor and RuntimeSupervisor are the two hosted
-        // runtime services. Their factories resolve the corresponding
-        // singleton registrations; no duplicate hosted authority is added.
+        Assert.Single(
+            builder.Services,
+            static descriptor => descriptor.ServiceType == typeof(BrokerSessionLifetimeService));
+        Assert.Single(
+            builder.Services,
+            static descriptor => descriptor.ServiceType == typeof(IBrokerAppSessionLease));
+        Assert.Single(
+            builder.Services,
+            static descriptor => descriptor.ServiceType == typeof(IBrokerAppSessionLeaseBinder));
+
+        // RuntimeHealthMonitor, RuntimeSupervisor and the App-session lifetime
+        // watcher are hosted. Only RuntimeSupervisor/Kernel can mutate runtime;
+        // the lifetime watcher can request terminal cleanup through that same
+        // authority but cannot transition lifecycle state itself.
         Assert.Equal(
-            2,
+            3,
             builder.Services.Count(
                 static descriptor => descriptor.ServiceType == typeof(IHostedService)));
     }
