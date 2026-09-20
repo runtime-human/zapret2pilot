@@ -48,6 +48,7 @@ public static class BrokerHostBuilder
         builder.Services.AddSingleton(static _ => new BrokerConcurrencyGate(
             BrokerProtocolLimits.MaxInFlightQueries,
             BrokerProtocolLimits.MaxConcurrentMutations));
+        builder.Services.AddSingleton<IBrokerLifetimeController, BrokerLifetimeController>();
         builder.Services.AddSingleton<BrokerRuntimeDispatcher>();
 
         return builder;
