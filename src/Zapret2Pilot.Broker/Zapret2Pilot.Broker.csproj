@@ -6,6 +6,9 @@
     <Description>Session-scoped privileged Runtime Broker for Zapret2Pilot.</Description>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
+    <!-- LibraryImport source-generated Win32 stubs require unsafe enabled;
+         production source does not expose an unsafe API surface. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
