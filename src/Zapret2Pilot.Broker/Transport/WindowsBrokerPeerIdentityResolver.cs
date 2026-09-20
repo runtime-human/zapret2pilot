@@ -19,7 +19,12 @@ public sealed record BrokerResolvedPeer(
 /// and retains the exact opened process object as the AppSession lifetime
 /// lease. Serialized PID/token claims are never used as authority.
 /// </summary>
-public sealed class WindowsBrokerPeerIdentityResolver
+public interface IBrokerPeerIdentityResolver
+{
+    BrokerResolvedPeer Resolve(SafePipeHandle pipeHandle);
+}
+
+public sealed class WindowsBrokerPeerIdentityResolver : IBrokerPeerIdentityResolver
 {
     public BrokerResolvedPeer Resolve(SafePipeHandle pipeHandle)
     {
@@ -312,7 +317,8 @@ public sealed class WindowsBrokerAppProcessLease : IBrokerAppSessionLease
                     throw new InvalidOperationException(
                         $"Unexpected WaitForSingleObject result: {result}.");
                 }
-            });
+            },
+            CancellationToken.None);
     }
 
     public void Dispose()
