@@ -595,6 +595,10 @@ public sealed class NamedPipeRuntimeBrokerSession :
         }
 
         connectedPipe.Dispose();
+
+        FailPendingResponses(
+            new IOException(
+                "Runtime Broker connection became unusable while writing a request."));
     }
 
     private static void EnsureStatus(
