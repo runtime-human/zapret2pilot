@@ -49,12 +49,25 @@ public static class AppServiceCollectionExtensions
         services.AddSingleton<IProcessLauncher, ProcessLauncher>();
         services.AddSingleton<IExternalLinkLauncher, ExternalLinkLauncher>();
 
-        // #17 Task 3: App owns only a bounded RuntimeClient projection.
-        // The session transport is intentionally not connected until Task 5;
-        // disconnected mode is fail-closed and cannot mutate runtime state.
-        services.AddSingleton<BrokerRuntimeClient>(static _ => new BrokerRuntimeClient(session: null));
+        // #17: App owns only a late-bound RuntimeClient projection.
+        // Runtime Broker elevation/bootstrap is a separate hosted lifetime
+        // service and the existing OwnershipRecovery startup phase invokes it
+        // after the shell is visible. Until attach succeeds the client remains
+        // disconnected and fail-closed.
+        services.AddSingleton<BrokerRuntimeClient>();
         services.AddSingleton<IRuntimeClient>(
             static sp => sp.GetRequiredService<BrokerRuntimeClient>());
+
+        services.AddSingleton<IAppProcessBindingProvider, WindowsAppProcessBindingProvider>();
+        services.AddSingleton<IBrokerExecutableLocator, SiblingBrokerExecutableLocator>();
+        services.AddSingleton<IElevatedBrokerLauncher, WindowsElevatedBrokerLauncher>();
+        services.AddSingleton<IBrokerBootstrapServerFactory, WindowsBrokerBootstrapServerFactory>();
+
+        services.AddSingleton<RuntimeBrokerBootstrapper>();
+        services.AddSingleton<IRuntimeBrokerBootstrapper>(
+            static sp => sp.GetRequiredService<RuntimeBrokerBootstrapper>());
+        services.AddSingleton<IHostedService>(
+            static sp => sp.GetRequiredService<RuntimeBrokerBootstrapper>());
 
         services.AddSingleton(static sp => new MainWindowViewModel(
             navigationRouter: sp.GetRequiredService<NavigationRouter>(),
