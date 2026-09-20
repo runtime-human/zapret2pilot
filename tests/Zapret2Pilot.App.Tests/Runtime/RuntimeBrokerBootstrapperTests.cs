@@ -160,11 +160,12 @@ public sealed class RuntimeBrokerBootstrapperTests
         public BrokerClientBinding Create(
             AppSessionId appSessionId)
         {
-            LastBinding = binding with
+            BrokerClientBinding result = binding with
             {
                 AppSessionId = appSessionId,
             };
-            return LastBinding;
+            LastBinding = result;
+            return result;
         }
     }
 
