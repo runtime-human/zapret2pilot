@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Pipes;
 using System.Reactive.Linq;
@@ -29,8 +30,13 @@ public sealed class NamedPipeRuntimeBrokerSessionFactory :
 
 /// <summary>
 /// Authenticated Control-Plane session over the v1 local Broker Named Pipe.
-/// This class serializes request/response exchange but owns no runtime state
-/// machine; snapshots are projections received from the Broker.
+///
+/// Requests are multiplexed over one authenticated full-duplex connection:
+/// writes are serialized in request-sequence order, while a dedicated reader
+/// routes out-of-order responses back to callers by OperationId. This lets a
+/// Stop request reach the Broker while an earlier Start is still waiting for
+/// its terminal RuntimeKernel receipt without creating a second lifecycle
+/// authority in the Control Plane.
 /// </summary>
 public sealed class NamedPipeRuntimeBrokerSession :
     IConnectableRuntimeBrokerSession
@@ -40,12 +46,23 @@ public sealed class NamedPipeRuntimeBrokerSession :
     private readonly byte[] bootstrapSecret;
     private readonly TimeProvider timeProvider;
     private readonly BehaviorSubject<BrokerRuntimeSnapshot> snapshots;
-    private readonly SemaphoreSlim exchangeGate = new(1, 1);
+    private readonly object stateSync = new();
+    private readonly object snapshotSync = new();
+    private readonly SemaphoreSlim connectionGate = new(1, 1);
+    private readonly SemaphoreSlim writeGate = new(1, 1);
+    private readonly SemaphoreSlim requestSlots = new(
+        BrokerProtocolLimits.IngressQueueCapacity,
+        BrokerProtocolLimits.IngressQueueCapacity);
+    private readonly ConcurrentDictionary<
+        BrokerOperationId,
+        TaskCompletionSource<BrokerResponseEnvelope>> pendingResponses = new();
 
     private NamedPipeClientStream? pipe;
     private BrokerSessionId? brokerSessionId;
+    private CancellationTokenSource? connectionCts;
+    private Task? responseReaderTask;
     private long nextSequence;
-    private bool disposed;
+    private int disposed;
 
     public NamedPipeRuntimeBrokerSession(
         BrokerClientBinding clientBinding,
@@ -74,19 +91,38 @@ public sealed class NamedPipeRuntimeBrokerSession :
                 ActiveOperationId: null));
     }
 
-    public BrokerRuntimeSnapshot CurrentSnapshot => snapshots.Value;
+    public BrokerRuntimeSnapshot CurrentSnapshot
+    {
+        get
+        {
+            lock (snapshotSync)
+            {
+                return snapshots.Value;
+            }
+        }
+    }
 
     public IObservable<BrokerRuntimeSnapshot> SnapshotChanged
         => snapshots.AsObservable();
 
     public bool IsConnected
-        => pipe is { IsConnected: true } && brokerSessionId is not null;
+    {
+        get
+        {
+            lock (stateSync)
+            {
+                return pipe is { IsConnected: true }
+                    && brokerSessionId is not null;
+            }
+        }
+    }
 
     public async Task ConnectAsync(CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
 
-        await exchangeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await connectionGate.WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
         try
         {
             if (IsConnected)
@@ -197,8 +233,18 @@ public sealed class NamedPipeRuntimeBrokerSession :
                     }
                 }
 
-                pipe = candidate;
-                brokerSessionId = challenge.BrokerSessionId;
+                CancellationTokenSource readerCts = new();
+                lock (stateSync)
+                {
+                    pipe = candidate;
+                    brokerSessionId = challenge.BrokerSessionId;
+                    connectionCts = readerCts;
+                    responseReaderTask = ReadResponsesAsync(
+                        candidate,
+                        challenge.BrokerSessionId,
+                        readerCts.Token);
+                }
+
                 candidate = null!;
             }
             finally
@@ -211,25 +257,15 @@ public sealed class NamedPipeRuntimeBrokerSession :
         }
         finally
         {
-            exchangeGate.Release();
+            connectionGate.Release();
         }
     }
 
-    public async Task<BrokerRuntimeSnapshot> GetRuntimeSnapshotAsync(
+    public Task<BrokerRuntimeSnapshot> GetRuntimeSnapshotAsync(
         CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
-
-        await exchangeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            return await GetRuntimeSnapshotCoreAsync(cancellationToken)
-                .ConfigureAwait(false);
-        }
-        finally
-        {
-            exchangeGate.Release();
-        }
+        return GetRuntimeSnapshotCoreAsync(cancellationToken);
     }
 
     public async Task<BrokerRuntimeSnapshot> StartPreparedPlanAsync(
@@ -239,23 +275,15 @@ public sealed class NamedPipeRuntimeBrokerSession :
     {
         ThrowIfDisposed();
 
-        await exchangeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            BrokerResponseEnvelope response = await SendRequestCoreAsync(
-                new StartPreparedPlanRequest(
-                    preparedPlanId,
-                    expectedGeneration),
-                cancellationToken).ConfigureAwait(false);
-            EnsureStatus(response, BrokerResponseStatus.Accepted);
+        BrokerResponseEnvelope response = await SendRequestCoreAsync(
+            new StartPreparedPlanRequest(
+                preparedPlanId,
+                expectedGeneration),
+            cancellationToken).ConfigureAwait(false);
+        EnsureStatus(response, BrokerResponseStatus.Accepted);
 
-            return await GetRuntimeSnapshotCoreAsync(cancellationToken)
-                .ConfigureAwait(false);
-        }
-        finally
-        {
-            exchangeGate.Release();
-        }
+        return await GetRuntimeSnapshotCoreAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task<BrokerRuntimeSnapshot> StopGenerationAsync(
@@ -265,21 +293,13 @@ public sealed class NamedPipeRuntimeBrokerSession :
     {
         ThrowIfDisposed();
 
-        await exchangeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            BrokerResponseEnvelope response = await SendRequestCoreAsync(
-                new StopGenerationRequest(generation, reason),
-                cancellationToken).ConfigureAwait(false);
-            EnsureStatus(response, BrokerResponseStatus.Accepted);
+        BrokerResponseEnvelope response = await SendRequestCoreAsync(
+            new StopGenerationRequest(generation, reason),
+            cancellationToken).ConfigureAwait(false);
+        EnsureStatus(response, BrokerResponseStatus.Accepted);
 
-            return await GetRuntimeSnapshotCoreAsync(cancellationToken)
-                .ConfigureAwait(false);
-        }
-        finally
-        {
-            exchangeGate.Release();
-        }
+        return await GetRuntimeSnapshotCoreAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task ShutdownBrokerAsync(
@@ -287,42 +307,39 @@ public sealed class NamedPipeRuntimeBrokerSession :
     {
         ThrowIfDisposed();
 
-        await exchangeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            BrokerResponseEnvelope response = await SendRequestCoreAsync(
-                new ShutdownBrokerRequest(),
-                cancellationToken).ConfigureAwait(false);
-            EnsureStatus(response, BrokerResponseStatus.Accepted);
-        }
-        finally
-        {
-            exchangeGate.Release();
-        }
+        BrokerResponseEnvelope response = await SendRequestCoreAsync(
+            new ShutdownBrokerRequest(),
+            cancellationToken).ConfigureAwait(false);
+        EnsureStatus(response, BrokerResponseStatus.Accepted);
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (disposed)
+        if (Interlocked.Exchange(ref disposed, 1) != 0)
         {
             return;
         }
 
-        disposed = true;
-
-        await exchangeGate.WaitAsync(CancellationToken.None)
+        await connectionGate.WaitAsync(CancellationToken.None)
             .ConfigureAwait(false);
         try
         {
             await DisconnectCoreAsync().ConfigureAwait(false);
-            snapshots.OnCompleted();
-            snapshots.Dispose();
+
+            lock (snapshotSync)
+            {
+                snapshots.OnCompleted();
+                snapshots.Dispose();
+            }
+
             CryptographicOperations.ZeroMemory(bootstrapSecret);
         }
         finally
         {
-            exchangeGate.Release();
-            exchangeGate.Dispose();
+            connectionGate.Release();
+            connectionGate.Dispose();
+            writeGate.Dispose();
+            requestSlots.Dispose();
         }
     }
 
@@ -339,7 +356,11 @@ public sealed class NamedPipeRuntimeBrokerSession :
             ?? throw new InvalidDataException(
                 "Broker snapshot response body has an unexpected type.");
 
-        snapshots.OnNext(body.Snapshot);
+        lock (snapshotSync)
+        {
+            snapshots.OnNext(body.Snapshot);
+        }
+
         return body.Snapshot;
     }
 
@@ -347,62 +368,212 @@ public sealed class NamedPipeRuntimeBrokerSession :
         IBrokerRequest request,
         CancellationToken cancellationToken)
     {
-        NamedPipeClientStream connectedPipe = pipe is { IsConnected: true }
-            ? pipe
-            : throw new InvalidOperationException(
-                "Runtime Broker session is not connected.");
-        BrokerSessionId sessionId = brokerSessionId
-            ?? throw new InvalidOperationException(
-                "Runtime Broker session is not authenticated.");
+        await requestSlots.WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
 
-        long sequence = NextSequence();
-        DateTimeOffset now = timeProvider.GetUtcNow();
-        BrokerRequestEnvelope envelope = new(
-            BrokerProtocolVersion.V1,
-            clientBinding.AppSessionId,
-            sessionId,
-            BrokerOperationId.New(),
-            new RequestSequence(sequence),
-            now,
-            now + BrokerProtocolLimits.MaxRequestLifetime,
-            request);
+        BrokerOperationId operationId = BrokerOperationId.New();
+        TaskCompletionSource<BrokerResponseEnvelope> completion = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        bool registered = false;
 
-        byte[] payload = BrokerProtocolCodec.EncodeRequest(envelope);
-        await WritePayloadAsync(
-            connectedPipe,
-            payload,
-            BrokerProtocolLimits.MaxFrameBytes,
-            cancellationToken).ConfigureAwait(false);
-
-        byte[]? responsePayload = await ReadPayloadAsync(
-            connectedPipe,
-            BrokerProtocolLimits.MaxFrameBytes,
-            cancellationToken).ConfigureAwait(false);
-        if (responsePayload is null)
+        try
         {
-            throw new EndOfStreamException(
-                "Runtime Broker disconnected before returning a response.");
+            await writeGate.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            try
+            {
+                NamedPipeClientStream connectedPipe;
+                BrokerSessionId sessionId;
+                lock (stateSync)
+                {
+                    connectedPipe = pipe is { IsConnected: true }
+                        ? pipe
+                        : throw new InvalidOperationException(
+                            "Runtime Broker session is not connected.");
+                    sessionId = brokerSessionId
+                        ?? throw new InvalidOperationException(
+                            "Runtime Broker session is not authenticated.");
+                }
+
+                long sequence = NextSequence();
+                DateTimeOffset now = timeProvider.GetUtcNow();
+                BrokerRequestEnvelope envelope = new(
+                    BrokerProtocolVersion.V1,
+                    clientBinding.AppSessionId,
+                    sessionId,
+                    operationId,
+                    new RequestSequence(sequence),
+                    now,
+                    now + BrokerProtocolLimits.MaxRequestLifetime,
+                    request);
+
+                if (!pendingResponses.TryAdd(operationId, completion))
+                {
+                    throw new InvalidOperationException(
+                        "A duplicate Broker operation id was generated.");
+                }
+
+                registered = true;
+
+                byte[] payload = BrokerProtocolCodec.EncodeRequest(envelope);
+                try
+                {
+                    await WritePayloadAsync(
+                        connectedPipe,
+                        payload,
+                        BrokerProtocolLimits.MaxFrameBytes,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    pendingResponses.TryRemove(operationId, out _);
+                    registered = false;
+                    InvalidateConnection(connectedPipe);
+                    throw;
+                }
+            }
+            finally
+            {
+                writeGate.Release();
+            }
+
+            try
+            {
+                return await completion.Task
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested)
+            {
+                // Local caller cancellation only abandons its response wait.
+                // It never becomes an implicit remote runtime cancellation.
+                pendingResponses.TryRemove(operationId, out _);
+                registered = false;
+                throw;
+            }
+        }
+        finally
+        {
+            if (registered)
+            {
+                pendingResponses.TryRemove(operationId, out _);
+            }
+
+            requestSlots.Release();
+        }
+    }
+
+    private async Task ReadResponsesAsync(
+        NamedPipeClientStream connectedPipe,
+        BrokerSessionId sessionId,
+        CancellationToken cancellationToken)
+    {
+        Exception? terminalError = null;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                byte[]? responsePayload = await ReadPayloadAsync(
+                    connectedPipe,
+                    BrokerProtocolLimits.MaxFrameBytes,
+                    cancellationToken).ConfigureAwait(false);
+                if (responsePayload is null)
+                {
+                    terminalError = new EndOfStreamException(
+                        "Runtime Broker disconnected while responses were pending.");
+                    return;
+                }
+
+                BrokerResponseDecodeResult decode =
+                    BrokerResponseProtocolCodec.DecodeResponse(responsePayload);
+                if (decode.Status != BrokerProtocolDecodeStatus.Success
+                    || decode.Envelope is null)
+                {
+                    terminalError = new InvalidDataException(
+                        $"Broker response was rejected: {decode.Status}.");
+                    return;
+                }
+
+                BrokerResponseEnvelope response = decode.Envelope;
+                if (response.AppSessionId != clientBinding.AppSessionId
+                    || response.BrokerSessionId != sessionId)
+                {
+                    terminalError = new InvalidDataException(
+                        "Broker response session identity does not match the authenticated connection.");
+                    return;
+                }
+
+                if (pendingResponses.TryRemove(
+                        response.OperationId,
+                        out TaskCompletionSource<BrokerResponseEnvelope>? waiter))
+                {
+                    waiter.TrySetResult(response);
+                }
+                // A missing waiter is expected when a local caller cancelled
+                // after its request was written. The Broker operation may
+                // still complete; its late response is safely discarded.
+            }
+        }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested)
+        {
+            // Normal local disconnect/disposal.
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or InvalidDataException
+                or ObjectDisposedException)
+        {
+            terminalError = ex;
+        }
+        finally
+        {
+            lock (stateSync)
+            {
+                if (ReferenceEquals(pipe, connectedPipe))
+                {
+                    brokerSessionId = null;
+                }
+            }
+
+            if (terminalError is not null)
+            {
+                FailPendingResponses(terminalError);
+            }
+        }
+    }
+
+    private void FailPendingResponses(Exception error)
+    {
+        foreach (KeyValuePair<
+                     BrokerOperationId,
+                     TaskCompletionSource<BrokerResponseEnvelope>> entry
+                 in pendingResponses)
+        {
+            if (pendingResponses.TryRemove(entry.Key, out var waiter))
+            {
+                waiter.TrySetException(error);
+            }
+        }
+    }
+
+    private void InvalidateConnection(
+        NamedPipeClientStream connectedPipe)
+    {
+        lock (stateSync)
+        {
+            if (!ReferenceEquals(pipe, connectedPipe))
+            {
+                return;
+            }
+
+            brokerSessionId = null;
+            connectionCts?.Cancel();
         }
 
-        BrokerResponseDecodeResult decode =
-            BrokerResponseProtocolCodec.DecodeResponse(responsePayload);
-        if (decode.Status != BrokerProtocolDecodeStatus.Success
-            || decode.Envelope is null)
-        {
-            throw new InvalidDataException(
-                $"Broker response was rejected: {decode.Status}.");
-        }
-
-        BrokerResponseEnvelope response = decode.Envelope;
-        if (response.AppSessionId != envelope.AppSessionId
-            || response.BrokerSessionId != envelope.BrokerSessionId
-            || response.OperationId != envelope.OperationId)
-        {
-            throw new InvalidDataException(
-                "Broker response correlation identity does not match the request.");
-        }
-
-        return response;
+        connectedPipe.Dispose();
     }
 
     private static void EnsureStatus(
@@ -438,18 +609,52 @@ public sealed class NamedPipeRuntimeBrokerSession :
 
     private async Task DisconnectCoreAsync()
     {
-        brokerSessionId = null;
+        NamedPipeClientStream? oldPipe;
+        CancellationTokenSource? oldCts;
+        Task? oldReader;
 
-        if (pipe is not null)
+        lock (stateSync)
         {
-            await pipe.DisposeAsync().ConfigureAwait(false);
+            brokerSessionId = null;
+            oldPipe = pipe;
+            oldCts = connectionCts;
+            oldReader = responseReaderTask;
             pipe = null;
+            connectionCts = null;
+            responseReaderTask = null;
         }
+
+        oldCts?.Cancel();
+
+        if (oldPipe is not null)
+        {
+            await oldPipe.DisposeAsync().ConfigureAwait(false);
+        }
+
+        if (oldReader is not null)
+        {
+            try
+            {
+                await oldReader.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal disconnect.
+            }
+        }
+
+        oldCts?.Dispose();
+
+        FailPendingResponses(
+            new EndOfStreamException(
+                "Runtime Broker session was disconnected."));
     }
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(disposed, this);
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref disposed) != 0,
+            this);
     }
 
     private static async Task<byte[]?> ReadFrameBytesAsync(
