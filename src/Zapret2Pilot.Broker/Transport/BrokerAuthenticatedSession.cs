@@ -9,6 +9,34 @@ using Zapret2Pilot.Contracts.Transport;
 
 namespace Zapret2Pilot.Broker.Transport;
 
+public interface IBrokerAuthenticatedSession : IDisposable
+{
+    BrokerSessionId BrokerSessionId { get; }
+
+    bool IsAuthenticated { get; }
+
+    BrokerChallengeIssueResult TryIssueChallenge(
+        BrokerPeerIdentity peer);
+
+    void AbandonChallenge(
+        BrokerChallengeHandle challengeHandle);
+
+    BrokerAdmissionDecision TryAuthenticate(
+        BrokerChallengeHandle challengeHandle,
+        BrokerPeerIdentity peer,
+        BrokerRequestEnvelope helloEnvelope);
+
+    void ReleaseAuthenticatedConnection();
+
+    Task<BrokerResponseEnvelope> DispatchAsync(
+        BrokerRequestEnvelope request,
+        CancellationToken cancellationToken = default);
+
+    void OnResponseFlushed(
+        BrokerRequestEnvelope request,
+        BrokerResponseEnvelope response);
+}
+
 /// <summary>
 /// Transport-independent authenticated Broker session.
 ///
@@ -16,7 +44,7 @@ namespace Zapret2Pilot.Broker.Transport;
 /// It never mutates runtime state itself: accepted requests are forwarded to
 /// the single <see cref="IBrokerRequestDispatcher"/>.
 /// </summary>
-public sealed class BrokerAuthenticatedSession : IDisposable
+public sealed class BrokerAuthenticatedSession : IBrokerAuthenticatedSession
 {
     private readonly BrokerClientBinding expectedClient;
     private readonly BrokerPreAuthenticationSession preAuthentication;
