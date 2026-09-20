@@ -22,7 +22,7 @@ public interface IBrokerAppSessionLease : IDisposable
 /// Binds Broker lifetime to the admitted Control Plane process without making
 /// transport connectivity a lifecycle authority.
 /// </summary>
-public sealed class BrokerSessionLifetimeService : IHostedService, IDisposable
+public sealed partial class BrokerSessionLifetimeService : IHostedService, IDisposable
 {
     private readonly IBrokerAppSessionLease appSessionLease;
     private readonly IBrokerLifetimeController lifetimeController;
@@ -109,8 +109,7 @@ public sealed class BrokerSessionLifetimeService : IHostedService, IDisposable
             return;
         }
 
-        logger.LogWarning(
-            "The admitted Control Plane process exited. Broker terminal cleanup is starting.");
+        LogControlPlaneExited(logger);
 
         using CancellationTokenSource shutdownBudget =
             new(BrokerProtocolLimits.BrokerShutdownTimeout);
@@ -123,26 +122,52 @@ public sealed class BrokerSessionLifetimeService : IHostedService, IDisposable
 
             if (result.IsFailure)
             {
-                logger.LogCritical(
-                    "Runtime cleanup after Control Plane loss failed: {Code} {Message}. The privileged Broker will still terminate.",
+                LogCleanupFailed(
+                    logger,
                     result.Error.Code,
                     result.Error.Message);
             }
         }
         catch (OperationCanceledException)
         {
-            logger.LogCritical(
-                "Runtime cleanup after Control Plane loss exceeded the Broker shutdown budget. The privileged Broker will terminate.");
+            LogCleanupTimedOut(logger);
         }
         catch (Exception ex)
         {
-            logger.LogCritical(
-                ex,
-                "Runtime cleanup after Control Plane loss threw. The privileged Broker will terminate.");
+            LogCleanupThrew(logger, ex);
         }
         finally
         {
             lifetimeController.TerminateBroker();
         }
     }
+
+    [LoggerMessage(
+        EventId = 1701,
+        Level = LogLevel.Warning,
+        Message = "The admitted Control Plane process exited. Broker terminal cleanup is starting.")]
+    private static partial void LogControlPlaneExited(ILogger logger);
+
+    [LoggerMessage(
+        EventId = 1702,
+        Level = LogLevel.Critical,
+        Message = "Runtime cleanup after Control Plane loss failed: {Code} {Message}. The privileged Broker will still terminate.")]
+    private static partial void LogCleanupFailed(
+        ILogger logger,
+        string code,
+        string message);
+
+    [LoggerMessage(
+        EventId = 1703,
+        Level = LogLevel.Critical,
+        Message = "Runtime cleanup after Control Plane loss exceeded the Broker shutdown budget. The privileged Broker will terminate.")]
+    private static partial void LogCleanupTimedOut(ILogger logger);
+
+    [LoggerMessage(
+        EventId = 1704,
+        Level = LogLevel.Critical,
+        Message = "Runtime cleanup after Control Plane loss threw. The privileged Broker will terminate.")]
+    private static partial void LogCleanupThrew(
+        ILogger logger,
+        Exception exception);
 }
