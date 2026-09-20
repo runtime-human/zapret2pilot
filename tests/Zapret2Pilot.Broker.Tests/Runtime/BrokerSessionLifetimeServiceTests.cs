@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using Zapret2Pilot.Broker.Runtime;
@@ -16,41 +15,35 @@ public sealed class BrokerSessionLifetimeServiceTests
     {
         using FakeAppSessionLease lease = new();
         FakeBrokerLifetimeController controller = new(Result.Success(Unit.Instance));
-        FakeHostApplicationLifetime appLifetime = new();
-        using BrokerSessionLifetimeService service = CreateService(
-            lease,
-            controller,
-            appLifetime);
+        using BrokerSessionLifetimeService service = CreateService(lease, controller);
 
         await service.StartAsync(CancellationToken.None);
 
-        Assert.Equal(0, controller.ShutdownCallCount);
-        Assert.Equal(0, appLifetime.StopApplicationCallCount);
+        Assert.Equal(0, controller.StopRuntimeCallCount);
+        Assert.Equal(0, controller.TerminateCallCount);
 
         await service.StopAsync(CancellationToken.None);
 
-        Assert.Equal(0, controller.ShutdownCallCount);
+        Assert.Equal(0, controller.StopRuntimeCallCount);
+        Assert.Equal(0, controller.TerminateCallCount);
     }
 
     [Fact]
-    public static async Task AppProcessDeathRoutesCleanupThroughLifetimeController()
+    public static async Task AppProcessDeathRoutesCleanupThenTerminatesBroker()
     {
         using FakeAppSessionLease lease = new();
         FakeBrokerLifetimeController controller = new(Result.Success(Unit.Instance));
-        FakeHostApplicationLifetime appLifetime = new();
-        using BrokerSessionLifetimeService service = CreateService(
-            lease,
-            controller,
-            appLifetime);
+        using BrokerSessionLifetimeService service = CreateService(lease, controller);
 
         await service.StartAsync(CancellationToken.None);
         lease.SignalExit();
 
-        await controller.ShutdownObserved.Task.WaitAsync(
+        await controller.TerminationObserved.Task.WaitAsync(
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
 
-        Assert.Equal(1, controller.ShutdownCallCount);
+        Assert.Equal(1, controller.StopRuntimeCallCount);
+        Assert.Equal(1, controller.TerminateCallCount);
     }
 
     [Fact]
@@ -64,31 +57,25 @@ public sealed class BrokerSessionLifetimeServiceTests
 
         using FakeAppSessionLease lease = new();
         FakeBrokerLifetimeController controller = new(Result.Failure<Unit>(error));
-        FakeHostApplicationLifetime appLifetime = new();
-        using BrokerSessionLifetimeService service = CreateService(
-            lease,
-            controller,
-            appLifetime);
+        using BrokerSessionLifetimeService service = CreateService(lease, controller);
 
         await service.StartAsync(CancellationToken.None);
         lease.SignalExit();
 
-        await appLifetime.StopObserved.Task.WaitAsync(
+        await controller.TerminationObserved.Task.WaitAsync(
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
 
-        Assert.Equal(1, controller.ShutdownCallCount);
-        Assert.Equal(1, appLifetime.StopApplicationCallCount);
+        Assert.Equal(1, controller.StopRuntimeCallCount);
+        Assert.Equal(1, controller.TerminateCallCount);
     }
 
     private static BrokerSessionLifetimeService CreateService(
         IBrokerAppSessionLease lease,
-        IBrokerLifetimeController controller,
-        IHostApplicationLifetime appLifetime)
+        IBrokerLifetimeController controller)
         => new(
             lease,
             controller,
-            appLifetime,
             NullLogger<BrokerSessionLifetimeService>.Instance);
 
     private sealed class FakeAppSessionLease : IBrokerAppSessionLease
@@ -113,37 +100,24 @@ public sealed class BrokerSessionLifetimeServiceTests
             this.result = result;
         }
 
-        public int ShutdownCallCount { get; private set; }
+        public int StopRuntimeCallCount { get; private set; }
 
-        public TaskCompletionSource<bool> ShutdownObserved { get; } = new(
+        public int TerminateCallCount { get; private set; }
+
+        public TaskCompletionSource<bool> TerminationObserved { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<Result<Unit>> ShutdownAsync(CancellationToken cancellationToken)
+        public Task<Result<Unit>> StopRuntimeAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ShutdownCallCount++;
-            ShutdownObserved.TrySetResult(true);
+            StopRuntimeCallCount++;
             return Task.FromResult(result);
         }
-    }
 
-    private sealed class FakeHostApplicationLifetime : IHostApplicationLifetime
-    {
-        public int StopApplicationCallCount { get; private set; }
-
-        public TaskCompletionSource<bool> StopObserved { get; } = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public CancellationToken ApplicationStarted => CancellationToken.None;
-
-        public CancellationToken ApplicationStopping => CancellationToken.None;
-
-        public CancellationToken ApplicationStopped => CancellationToken.None;
-
-        public void StopApplication()
+        public void TerminateBroker()
         {
-            StopApplicationCallCount++;
-            StopObserved.TrySetResult(true);
+            TerminateCallCount++;
+            TerminationObserved.TrySetResult(true);
         }
     }
 }
