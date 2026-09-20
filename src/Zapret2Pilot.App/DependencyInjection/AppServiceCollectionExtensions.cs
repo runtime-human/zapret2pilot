@@ -62,6 +62,7 @@ public static class AppServiceCollectionExtensions
         services.AddSingleton<IBrokerExecutableLocator, SiblingBrokerExecutableLocator>();
         services.AddSingleton<IElevatedBrokerLauncher, WindowsElevatedBrokerLauncher>();
         services.AddSingleton<IBrokerBootstrapServerFactory, WindowsBrokerBootstrapServerFactory>();
+        services.AddSingleton<IRuntimeBrokerSessionFactory, NamedPipeRuntimeBrokerSessionFactory>();
 
         services.AddSingleton<RuntimeBrokerBootstrapper>();
         services.AddSingleton<IRuntimeBrokerBootstrapper>(
