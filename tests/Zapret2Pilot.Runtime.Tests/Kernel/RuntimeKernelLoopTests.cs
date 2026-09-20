@@ -1673,7 +1673,7 @@ public sealed class RuntimeKernelLoopTests
                     StartResult: null,
                     CancellationReason: RuntimeCancellationReason.Superseded,
                     CrossedIrreversibleBoundary: false);
-            }).Unwrap();
+            });
         }
 
         public void Dispose()
