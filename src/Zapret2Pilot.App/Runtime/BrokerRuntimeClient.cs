@@ -1,5 +1,6 @@
 using System;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using Zapret2Pilot.Contracts.Client;
@@ -10,7 +11,6 @@ namespace Zapret2Pilot.App.Runtime;
 
 /// <summary>
 /// Bounded session abstraction used by <see cref="BrokerRuntimeClient"/>.
-/// Task 5 will bind this surface to the authenticated Named Pipe session.
 /// </summary>
 public interface IRuntimeBrokerSession
 {
@@ -18,7 +18,8 @@ public interface IRuntimeBrokerSession
 
     IObservable<BrokerRuntimeSnapshot> SnapshotChanged { get; }
 
-    Task<BrokerRuntimeSnapshot> GetRuntimeSnapshotAsync(CancellationToken cancellationToken);
+    Task<BrokerRuntimeSnapshot> GetRuntimeSnapshotAsync(
+        CancellationToken cancellationToken);
 
     Task<BrokerRuntimeSnapshot> StartPreparedPlanAsync(
         PreparedPlanId preparedPlanId,
@@ -35,9 +36,11 @@ public interface IRuntimeBrokerSession
 
 /// <summary>
 /// App-side projection over the session-scoped Runtime Broker.
-/// It contains no reducer, process host, generation authority or lifecycle state machine.
+/// It contains no reducer, process host, generation authority or lifecycle
+/// state machine. The session may be attached once after the one-shot
+/// elevation/bootstrap handshake completes.
 /// </summary>
-public sealed class BrokerRuntimeClient : IRuntimeClient
+public sealed class BrokerRuntimeClient : IRuntimeClient, IDisposable
 {
     private static readonly RuntimeClientSnapshot DisconnectedSnapshot = new(
         new RuntimeGeneration(0),
@@ -45,24 +48,60 @@ public sealed class BrokerRuntimeClient : IRuntimeClient
         ActivePlanId: null,
         ActiveOperationId: null);
 
-    private readonly IRuntimeBrokerSession? session;
-    private readonly IObservable<RuntimeClientSnapshot> snapshotChanged;
+    private readonly object sync = new();
+    private readonly BehaviorSubject<RuntimeClientSnapshot> snapshots =
+        new(DisconnectedSnapshot);
 
-    public BrokerRuntimeClient(IRuntimeBrokerSession? session)
+    private IRuntimeBrokerSession? session;
+    private IDisposable? sessionSubscription;
+    private bool disposed;
+
+    public BrokerRuntimeClient(IRuntimeBrokerSession? session = null)
     {
-        this.session = session;
-        snapshotChanged = session is null
-            ? Observable.Never<RuntimeClientSnapshot>()
-            : session.SnapshotChanged.Select(
-                static snapshot => RuntimeClientSnapshot.FromBroker(snapshot));
+        if (session is not null)
+        {
+            AttachSession(session);
+        }
     }
 
-    public RuntimeClientSnapshot CurrentSnapshot
-        => session is null
-            ? DisconnectedSnapshot
-            : RuntimeClientSnapshot.FromBroker(session.CurrentSnapshot);
+    public RuntimeClientSnapshot CurrentSnapshot => snapshots.Value;
 
-    public IObservable<RuntimeClientSnapshot> SnapshotChanged => snapshotChanged;
+    public IObservable<RuntimeClientSnapshot> SnapshotChanged
+        => snapshots.AsObservable();
+
+    public bool IsConnected
+    {
+        get
+        {
+            lock (sync)
+            {
+                return session is not null;
+            }
+        }
+    }
+
+    public void AttachSession(IRuntimeBrokerSession brokerSession)
+    {
+        ArgumentNullException.ThrowIfNull(brokerSession);
+        ObjectDisposedException.ThrowIf(disposed, this);
+
+        lock (sync)
+        {
+            if (session is not null)
+            {
+                throw new InvalidOperationException(
+                    "A Runtime Broker session is already attached.");
+            }
+
+            session = brokerSession;
+            snapshots.OnNext(
+                RuntimeClientSnapshot.FromBroker(
+                    brokerSession.CurrentSnapshot));
+            sessionSubscription = brokerSession.SnapshotChanged.Subscribe(
+                snapshot => snapshots.OnNext(
+                    RuntimeClientSnapshot.FromBroker(snapshot)));
+        }
+    }
 
     public async Task<RuntimeClientSnapshot> GetRuntimeSnapshotAsync(
         CancellationToken cancellationToken)
@@ -80,7 +119,10 @@ public sealed class BrokerRuntimeClient : IRuntimeClient
         CancellationToken cancellationToken)
     {
         BrokerRuntimeSnapshot snapshot = await RequireSession()
-            .StartPreparedPlanAsync(preparedPlanId, expectedGeneration, cancellationToken)
+            .StartPreparedPlanAsync(
+                preparedPlanId,
+                expectedGeneration,
+                cancellationToken)
             .ConfigureAwait(false);
 
         return RuntimeClientSnapshot.FromBroker(snapshot);
@@ -92,7 +134,10 @@ public sealed class BrokerRuntimeClient : IRuntimeClient
         CancellationToken cancellationToken)
     {
         BrokerRuntimeSnapshot snapshot = await RequireSession()
-            .StopGenerationAsync(generation, reason, cancellationToken)
+            .StopGenerationAsync(
+                generation,
+                reason,
+                cancellationToken)
             .ConfigureAwait(false);
 
         return RuntimeClientSnapshot.FromBroker(snapshot);
@@ -101,7 +146,33 @@ public sealed class BrokerRuntimeClient : IRuntimeClient
     public Task ShutdownBrokerAsync(CancellationToken cancellationToken)
         => RequireSession().ShutdownBrokerAsync(cancellationToken);
 
+    public void Dispose()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        disposed = true;
+        lock (sync)
+        {
+            sessionSubscription?.Dispose();
+            sessionSubscription = null;
+            session = null;
+        }
+
+        snapshots.OnCompleted();
+        snapshots.Dispose();
+    }
+
     private IRuntimeBrokerSession RequireSession()
-        => session ?? throw new InvalidOperationException(
-            "Runtime Broker session is not connected.");
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+
+        lock (sync)
+        {
+            return session ?? throw new InvalidOperationException(
+                "Runtime Broker session is not connected.");
+        }
+    }
 }
