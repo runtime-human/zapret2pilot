@@ -14,23 +14,28 @@ namespace Zapret2Pilot.Broker.Tests.Runtime;
 public sealed class BrokerLifetimeControllerTests
 {
     [Fact]
-    public static async Task SuccessfulShutdownStopsRuntimeAndApplicationExactlyOnce()
+    public static async Task RuntimeCleanupAndBrokerTerminationAreSeparateIdempotentPhases()
     {
         FakeRuntimeSupervisor supervisor = new(Result.Success(Unit.Instance));
         FakeHostApplicationLifetime applicationLifetime = new();
         BrokerLifetimeController controller = new(supervisor, applicationLifetime);
 
-        Result<Unit> first = await controller.ShutdownAsync(CancellationToken.None);
-        Result<Unit> second = await controller.ShutdownAsync(CancellationToken.None);
+        Result<Unit> first = await controller.StopRuntimeAsync(CancellationToken.None);
+        Result<Unit> second = await controller.StopRuntimeAsync(CancellationToken.None);
 
         Assert.True(first.IsSuccess);
         Assert.True(second.IsSuccess);
         Assert.Equal(1, supervisor.StopCallCount);
+        Assert.Equal(0, applicationLifetime.StopApplicationCallCount);
+
+        controller.TerminateBroker();
+        controller.TerminateBroker();
+
         Assert.Equal(1, applicationLifetime.StopApplicationCallCount);
     }
 
     [Fact]
-    public static async Task FailedRuntimeStopDoesNotTerminateBrokerPrematurely()
+    public static async Task FailedRuntimeCleanupDoesNotImplicitlyTerminateBeforeResponseHandling()
     {
         ErrorInfo error = new(
             code: "RuntimeStopFailed",
@@ -41,7 +46,7 @@ public sealed class BrokerLifetimeControllerTests
         FakeHostApplicationLifetime applicationLifetime = new();
         BrokerLifetimeController controller = new(supervisor, applicationLifetime);
 
-        Result<Unit> result = await controller.ShutdownAsync(CancellationToken.None);
+        Result<Unit> result = await controller.StopRuntimeAsync(CancellationToken.None);
 
         Assert.True(result.IsFailure);
         Assert.Equal("RuntimeStopFailed", result.Error.Code);
