@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Zapret2Pilot.Broker.Runtime;
+using Zapret2Pilot.Broker.Transport;
 using Zapret2Pilot.Contracts.Transport;
 using Zapret2Pilot.Runtime.State;
 
@@ -15,6 +16,13 @@ public static class BrokerHostBuilder
         return CreateBuilder(args).Build();
     }
 
+    public static IHost Build(
+        string[] args,
+        BrokerSessionBootstrap bootstrap)
+    {
+        return CreateBuilder(args, bootstrap).Build();
+    }
+
     public static HostApplicationBuilder CreateBuilder(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
@@ -22,9 +30,8 @@ public static class BrokerHostBuilder
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 
         // #17 keeps the Broker configuration surface deliberately closed.
-        // Bootstrap/session material is introduced by the bounded broker
-        // transport later in this issue and must never become ordinary
-        // environment-variable or arbitrary CLI configuration.
+        // Bootstrap/session material must never become ordinary environment-
+        // variable, appsettings, or arbitrary CLI configuration.
         builder.Configuration.Sources.Clear();
 
         // v7-D / #17: the Broker must not become an elevated owner of the
@@ -64,5 +71,55 @@ public static class BrokerHostBuilder
             static sp => sp.GetRequiredService<BrokerRuntimeDispatcher>());
 
         return builder;
+    }
+
+    /// <summary>
+    /// Creates the Broker host with the concrete local authenticated transport
+    /// for one already-established AppSession bootstrap.
+    ///
+    /// The caller owns how the bootstrap is transferred across the elevation
+    /// boundary. This overload intentionally accepts the material in-memory so
+    /// the secret cannot accidentally become a CLI/environment configuration
+    /// source. The one-shot cross-process bootstrap transport is composed
+    /// separately.
+    /// </summary>
+    public static HostApplicationBuilder CreateBuilder(
+        string[] args,
+        BrokerSessionBootstrap bootstrap)
+    {
+        ArgumentNullException.ThrowIfNull(bootstrap);
+
+        HostApplicationBuilder builder = CreateBuilder(args);
+        AddSessionTransport(builder.Services, bootstrap);
+        return builder;
+    }
+
+    private static void AddSessionTransport(
+        IServiceCollection services,
+        BrokerSessionBootstrap bootstrap)
+    {
+        services.AddSingleton(bootstrap);
+        services.AddSingleton(new BrokerPipeServerOptions(
+            bootstrap.PipeName,
+            bootstrap.ClientBinding.UserSid));
+
+        services.AddSingleton<IBrokerNamedPipeFactory, WindowsSecureNamedPipeFactory>();
+        services.AddSingleton<IBrokerPeerIdentityResolver, WindowsBrokerPeerIdentityResolver>();
+
+        services.AddSingleton(static sp =>
+        {
+            BrokerSessionBootstrap material =
+                sp.GetRequiredService<BrokerSessionBootstrap>();
+
+            return new BrokerAuthenticatedSession(
+                material.ClientBinding,
+                material.TakeBootstrapSecret(),
+                sp.GetRequiredService<IBrokerRequestDispatcher>(),
+                sp.GetRequiredService<IBrokerLifetimeController>());
+        });
+
+        services.AddSingleton<WindowsBrokerPipeServer>();
+        services.AddSingleton<IHostedService>(
+            static sp => sp.GetRequiredService<WindowsBrokerPipeServer>());
     }
 }
