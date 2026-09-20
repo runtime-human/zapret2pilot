@@ -108,9 +108,18 @@ public static class BrokerBootstrapFrameCodec
             BrokerBootstrapFrameDecodeStatus validation =
                 Validate(bootstrap);
 
-            return validation == BrokerBootstrapFrameDecodeStatus.Success
-                ? new(validation, bootstrap, frame.ConsumedBytes)
-                : new(validation, null, frame.ConsumedBytes);
+            if (validation == BrokerBootstrapFrameDecodeStatus.Success)
+            {
+                return new(validation, bootstrap, frame.ConsumedBytes);
+            }
+
+            if (bootstrap.BootstrapSecret is { Length: > 0 })
+            {
+                CryptographicOperations.ZeroMemory(
+                    bootstrap.BootstrapSecret);
+            }
+
+            return new(validation, null, frame.ConsumedBytes);
         }
         catch (JsonException)
         {
