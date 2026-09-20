@@ -15,6 +15,5 @@
   <ItemGroup>
     <ProjectReference Include="..\Zapret2Pilot.Contracts\Zapret2Pilot.Contracts.csproj" />
     <ProjectReference Include="..\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
-    <ProjectReference Include="..\Zapret2Pilot.Storage\Zapret2Pilot.Storage.csproj" />
   </ItemGroup>
 </Project>
