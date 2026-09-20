@@ -63,6 +63,12 @@ public sealed class BrokerAuthenticatedSession : IDisposable
         return preAuthentication.TryIssueChallenge(peer);
     }
 
+    public void AbandonChallenge(BrokerChallengeHandle challengeHandle)
+    {
+        ThrowIfDisposed();
+        preAuthentication.AbandonChallenge(challengeHandle);
+    }
+
     public BrokerAdmissionDecision TryAuthenticate(
         BrokerChallengeHandle challengeHandle,
         BrokerPeerIdentity peer,
