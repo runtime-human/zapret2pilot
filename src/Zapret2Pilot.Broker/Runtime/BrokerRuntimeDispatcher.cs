@@ -64,13 +64,20 @@ public sealed class RejectingPreparedRuntimePlanResolver : IPreparedRuntimePlanR
     }
 }
 
+public interface IBrokerRequestDispatcher
+{
+    Task<BrokerResponseEnvelope> DispatchAsync(
+        BrokerRequestEnvelope request,
+        CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// Admits authenticated, semantically validated broker requests and maps
 /// them onto the existing RuntimeSupervisor/RuntimeKernelLoop authority.
 /// The dispatcher owns replay/admission correlation only; it is not a
 /// lifecycle state machine and never increments RuntimeGeneration itself.
 /// </summary>
-public sealed class BrokerRuntimeDispatcher
+public sealed class BrokerRuntimeDispatcher : IBrokerRequestDispatcher
 {
     private readonly IRuntimeSupervisor supervisor;
     private readonly IBrokerRuntimeStateProjection projection;
