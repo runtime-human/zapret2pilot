@@ -21,11 +21,11 @@ public sealed record BrokerPipeServerOptions(
 /// It performs bounded I/O and #16 authentication, then forwards only
 /// admitted typed requests to <see cref="BrokerAuthenticatedSession"/>.
 /// </summary>
-public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
+public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposable
 {
     private readonly BrokerPipeServerOptions options;
-    private readonly WindowsSecureNamedPipeFactory pipeFactory;
-    private readonly WindowsBrokerPeerIdentityResolver peerResolver;
+    private readonly IBrokerNamedPipeFactory pipeFactory;
+    private readonly IBrokerPeerIdentityResolver peerResolver;
     private readonly BrokerAuthenticatedSession session;
     private readonly IBrokerAppSessionLeaseBinder leaseBinder;
     private readonly ILogger<WindowsBrokerPipeServer> logger;
@@ -36,8 +36,8 @@ public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
 
     public WindowsBrokerPipeServer(
         BrokerPipeServerOptions options,
-        WindowsSecureNamedPipeFactory pipeFactory,
-        WindowsBrokerPeerIdentityResolver peerResolver,
+        IBrokerNamedPipeFactory pipeFactory,
+        IBrokerPeerIdentityResolver peerResolver,
         BrokerAuthenticatedSession session,
         IBrokerAppSessionLeaseBinder leaseBinder,
         ILogger<WindowsBrokerPipeServer> logger)
@@ -155,21 +155,15 @@ public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
             }
             catch (IOException ex)
             {
-                logger.LogDebug(
-                    ex,
-                    "Broker pipe connection ended because of bounded I/O failure.");
+                LogIoFailure(logger, ex);
             }
             catch (InvalidDataException ex)
             {
-                logger.LogWarning(
-                    ex,
-                    "Broker pipe rejected malformed or oversized framing.");
+                LogMalformedFrame(logger, ex);
             }
             catch (Exception ex)
             {
-                logger.LogError(
-                    ex,
-                    "Broker pipe connection failed.");
+                LogConnectionFailure(logger, ex);
             }
             finally
             {
@@ -197,9 +191,7 @@ public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
                 || challengeResult.Challenge is null
                 || challengeResult.Handle is null)
             {
-                logger.LogWarning(
-                    "Broker pre-auth connection rejected before challenge. Status={Status}.",
-                    challengeResult.Status);
+                LogChallengeRejected(logger, challengeResult.Status);
                 return;
             }
 
@@ -227,9 +219,7 @@ public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
                 || helloDecode.Envelope is null
                 || helloDecode.Envelope.Request is not BrokerHelloRequest)
             {
-                logger.LogWarning(
-                    "Broker pre-auth Hello decode rejected. Status={Status}.",
-                    helloDecode.Status);
+                LogHelloRejected(logger, helloDecode.Status);
                 return;
             }
 
@@ -251,9 +241,7 @@ public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
 
             if (!admission.Accepted)
             {
-                logger.LogWarning(
-                    "Broker pre-auth admission rejected. Reason={Reason}.",
-                    admission.RejectionReason);
+                LogAdmissionRejected(logger, admission.RejectionReason);
                 return;
             }
 
@@ -308,9 +296,7 @@ public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
             if (decode.Status != BrokerProtocolDecodeStatus.Success
                 || decode.Envelope is null)
             {
-                logger.LogWarning(
-                    "Authenticated Broker request decode rejected. Status={Status}.",
-                    decode.Status);
+                LogRequestRejected(logger, decode.Status);
                 return;
             }
 
@@ -336,4 +322,54 @@ public sealed class WindowsBrokerPipeServer : IHostedService, IDisposable
             }
         }
     }
+
+    [LoggerMessage(
+        EventId = 1801,
+        Level = LogLevel.Debug,
+        Message = "Broker pipe connection ended because of bounded I/O failure.")]
+    private static partial void LogIoFailure(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        EventId = 1802,
+        Level = LogLevel.Warning,
+        Message = "Broker pipe rejected malformed or oversized framing.")]
+    private static partial void LogMalformedFrame(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        EventId = 1803,
+        Level = LogLevel.Error,
+        Message = "Broker pipe connection failed.")]
+    private static partial void LogConnectionFailure(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        EventId = 1804,
+        Level = LogLevel.Warning,
+        Message = "Broker pre-auth connection rejected before challenge. Status={Status}.")]
+    private static partial void LogChallengeRejected(
+        ILogger logger,
+        BrokerChallengeIssueStatus status);
+
+    [LoggerMessage(
+        EventId = 1805,
+        Level = LogLevel.Warning,
+        Message = "Broker pre-auth Hello decode rejected. Status={Status}.")]
+    private static partial void LogHelloRejected(
+        ILogger logger,
+        BrokerProtocolDecodeStatus status);
+
+    [LoggerMessage(
+        EventId = 1806,
+        Level = LogLevel.Warning,
+        Message = "Broker pre-auth admission rejected. Reason={Reason}.")]
+    private static partial void LogAdmissionRejected(
+        ILogger logger,
+        BrokerAdmissionRejectionReason reason);
+
+    [LoggerMessage(
+        EventId = 1807,
+        Level = LogLevel.Warning,
+        Message = "Authenticated Broker request decode rejected. Status={Status}.")]
+    private static partial void LogRequestRejected(
+        ILogger logger,
+        BrokerProtocolDecodeStatus status);
 }
