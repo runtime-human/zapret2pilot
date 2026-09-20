@@ -50,6 +50,8 @@ public static class BrokerHostBuilder
             BrokerProtocolLimits.MaxConcurrentMutations));
         builder.Services.AddSingleton<IBrokerLifetimeController, BrokerLifetimeController>();
         builder.Services.AddSingleton<BrokerRuntimeDispatcher>();
+        builder.Services.AddSingleton<IBrokerRequestDispatcher>(
+            static sp => sp.GetRequiredService<BrokerRuntimeDispatcher>());
 
         return builder;
     }
