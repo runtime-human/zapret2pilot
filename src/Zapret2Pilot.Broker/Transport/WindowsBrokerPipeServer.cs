@@ -282,12 +282,14 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
         NamedPipeServerStream pipe,
         CancellationToken cancellationToken)
     {
-        using SemaphoreSlim requestSlots = new(
+        SemaphoreSlim requestSlots = new(
             BrokerProtocolLimits.IngressQueueCapacity,
             BrokerProtocolLimits.IngressQueueCapacity);
-        using SemaphoreSlim responseWriteGate = new(1, 1);
+        SemaphoreSlim responseWriteGate = new(1, 1);
 
         HashSet<Task> inFlight = [];
+        bool terminalShutdownRequest = false;
+        bool resourcesTransferredToDrain = false;
 
         try
         {
@@ -299,6 +301,10 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
                     cancellationToken).ConfigureAwait(false);
                 if (payload is null)
                 {
+                    // Ordinary transport disconnect. Already-admitted runtime
+                    // work must continue under Kernel authority, while this
+                    // authenticated connection is released immediately so a
+                    // fresh challenge/reconnect can be admitted.
                     break;
                 }
 
@@ -316,10 +322,9 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
 
                 BrokerRequestEnvelope request = decode.Envelope;
 
-                // Do not await the runtime dispatch on the reader loop.
-                // A Start may legitimately remain in-flight until a later
-                // Stop supersedes it; the Stop must therefore be readable
-                // and dispatchable over the same authenticated connection.
+                // Do not await runtime dispatch on the reader loop. A Start
+                // may remain in flight until a later Stop supersedes it; the
+                // Stop must be readable and dispatchable on this connection.
                 Task dispatch = DispatchAndWriteAsync(
                     pipe,
                     request,
@@ -332,18 +337,27 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
 
                 if (request.Request is ShutdownBrokerRequest)
                 {
-                    // No new request should be admitted after terminal
-                    // shutdown intent. The shutdown response itself is still
-                    // written by the dispatch task and only then calls
-                    // OnResponseFlushed -> TerminateBroker.
+                    terminalShutdownRequest = true;
                     break;
                 }
             }
         }
         finally
         {
-            if (inFlight.Count != 0)
+            RemoveCompleted(inFlight);
+
+            if (inFlight.Count == 0)
             {
+                responseWriteGate.Dispose();
+                requestSlots.Dispose();
+            }
+            else if (cancellationToken.IsCancellationRequested
+                || terminalShutdownRequest)
+            {
+                // Host teardown and explicit ShutdownBroker must not dispose
+                // session/transport dependencies while dispatch tasks still
+                // use them. ShutdownBroker additionally needs its response
+                // flushed before OnResponseFlushed terminates the Broker.
                 try
                 {
                     await Task.WhenAll(inFlight).ConfigureAwait(false);
@@ -353,13 +367,29 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
                         or ObjectDisposedException
                         or OperationCanceledException)
                 {
-                    // A disconnected client may make pending response writes
-                    // impossible. Runtime operations that already crossed
-                    // dispatcher admission continue under the Kernel; transport
-                    // loss never rolls them back or creates a second authority.
                     LogPendingResponseDrainFailed(logger, ex);
                 }
+                finally
+                {
+                    responseWriteGate.Dispose();
+                    requestSlots.Dispose();
+                }
             }
+            else
+            {
+                // Ordinary disconnect/protocol close: release the
+                // authenticated connection now. Keep per-connection resources
+                // alive only until already-admitted operations unwind. Their
+                // late responses may fail because the old pipe is gone; that
+                // has no effect on Kernel state and is observed by the drain.
+                resourcesTransferredToDrain = true;
+                ScheduleDetachedDrain(
+                    inFlight,
+                    responseWriteGate,
+                    requestSlots);
+            }
+
+            _ = resourcesTransferredToDrain;
         }
     }
 
@@ -414,14 +444,37 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
         foreach (Task task in completed)
         {
             _ = inFlight.Remove(task);
+            ObserveDispatchTask(task);
+        }
+    }
 
-            if (task.IsFaulted
-                && task.Exception is AggregateException aggregate)
+    private void ScheduleDetachedDrain(
+        HashSet<Task> inFlight,
+        SemaphoreSlim responseWriteGate,
+        SemaphoreSlim requestSlots)
+    {
+        Task drain = Task.WhenAll(inFlight);
+
+        _ = drain.ContinueWith(
+            completed =>
             {
-                LogRequestDispatchFailed(
-                    logger,
-                    aggregate.GetBaseException());
-            }
+                ObserveDispatchTask(completed);
+                responseWriteGate.Dispose();
+                requestSlots.Dispose();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void ObserveDispatchTask(Task task)
+    {
+        if (task.IsFaulted
+            && task.Exception is AggregateException aggregate)
+        {
+            LogRequestDispatchFailed(
+                logger,
+                aggregate.GetBaseException());
         }
     }
 
