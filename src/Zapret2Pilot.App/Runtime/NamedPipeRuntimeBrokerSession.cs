@@ -14,14 +14,26 @@ using Zapret2Pilot.Contracts.Transport;
 
 namespace Zapret2Pilot.App.Runtime;
 
+public sealed class NamedPipeRuntimeBrokerSessionFactory :
+    IRuntimeBrokerSessionFactory
+{
+    public IConnectableRuntimeBrokerSession Create(
+        BrokerClientBinding clientBinding,
+        string pipeName,
+        byte[] bootstrapSecret)
+        => new NamedPipeRuntimeBrokerSession(
+            clientBinding,
+            pipeName,
+            bootstrapSecret);
+}
+
 /// <summary>
 /// Authenticated Control-Plane session over the v1 local Broker Named Pipe.
 /// This class serializes request/response exchange but owns no runtime state
 /// machine; snapshots are projections received from the Broker.
 /// </summary>
 public sealed class NamedPipeRuntimeBrokerSession :
-    IRuntimeBrokerSession,
-    IAsyncDisposable
+    IConnectableRuntimeBrokerSession
 {
     private readonly BrokerClientBinding clientBinding;
     private readonly string pipeName;
