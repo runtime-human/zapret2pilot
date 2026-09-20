@@ -34,6 +34,21 @@ public interface IRuntimeBrokerSession
     Task ShutdownBrokerAsync(CancellationToken cancellationToken);
 }
 
+public interface IConnectableRuntimeBrokerSession :
+    IRuntimeBrokerSession,
+    IAsyncDisposable
+{
+    Task ConnectAsync(CancellationToken cancellationToken);
+}
+
+public interface IRuntimeBrokerSessionFactory
+{
+    IConnectableRuntimeBrokerSession Create(
+        Zapret2Pilot.Contracts.Security.BrokerClientBinding clientBinding,
+        string pipeName,
+        byte[] bootstrapSecret);
+}
+
 /// <summary>
 /// App-side projection over the session-scoped Runtime Broker.
 /// It contains no reducer, process host, generation authority or lifecycle
