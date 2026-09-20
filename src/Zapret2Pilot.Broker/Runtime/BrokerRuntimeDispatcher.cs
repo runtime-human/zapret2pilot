@@ -298,7 +298,7 @@ public sealed class BrokerRuntimeDispatcher
         try
         {
             Result<Unit> result = await lifetimeController
-                .ShutdownAsync(cancellationToken)
+                .StopRuntimeAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (result.IsFailure)
