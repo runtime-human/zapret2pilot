@@ -5,6 +5,7 @@ using Zapret2Pilot.App.Hosting;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.Kernel;
 using Zapret2Pilot.Runtime.Supervisor;
+using Zapret2Pilot.Runtime.State;
 
 namespace Zapret2Pilot.App.ViewModelTests.Hosting;
 
@@ -20,6 +21,7 @@ public sealed class RuntimeAuthorityBoundaryTests
         Assert.DoesNotContain(builder.Services, descriptor => descriptor.ServiceType == typeof(IRuntimeProcessHost));
         Assert.DoesNotContain(builder.Services, descriptor => descriptor.ServiceType == typeof(RuntimeSupervisor));
         Assert.DoesNotContain(builder.Services, descriptor => descriptor.ServiceType == typeof(IRuntimeSupervisor));
+        Assert.DoesNotContain(builder.Services, descriptor => descriptor.ServiceType == typeof(IRuntimeKernelStateStore));
         Assert.DoesNotContain(builder.Services, descriptor =>
             descriptor.ServiceType == typeof(IHostedService)
             && descriptor.ImplementationType == typeof(RuntimeSupervisor));
