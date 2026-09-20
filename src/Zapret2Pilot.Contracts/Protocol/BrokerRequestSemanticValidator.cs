@@ -104,7 +104,12 @@ public static class BrokerRequestSemanticValidator
             return Reject(BrokerRequestSemanticRejectionReason.InvalidPreparedPlanId);
         }
 
-        return request.ExpectedGeneration.Value > 0
+        // Generation zero is the canonical initial Kernel generation
+        // before the first runtime start. It is therefore a valid optimistic
+        // concurrency token for StartPreparedPlan. Negative generations are
+        // never valid. StopGeneration remains strictly positive because no
+        // running generation can exist before the first successful start.
+        return request.ExpectedGeneration.Value >= 0
             ? Accept()
             : Reject(BrokerRequestSemanticRejectionReason.InvalidRuntimeGeneration);
     }
