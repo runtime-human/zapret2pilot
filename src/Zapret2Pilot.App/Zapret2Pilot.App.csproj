@@ -5,11 +5,10 @@
     <RootNamespace>Zapret2Pilot.App</RootNamespace>
     <Description>Avalonia shell for Zapret2Pilot.</Description>
     <!--
-      0.0.25 Scope C: platform boundary. The Avalonia shell is a
-      Windows-only application (composes Win32, Job Objects, winws2),
-      so it is built on a Windows-specific TFM. Cross-platform layers
-      (Core/Application/Engine/Storage) stay on net10.0 and are
-      verified by tests/Zapret2Pilot.App.ViewModelTests/Architecture.
+      v7 Control Plane boundary. The Avalonia shell is a Windows-only
+      application, but privileged runtime/process authority belongs to
+      z2p-broker.exe. Cross-platform layers stay on net10.0 and the App
+      consumes shared broker contracts rather than Runtime implementation.
     -->
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
@@ -57,14 +56,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Zapret2Pilot.Contracts\Zapret2Pilot.Contracts.csproj" />
     <ProjectReference Include="..\Zapret2Pilot.Application\Zapret2Pilot.Application.csproj" />
-    <ProjectReference Include="..\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
-    <!--
-      0.0.28 Packet 3 (P0-9): StorageRecoveryStartupStep resolves
-      SqliteDbInitializer to run schema migrations. Storage is
-      already referenced transitively via Runtime; this explicit
-      reference makes the lifecycle's dependency on Storage visible
-      at the project level.
-    -->
+    <!-- General application SQLite remains owned by the unelevated
+         Control Plane. This explicit reference is intentionally
+         independent from the privileged Runtime Broker. -->
     <ProjectReference Include="..\Zapret2Pilot.Storage\Zapret2Pilot.Storage.csproj" />
   </ItemGroup>
 
