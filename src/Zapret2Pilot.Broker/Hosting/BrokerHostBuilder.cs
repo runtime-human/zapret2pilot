@@ -149,6 +149,8 @@ public static class BrokerHostBuilder
                 sp.GetRequiredService<IBrokerRequestDispatcher>(),
                 sp.GetRequiredService<IBrokerLifetimeController>());
         });
+        services.AddSingleton<IBrokerAuthenticatedSession>(
+            static sp => sp.GetRequiredService<BrokerAuthenticatedSession>());
 
         services.AddSingleton<WindowsBrokerPipeServer>();
         services.AddSingleton<IHostedService>(
