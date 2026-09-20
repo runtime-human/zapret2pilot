@@ -22,13 +22,14 @@ public interface IBrokerLifetimeController
     void TerminateBroker();
 }
 
-public sealed class BrokerLifetimeController : IBrokerLifetimeController
+public sealed class BrokerLifetimeController : IBrokerLifetimeController, IDisposable
 {
     private readonly IRuntimeSupervisor supervisor;
     private readonly IHostApplicationLifetime applicationLifetime;
     private readonly SemaphoreSlim shutdownGate = new(1, 1);
     private bool runtimeStopped;
     private int terminationRequested;
+    private int disposed;
 
     public BrokerLifetimeController(
         IRuntimeSupervisor supervisor,
@@ -43,6 +44,10 @@ public sealed class BrokerLifetimeController : IBrokerLifetimeController
 
     public async Task<Result<Unit>> StopRuntimeAsync(CancellationToken cancellationToken)
     {
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref disposed) != 0,
+            this);
+
         await shutdownGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -70,11 +75,25 @@ public sealed class BrokerLifetimeController : IBrokerLifetimeController
 
     public void TerminateBroker()
     {
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref disposed) != 0,
+            this);
+
         if (Interlocked.Exchange(ref terminationRequested, 1) != 0)
         {
             return;
         }
 
         applicationLifetime.StopApplication();
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        {
+            return;
+        }
+
+        shutdownGate.Dispose();
     }
 }
