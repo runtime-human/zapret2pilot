@@ -38,7 +38,7 @@ public sealed class BrokerBootstrapClient
         await using NamedPipeClientStream pipe = new(
             ".",
             launchOptions.BootstrapPipeName,
-            PipeDirection.InOut,
+            PipeDirection.In,
             PipeOptions.Asynchronous);
 
         await pipe.ConnectAsync(
