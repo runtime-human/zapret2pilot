@@ -136,6 +136,83 @@ public sealed class BrokerFakeRuntimeLifecycleTests
             $"FakeRuntime process {processId} remained alive after graceful Broker host shutdown.");
     }
 
+
+    [Fact]
+    public static async Task AppProcessLossStopsRuntimeBeforeBrokerTermination()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using BrokerFakeRuntimeFixture fixture = BrokerFakeRuntimeFixture.Create();
+        using IHost host = fixture.BuildHost();
+        using ControllableAppSessionLease appLease = new();
+
+        IBrokerAppSessionLeaseBinder leaseBinder =
+            host.Services.GetRequiredService<IBrokerAppSessionLeaseBinder>();
+        Assert.True(
+            leaseBinder.TryBind(appLease),
+            "The Broker must bind exactly one retained App process lease.");
+
+        using CancellationTokenSource budget =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(30));
+
+        await host.StartAsync(budget.Token);
+
+        BrokerRuntimeDispatcher dispatcher =
+            host.Services.GetRequiredService<BrokerRuntimeDispatcher>();
+        RuntimeKernelLoop loop =
+            host.Services.GetRequiredService<RuntimeKernelLoop>();
+        IHostApplicationLifetime lifetime =
+            host.Services.GetRequiredService<IHostApplicationLifetime>();
+
+        TaskCompletionSource<bool> brokerStopping = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration stoppingRegistration =
+            lifetime.ApplicationStopping.Register(
+                static state =>
+                    ((TaskCompletionSource<bool>)state!).TrySetResult(true),
+                brokerStopping);
+
+        SessionIds session = SessionIds.Create();
+
+        BrokerResponseEnvelope startResponse = await dispatcher.DispatchAsync(
+            CreateRequest(
+                session,
+                sequence: 1,
+                new StartPreparedPlanRequest(
+                    fixture.PreparedPlanId,
+                    new ContractGeneration(loop.CurrentState.Generation.Value))),
+            budget.Token);
+
+        Assert.Equal(BrokerResponseStatus.Accepted, startResponse.Status);
+        Assert.Equal(RuntimeKernelStatus.Running, loop.CurrentState.Status);
+        Assert.NotNull(loop.CurrentState.LastStartResult);
+
+        int processId = loop.CurrentState.LastStartResult!.ProcessId;
+        Assert.True(IsProcessAlive(processId));
+
+        // Simulate death of the already-verified Control Plane process object.
+        // This deliberately does not touch Named Pipe connectivity: the
+        // retained process lease, not a transient transport disconnect, owns
+        // Broker terminal lifetime.
+        appLease.SignalExit();
+
+        await brokerStopping.Task.WaitAsync(
+            TimeSpan.FromSeconds(10),
+            budget.Token);
+
+        Assert.Equal(RuntimeKernelStatus.Stopped, loop.CurrentState.Status);
+        Assert.True(
+            IsProcessGone(processId),
+            $"FakeRuntime process {processId} remained alive after App process loss.");
+
+        await host.StopAsync(budget.Token);
+    }
+
     private static BrokerRequestEnvelope CreateRequest(
         SessionIds session,
         long sequence,
@@ -168,6 +245,37 @@ public sealed class BrokerFakeRuntimeLifecycleTests
 
     private static bool IsProcessGone(int processId)
         => !IsProcessAlive(processId);
+
+
+    private sealed class ControllableAppSessionLease :
+        IBrokerAppSessionLease
+    {
+        private readonly TaskCompletionSource<bool> exited = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int disposed;
+
+        public Task WaitForExitAsync(CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(
+                Volatile.Read(ref disposed) != 0,
+                this);
+
+            return exited.Task.WaitAsync(cancellationToken);
+        }
+
+        public void SignalExit()
+            => exited.TrySetResult(true);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0)
+            {
+                return;
+            }
+
+            exited.TrySetCanceled();
+        }
+    }
 
     private sealed record SessionIds(
         AppSessionId AppSessionId,
