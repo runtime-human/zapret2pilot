@@ -164,6 +164,150 @@ public sealed class WindowsBrokerPipeServerMultiplexingTests
         await server.StopAsync(stopBudget.Token);
     }
 
+    [Fact]
+    public static async Task DisconnectDuringStart_ReleasesAuthenticationAndAllowsReconnect()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string pipeName =
+            $"z2p-reconnect-{Guid.NewGuid():N}";
+        AppSessionId appSessionId = AppSessionId.New();
+        BrokerSessionId brokerSessionId = BrokerSessionId.New();
+
+        BrokerPeerIdentity peer = new(
+            ProcessId: Environment.ProcessId,
+            ProcessCreationTimeFileTime: 123456789,
+            WindowsSessionId: 1,
+            UserSid: "S-1-5-21-1000",
+            LogonSessionId: new LogonSessionId(7, 8),
+            IntegrityLevelRid: 0x2000);
+
+        using FakeAuthenticatedSession session = new(
+            appSessionId,
+            brokerSessionId);
+        FakeLeaseBinder leaseBinder = new();
+
+        using WindowsBrokerPipeServer server = new(
+            new BrokerPipeServerOptions(
+                pipeName,
+                peer.UserSid),
+            new TestPipeFactory(),
+            new FakePeerResolver(peer),
+            session,
+            leaseBinder,
+            NullLogger<WindowsBrokerPipeServer>.Instance);
+
+        await server.StartAsync(
+            TestContext.Current.CancellationToken);
+
+        await using (NamedPipeClientStream firstClient = new(
+            ".",
+            pipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous))
+        {
+            await firstClient.ConnectAsync(
+                5_000,
+                TestContext.Current.CancellationToken);
+
+            _ = BrokerChallengeFrameCodec.Decode(
+                await ReadFrameAsync(
+                    firstClient,
+                    BrokerProtocolLimits.MaxChallengeFrameBytes,
+                    TestContext.Current.CancellationToken));
+
+            await WriteRequestAsync(
+                firstClient,
+                CreateHello(
+                    appSessionId,
+                    brokerSessionId,
+                    sequence: 1),
+                TestContext.Current.CancellationToken);
+
+            await WriteRequestAsync(
+                firstClient,
+                CreateRequest(
+                    appSessionId,
+                    brokerSessionId,
+                    BrokerOperationId.New(),
+                    sequence: 2,
+                    new StartPreparedPlanRequest(
+                        PreparedPlanId.New(),
+                        new ContractGeneration(1))),
+                TestContext.Current.CancellationToken);
+
+            await session.StartEntered.Task.WaitAsync(
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken);
+        }
+
+        await session.ConnectionReleased.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(
+            session.StartReleased.Task.IsCompleted,
+            "Transport disconnect must not cancel an already-admitted Start.");
+
+        await using NamedPipeClientStream secondClient = new(
+            ".",
+            pipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous);
+
+        await secondClient.ConnectAsync(
+            5_000,
+            TestContext.Current.CancellationToken);
+
+        _ = BrokerChallengeFrameCodec.Decode(
+            await ReadFrameAsync(
+                secondClient,
+                BrokerProtocolLimits.MaxChallengeFrameBytes,
+                TestContext.Current.CancellationToken));
+
+        await WriteRequestAsync(
+            secondClient,
+            CreateHello(
+                appSessionId,
+                brokerSessionId,
+                sequence: 3),
+            TestContext.Current.CancellationToken);
+
+        BrokerOperationId snapshotOperation =
+            BrokerOperationId.New();
+
+        await WriteRequestAsync(
+            secondClient,
+            CreateRequest(
+                appSessionId,
+                brokerSessionId,
+                snapshotOperation,
+                sequence: 4,
+                new GetRuntimeSnapshotRequest()),
+            TestContext.Current.CancellationToken);
+
+        BrokerResponseEnvelope snapshot =
+            await ReadResponseAsync(
+                secondClient,
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            snapshotOperation,
+            snapshot.OperationId);
+        Assert.Equal(
+            BrokerResponseStatus.Ok,
+            snapshot.Status);
+
+        session.ReleaseStart();
+
+        using CancellationTokenSource stopBudget =
+            new(TimeSpan.FromSeconds(5));
+        await server.StopAsync(stopBudget.Token);
+    }
+
     private static BrokerRequestEnvelope CreateHello(
         AppSessionId appSessionId,
         BrokerSessionId brokerSessionId,
@@ -402,6 +546,9 @@ public sealed class WindowsBrokerPipeServerMultiplexingTests
         public TaskCompletionSource<bool> StartReleased { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public TaskCompletionSource<bool> ConnectionReleased { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public BrokerChallengeIssueResult TryIssueChallenge(
             BrokerPeerIdentity peer)
         {
@@ -450,6 +597,7 @@ public sealed class WindowsBrokerPipeServerMultiplexingTests
         public void ReleaseAuthenticatedConnection()
         {
             IsAuthenticated = false;
+            ConnectionReleased.TrySetResult(true);
         }
 
         public async Task<BrokerResponseEnvelope> DispatchAsync(
@@ -472,6 +620,22 @@ public sealed class WindowsBrokerPipeServerMultiplexingTests
             {
                 StopEntered.TrySetResult(true);
                 return Accepted(request);
+            }
+
+            if (request.Request is GetRuntimeSnapshotRequest)
+            {
+                return new BrokerResponseEnvelope(
+                    request.Protocol,
+                    request.AppSessionId,
+                    request.BrokerSessionId,
+                    request.OperationId,
+                    BrokerResponseStatus.Ok,
+                    new BrokerRuntimeSnapshotResponse(
+                        new BrokerRuntimeSnapshot(
+                            new ContractGeneration(1),
+                            BrokerRuntimeState.Starting,
+                            ActivePlanId: null,
+                            ActiveOperationId: null)));
             }
 
             throw new InvalidOperationException(
