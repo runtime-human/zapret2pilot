@@ -47,11 +47,12 @@ public sealed partial class RuntimeBrokerBootstrapper :
     private readonly IBrokerExecutableLocator executableLocator;
     private readonly IElevatedBrokerLauncher brokerLauncher;
     private readonly IBrokerBootstrapServerFactory bootstrapServerFactory;
+    private readonly IRuntimeBrokerSessionFactory sessionFactory;
     private readonly BrokerRuntimeClient runtimeClient;
     private readonly ILogger<RuntimeBrokerBootstrapper> logger;
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
 
-    private NamedPipeRuntimeBrokerSession? session;
+    private IConnectableRuntimeBrokerSession? session;
     private IElevatedBrokerProcess? brokerProcess;
     private bool started;
     private bool disposed;
@@ -61,6 +62,7 @@ public sealed partial class RuntimeBrokerBootstrapper :
         IBrokerExecutableLocator executableLocator,
         IElevatedBrokerLauncher brokerLauncher,
         IBrokerBootstrapServerFactory bootstrapServerFactory,
+        IRuntimeBrokerSessionFactory sessionFactory,
         BrokerRuntimeClient runtimeClient,
         ILogger<RuntimeBrokerBootstrapper> logger)
     {
@@ -68,6 +70,7 @@ public sealed partial class RuntimeBrokerBootstrapper :
         ArgumentNullException.ThrowIfNull(executableLocator);
         ArgumentNullException.ThrowIfNull(brokerLauncher);
         ArgumentNullException.ThrowIfNull(bootstrapServerFactory);
+        ArgumentNullException.ThrowIfNull(sessionFactory);
         ArgumentNullException.ThrowIfNull(runtimeClient);
         ArgumentNullException.ThrowIfNull(logger);
 
@@ -75,6 +78,7 @@ public sealed partial class RuntimeBrokerBootstrapper :
         this.executableLocator = executableLocator;
         this.brokerLauncher = brokerLauncher;
         this.bootstrapServerFactory = bootstrapServerFactory;
+        this.sessionFactory = sessionFactory;
         this.runtimeClient = runtimeClient;
         this.logger = logger;
     }
@@ -115,7 +119,7 @@ public sealed partial class RuntimeBrokerBootstrapper :
                 BrokerAuthenticator.SecretSizeBytes);
 
             IElevatedBrokerProcess? launchedBroker = null;
-            NamedPipeRuntimeBrokerSession? candidateSession = null;
+            IConnectableRuntimeBrokerSession? candidateSession = null;
 
             try
             {
@@ -156,7 +160,7 @@ public sealed partial class RuntimeBrokerBootstrapper :
                     bootstrap,
                     cancellationToken).ConfigureAwait(false);
 
-                candidateSession = new NamedPipeRuntimeBrokerSession(
+                candidateSession = sessionFactory.Create(
                     binding,
                     runtimePipeName,
                     secret);
@@ -218,7 +222,7 @@ public sealed partial class RuntimeBrokerBootstrapper :
             .ConfigureAwait(false);
         try
         {
-            NamedPipeRuntimeBrokerSession? activeSession =
+            IConnectableRuntimeBrokerSession? activeSession =
                 session;
             IElevatedBrokerProcess? activeProcess =
                 brokerProcess;
