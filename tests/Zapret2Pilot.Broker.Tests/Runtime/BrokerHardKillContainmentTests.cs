@@ -21,9 +21,7 @@ public sealed class BrokerHardKillContainmentTests
             return;
         }
 
-        string helperPath = Path.Combine(
-            AppContext.BaseDirectory,
-            CrashHostExecutable);
+        string helperPath = ResolveCrashHostPath();
 
         Assert.True(
             File.Exists(helperPath),
@@ -129,6 +127,52 @@ public sealed class BrokerHardKillContainmentTests
 
             TryDelete(root);
         }
+    }
+
+    private static string ResolveCrashHostPath()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        DirectoryInfo targetDirectory =
+            new(AppContext.BaseDirectory.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar));
+
+        string configuration =
+            targetDirectory.Parent?.Name
+            ?? throw new InvalidOperationException(
+                "Could not determine test build configuration.");
+
+        return Path.Combine(
+            repositoryRoot,
+            "tests",
+            "Zapret2Pilot.Testing.BrokerCrashHost",
+            "bin",
+            configuration,
+            "net10.0-windows10.0.26100.0",
+            CrashHostExecutable);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory =
+            new(AppContext.BaseDirectory);
+
+        while (directory is not null)
+        {
+            if (File.Exists(
+                    Path.Combine(
+                        directory.FullName,
+                        "Zapret2Pilot.slnx")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new InvalidOperationException(
+            "Could not locate repository root from Broker test output.");
     }
 
     private static async Task<string> WaitForReadyFileAsync(
