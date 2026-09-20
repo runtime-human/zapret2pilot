@@ -12,6 +12,8 @@
     -->
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
+    <!-- LibraryImport source-generated Windows bootstrap stubs require unsafe enabled. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!--
       CA1848 (LoggerMessage source generator) and CA1873 (expensive
       logging arguments) are suppressed at the project level. The
