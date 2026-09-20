@@ -1,10 +1,10 @@
 using System;
-using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Zapret2Pilot.Broker.Runtime;
 using Zapret2Pilot.Contracts.Transport;
+using Zapret2Pilot.Runtime.State;
 
 namespace Zapret2Pilot.Broker.Hosting;
 
@@ -27,21 +27,11 @@ public static class BrokerHostBuilder
         // environment-variable or arbitrary CLI configuration.
         builder.Configuration.Sources.Clear();
 
-        string commonApplicationData = Environment.GetFolderPath(
-            Environment.SpecialFolder.CommonApplicationData);
-        if (string.IsNullOrWhiteSpace(commonApplicationData))
-        {
-            throw new InvalidOperationException("Common application data directory is not available.");
-        }
-
-        string databasePath = Path.Combine(
-            commonApplicationData,
-            "Zapret2Pilot",
-            "z2p.db");
-
-        // v7-D: these services form the sole production runtime mutation
-        // authority. The unelevated App must never register this graph.
-        builder.Services.AddRuntimeKernelStateStore(databasePath);
+        // v7-D / #17: the Broker must not become an elevated owner of the
+        // Control Plane's general z2p.db. The lifecycle proof uses a
+        // process-lifetime state store. A durable Broker recovery store may
+        // be added only if later correctness work proves that it is required.
+        builder.Services.AddSingleton<IRuntimeKernelStateStore, SessionRuntimeKernelStateStore>();
         builder.Services.AddRuntimeProcessHost();
         builder.Services.AddRuntimeHealthMonitor();
         builder.Services.AddCrashLoopGuard();
