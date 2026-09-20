@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\Zapret2Pilot.Broker\Zapret2Pilot.Broker.csproj" />
     <ProjectReference Include="..\..\src\Zapret2Pilot.Contracts\Zapret2Pilot.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
+    <ProjectReference Include="..\Zapret2Pilot.Testing.BrokerCrashHost\Zapret2Pilot.Testing.BrokerCrashHost.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\Zapret2Pilot.Testing.FakeRuntime\Zapret2Pilot.Testing.FakeRuntime.csproj" PrivateAssets="all" />
   </ItemGroup>
 
