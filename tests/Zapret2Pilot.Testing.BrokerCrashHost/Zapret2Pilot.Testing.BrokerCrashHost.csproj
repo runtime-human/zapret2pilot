@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Zapret2Pilot.Testing.BrokerCrashHost</AssemblyName>
+    <RootNamespace>Zapret2Pilot.Testing.BrokerCrashHost</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>false</IsTestProject>
+    <Description>Test-only Broker host used to prove hard-kill Job Object containment with FakeRuntime.</Description>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Broker\Zapret2Pilot.Broker.csproj" />
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Contracts\Zapret2Pilot.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Runtime\Zapret2Pilot.Runtime.csproj" />
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Engine.Zapret2\Zapret2Pilot.Engine.Zapret2.csproj" />
+    <ProjectReference Include="..\..\src\Zapret2Pilot.Infrastructure\Zapret2Pilot.Infrastructure.csproj" />
+    <ProjectReference Include="..\Zapret2Pilot.Testing.FakeRuntime\Zapret2Pilot.Testing.FakeRuntime.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
