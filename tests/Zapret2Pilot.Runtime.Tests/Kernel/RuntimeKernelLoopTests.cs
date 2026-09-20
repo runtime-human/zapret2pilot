@@ -1593,6 +1593,12 @@ public sealed class RuntimeKernelLoopTests
             started.Set();
             Interlocked.Increment(ref runAsyncCallCount);
 
+            // Do not pass the operation token to Task.Run itself. If the
+            // token is cancelled after RunAsync signals Started but before
+            // the delegate is scheduled, Task.Run would cancel the task
+            // without entering the delegate and the observer below would
+            // never register. The delegate must always start; cancellation
+            // is observed by the linked token inside it.
             return Task.Run(async () =>
             {
                 CancellationTokenSource localCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1667,7 +1673,7 @@ public sealed class RuntimeKernelLoopTests
                     StartResult: null,
                     CancellationReason: RuntimeCancellationReason.Superseded,
                     CrossedIrreversibleBoundary: false);
-            }, cancellationToken);
+            }).Unwrap();
         }
 
         public void Dispose()
