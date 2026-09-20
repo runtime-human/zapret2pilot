@@ -199,13 +199,13 @@ public sealed class BrokerRuntimeDispatcherTests
             CancellationToken.None);
 
         Assert.Equal(BrokerResponseStatus.Accepted, response.Status);
-        Assert.Equal(1, lifetime.ShutdownCallCount);
+        Assert.Equal(1, lifetime.StopRuntimeCallCount);
 
         BrokerResponseEnvelope duplicate = await dispatcher.DispatchAsync(
             request,
             CancellationToken.None);
         Assert.Equal(BrokerResponseStatus.DuplicateCompleted, duplicate.Status);
-        Assert.Equal(1, lifetime.ShutdownCallCount);
+        Assert.Equal(1, lifetime.StopRuntimeCallCount);
     }
 
     private static BrokerRuntimeDispatcher CreateDispatcher(
@@ -281,13 +281,17 @@ public sealed class BrokerRuntimeDispatcherTests
 
     private sealed class FakeBrokerLifetimeController : IBrokerLifetimeController
     {
-        public int ShutdownCallCount { get; private set; }
+        public int StopRuntimeCallCount { get; private set; }
 
-        public Task<Result<Unit>> ShutdownAsync(CancellationToken cancellationToken)
+        public Task<Result<Unit>> StopRuntimeAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ShutdownCallCount++;
+            StopRuntimeCallCount++;
             return Task.FromResult(Result.Success(Unit.Instance));
+        }
+
+        public void TerminateBroker()
+        {
         }
     }
 
