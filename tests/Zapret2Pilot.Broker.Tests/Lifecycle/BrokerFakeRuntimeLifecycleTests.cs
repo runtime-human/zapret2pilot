@@ -89,6 +89,76 @@ public sealed class BrokerFakeRuntimeLifecycleTests
     }
 
     [Fact]
+    public static async Task StopSupersedesInFlightStartThroughBroker()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using BrokerFakeRuntimeFixture fixture = BrokerFakeRuntimeFixture.Create();
+        using IHost host = fixture.BuildHost();
+
+        using CancellationTokenSource budget =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(30));
+
+        await host.StartAsync(budget.Token);
+
+        BrokerRuntimeDispatcher dispatcher =
+            host.Services.GetRequiredService<BrokerRuntimeDispatcher>();
+        RuntimeKernelLoop loop =
+            host.Services.GetRequiredService<RuntimeKernelLoop>();
+        RuntimeLockFileStore lockFileStore =
+            host.Services.GetRequiredService<RuntimeLockFileStore>();
+
+        SessionIds session = SessionIds.Create();
+
+        Task<BrokerResponseEnvelope> startTask = dispatcher.DispatchAsync(
+            CreateRequest(
+                session,
+                sequence: 1,
+                new StartPreparedPlanRequest(
+                    fixture.PreparedPlanId,
+                    new ContractGeneration(loop.CurrentState.Generation.Value))),
+            budget.Token);
+
+        await WaitForStatusAsync(
+            loop,
+            RuntimeKernelStatus.Starting,
+            TimeSpan.FromSeconds(5),
+            budget.Token);
+
+        BrokerResponseEnvelope stopResponse = await dispatcher.DispatchAsync(
+            CreateRequest(
+                session,
+                sequence: 2,
+                new StopGenerationRequest(
+                    new ContractGeneration(loop.CurrentState.Generation.Value),
+                    BrokerStopReason.UserRequested)),
+            budget.Token);
+
+        BrokerResponseEnvelope startResponse = await startTask;
+
+        Assert.Equal(BrokerResponseStatus.Accepted, stopResponse.Status);
+        Assert.NotEqual(BrokerResponseStatus.Accepted, startResponse.Status);
+
+        await WaitForStatusAsync(
+            loop,
+            RuntimeKernelStatus.Stopped,
+            TimeSpan.FromSeconds(5),
+            budget.Token);
+
+        Assert.False(
+            File.Exists(lockFileStore.LockFilePath),
+            "Superseding Stop must not leave runtime ownership metadata behind.");
+        Assert.False(
+            fixture.HasLiveFakeRuntimeProcess(),
+            "Superseding Stop left the FakeRuntime process alive.");
+    }
+
+    [Fact]
     public static async Task GracefulBrokerHostStopReapsRunningFakeRuntime()
     {
         if (!OperatingSystem.IsWindows())
@@ -228,6 +298,28 @@ public sealed class BrokerFakeRuntimeLifecycleTests
             issuedAt,
             issuedAt + BrokerProtocolLimits.MaxRequestLifetime,
             request);
+    }
+
+    private static async Task WaitForStatusAsync(
+        RuntimeKernelLoop loop,
+        RuntimeKernelStatus expected,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
+        while (loop.CurrentState.Status != expected)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException(
+                    $"Runtime Kernel did not reach {expected}; current state is {loop.CurrentState.Status}.");
+            }
+
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(10),
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static bool IsProcessAlive(int processId)
