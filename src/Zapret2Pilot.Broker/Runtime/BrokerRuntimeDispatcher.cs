@@ -77,6 +77,7 @@ public sealed class BrokerRuntimeDispatcher
     private readonly IPreparedRuntimePlanResolver preparedPlans;
     private readonly BrokerOperationLedger operationLedger;
     private readonly BrokerConcurrencyGate concurrencyGate;
+    private readonly IBrokerLifetimeController lifetimeController;
     private readonly object correlationSync = new();
 
     private PreparedPlanId? activePlanId;
@@ -87,19 +88,22 @@ public sealed class BrokerRuntimeDispatcher
         IBrokerRuntimeStateProjection projection,
         IPreparedRuntimePlanResolver preparedPlans,
         BrokerOperationLedger operationLedger,
-        BrokerConcurrencyGate concurrencyGate)
+        BrokerConcurrencyGate concurrencyGate,
+        IBrokerLifetimeController lifetimeController)
     {
         ArgumentNullException.ThrowIfNull(supervisor);
         ArgumentNullException.ThrowIfNull(projection);
         ArgumentNullException.ThrowIfNull(preparedPlans);
         ArgumentNullException.ThrowIfNull(operationLedger);
         ArgumentNullException.ThrowIfNull(concurrencyGate);
+        ArgumentNullException.ThrowIfNull(lifetimeController);
 
         this.supervisor = supervisor;
         this.projection = projection;
         this.preparedPlans = preparedPlans;
         this.operationLedger = operationLedger;
         this.concurrencyGate = concurrencyGate;
+        this.lifetimeController = lifetimeController;
     }
 
     public async Task<BrokerResponseEnvelope> DispatchAsync(
@@ -173,11 +177,9 @@ public sealed class BrokerRuntimeDispatcher
                 BrokerResponseStatus.Rejected,
                 "BrokerStagingUnavailable",
                 "Bundle and prepared-plan realization is gated on #19."),
-            ShutdownBrokerRequest => CreateErrorResponse(
+            ShutdownBrokerRequest => await DispatchShutdownAsync(
                 request,
-                BrokerResponseStatus.Rejected,
-                "BrokerLifetimeControlUnavailable",
-                "Broker shutdown is owned by the session lifetime implementation in Task 5."),
+                cancellationToken).ConfigureAwait(false),
             BrokerHelloRequest => CreateErrorResponse(
                 request,
                 BrokerResponseStatus.ProtocolError,
@@ -263,6 +265,40 @@ public sealed class BrokerRuntimeDispatcher
         {
             Result<Unit> result = await supervisor
                 .StopAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result.IsFailure)
+            {
+                return CreateErrorResponse(
+                    envelope,
+                    BrokerResponseStatus.Rejected,
+                    result.Error.Code,
+                    result.Error.Message);
+            }
+
+            lock (correlationSync)
+            {
+                activePlanId = null;
+            }
+
+            return CreateMutationAcceptedResponse(envelope);
+        }
+        finally
+        {
+            ClearActiveOperation(envelope.OperationId);
+        }
+    }
+
+    private async Task<BrokerResponseEnvelope> DispatchShutdownAsync(
+        BrokerRequestEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        SetActiveOperation(envelope.OperationId);
+
+        try
+        {
+            Result<Unit> result = await lifetimeController
+                .ShutdownAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (result.IsFailure)
