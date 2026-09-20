@@ -48,7 +48,10 @@ public sealed class RuntimeBrokerBootstrapperTests
         Assert.True(bootstrapServer.Verified);
         Assert.True(bootstrapServer.Sent);
         Assert.NotNull(bootstrapServer.CapturedBootstrap);
-        Assert.Equal(binding, bootstrapServer.CapturedBootstrap!.ClientBinding);
+        Assert.NotNull(bindingProvider.LastBinding);
+        Assert.Equal(
+            bindingProvider.LastBinding,
+            bootstrapServer.CapturedBootstrap!.ClientBinding);
         Assert.Equal(
             BrokerAuthenticator.SecretSizeBytes,
             bootstrapServer.CapturedSecret!.Length);
@@ -152,12 +155,17 @@ public sealed class RuntimeBrokerBootstrapperTests
             this.binding = binding;
         }
 
+        public BrokerClientBinding? LastBinding { get; private set; }
+
         public BrokerClientBinding Create(
             AppSessionId appSessionId)
-            => binding with
+        {
+            LastBinding = binding with
             {
                 AppSessionId = appSessionId,
             };
+            return LastBinding;
+        }
     }
 
     private sealed class FakeExecutableLocator :
