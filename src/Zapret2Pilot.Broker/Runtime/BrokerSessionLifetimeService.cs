@@ -26,7 +26,6 @@ public sealed class BrokerSessionLifetimeService : IHostedService, IDisposable
 {
     private readonly IBrokerAppSessionLease appSessionLease;
     private readonly IBrokerLifetimeController lifetimeController;
-    private readonly IHostApplicationLifetime applicationLifetime;
     private readonly ILogger<BrokerSessionLifetimeService> logger;
     private readonly CancellationTokenSource lifetimeCts = new();
     private readonly object sync = new();
@@ -36,17 +35,14 @@ public sealed class BrokerSessionLifetimeService : IHostedService, IDisposable
     public BrokerSessionLifetimeService(
         IBrokerAppSessionLease appSessionLease,
         IBrokerLifetimeController lifetimeController,
-        IHostApplicationLifetime applicationLifetime,
         ILogger<BrokerSessionLifetimeService> logger)
     {
         ArgumentNullException.ThrowIfNull(appSessionLease);
         ArgumentNullException.ThrowIfNull(lifetimeController);
-        ArgumentNullException.ThrowIfNull(applicationLifetime);
         ArgumentNullException.ThrowIfNull(logger);
 
         this.appSessionLease = appSessionLease;
         this.lifetimeController = lifetimeController;
-        this.applicationLifetime = applicationLifetime;
         this.logger = logger;
     }
 
@@ -122,7 +118,7 @@ public sealed class BrokerSessionLifetimeService : IHostedService, IDisposable
         try
         {
             Result<Unit> result = await lifetimeController
-                .ShutdownAsync(shutdownBudget.Token)
+                .StopRuntimeAsync(shutdownBudget.Token)
                 .ConfigureAwait(false);
 
             if (result.IsFailure)
@@ -131,21 +127,22 @@ public sealed class BrokerSessionLifetimeService : IHostedService, IDisposable
                     "Runtime cleanup after Control Plane loss failed: {Code} {Message}. The privileged Broker will still terminate.",
                     result.Error.Code,
                     result.Error.Message);
-                applicationLifetime.StopApplication();
             }
         }
         catch (OperationCanceledException)
         {
             logger.LogCritical(
                 "Runtime cleanup after Control Plane loss exceeded the Broker shutdown budget. The privileged Broker will terminate.");
-            applicationLifetime.StopApplication();
         }
         catch (Exception ex)
         {
             logger.LogCritical(
                 ex,
                 "Runtime cleanup after Control Plane loss threw. The privileged Broker will terminate.");
-            applicationLifetime.StopApplication();
+        }
+        finally
+        {
+            lifetimeController.TerminateBroker();
         }
     }
 }
