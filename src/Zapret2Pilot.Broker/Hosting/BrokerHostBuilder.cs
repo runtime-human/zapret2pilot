@@ -1,6 +1,7 @@
 using System;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Zapret2Pilot.Broker.Runtime;
 using Zapret2Pilot.Broker.Transport;
@@ -21,6 +22,13 @@ public static class BrokerHostBuilder
         BrokerSessionBootstrap bootstrap)
     {
         return CreateBuilder(args, bootstrap).Build();
+    }
+
+    public static IHost Build(
+        string[] args,
+        BrokerStartupContext startupContext)
+    {
+        return CreateBuilder(args, startupContext).Build();
     }
 
     public static HostApplicationBuilder CreateBuilder(string[] args)
@@ -69,6 +77,30 @@ public static class BrokerHostBuilder
         builder.Services.AddSingleton<BrokerRuntimeDispatcher>();
         builder.Services.AddSingleton<IBrokerRequestDispatcher>(
             static sp => sp.GetRequiredService<BrokerRuntimeDispatcher>());
+
+        return builder;
+    }
+
+    public static HostApplicationBuilder CreateBuilder(
+        string[] args,
+        BrokerStartupContext startupContext)
+    {
+        ArgumentNullException.ThrowIfNull(startupContext);
+
+        HostApplicationBuilder builder = CreateBuilder(
+            args,
+            startupContext.SessionBootstrap);
+
+        BrokerAppSessionLeaseHolder holder = new();
+        if (!holder.TryBind(startupContext.TakeAppProcessLease()))
+        {
+            holder.Dispose();
+            throw new InvalidOperationException(
+                "The verified App process lease could not be bound to the Broker session.");
+        }
+
+        builder.Services.Replace(
+            ServiceDescriptor.Singleton(holder));
 
         return builder;
     }
