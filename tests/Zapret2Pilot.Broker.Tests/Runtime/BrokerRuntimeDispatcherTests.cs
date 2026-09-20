@@ -137,6 +137,51 @@ public sealed class BrokerRuntimeDispatcherTests
     }
 
     [Fact]
+    public static async Task StopIsAdmittedWhileStartMutationIsInFlight()
+    {
+        TaskCompletionSource<bool> releaseStart = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using FakeRuntimeSupervisor supervisor = new(
+            startGate: releaseStart.Task);
+        FakeRuntimeStateProjection projection = new(
+            CreateKernelState(RuntimeKernelStatus.Starting, 6));
+        using RuntimeContextFixture context =
+            RuntimeContextFixture.Create();
+        FakePreparedRuntimePlanResolver resolver =
+            new(context.Context);
+        BrokerRuntimeDispatcher dispatcher =
+            CreateDispatcher(supervisor, projection, resolver);
+
+        Task<BrokerResponseEnvelope> start = dispatcher.DispatchAsync(
+            CreateRequest(
+                1,
+                new StartPreparedPlanRequest(
+                    PreparedPlanId.New(),
+                    new ContractGeneration(6))),
+            CancellationToken.None);
+
+        await supervisor.StartEntered.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        BrokerResponseEnvelope stop =
+            await dispatcher.DispatchAsync(
+                CreateRequest(
+                    2,
+                    new StopGenerationRequest(
+                        new ContractGeneration(6),
+                        BrokerStopReason.UserRequested)),
+                CancellationToken.None);
+
+        Assert.Equal(BrokerResponseStatus.Accepted, stop.Status);
+        Assert.Equal(1, supervisor.StartCallCount);
+        Assert.Equal(1, supervisor.StopCallCount);
+
+        releaseStart.TrySetResult(true);
+        _ = await start;
+    }
+
+    [Fact]
     public static async Task ValidStartResolvesPreparedPlanAndDelegatesToSupervisor()
     {
         using FakeRuntimeSupervisor supervisor = new();
