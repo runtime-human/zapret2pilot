@@ -35,19 +35,13 @@ public sealed class BrokerBootstrapLaunchOptionsTests
         string key,
         string value)
     {
-        string[] args = key == "--app-pid"
-            ? [
-                "--bootstrap-pipe",
-                "z2p-bootstrap-abc123",
-                key,
-                value,
-            ]
-            : [
-                "--bootstrap-pipe",
-                "z2p-bootstrap-abc123",
-                key,
-                value,
-            ];
+        string[] args =
+        [
+            "--bootstrap-pipe",
+            "z2p-bootstrap-abc123",
+            key,
+            value,
+        ];
 
         bool accepted = BrokerBootstrapLaunchOptions.TryParse(
             args,
