@@ -13,7 +13,15 @@ namespace Zapret2Pilot.Broker.Transport;
 /// The factory intentionally uses CreateNamedPipeW so PIPE_REJECT_REMOTE_CLIENTS
 /// is an OS-enforced property rather than a convention in higher-level code.
 /// </summary>
-public sealed class WindowsSecureNamedPipeFactory
+public interface IBrokerNamedPipeFactory
+{
+    NamedPipeServerStream Create(
+        string pipeName,
+        string expectedUserSid,
+        bool firstInstance);
+}
+
+public sealed class WindowsSecureNamedPipeFactory : IBrokerNamedPipeFactory
 {
     private const int MaximumPipeNameLength = 128;
 
@@ -52,7 +60,7 @@ public sealed class WindowsSecureNamedPipeFactory
             {
                 Length = Marshal.SizeOf<SecurityAttributes>(),
                 SecurityDescriptor = securityDescriptor,
-                InheritHandle = false,
+                InheritHandle = 0,
             };
 
             uint openMode =
@@ -148,8 +156,7 @@ internal struct SecurityAttributes
     internal int Length;
     internal IntPtr SecurityDescriptor;
 
-    [MarshalAs(UnmanagedType.Bool)]
-    internal bool InheritHandle;
+    internal int InheritHandle;
 }
 
 internal static partial class WindowsBrokerNativeMethods
