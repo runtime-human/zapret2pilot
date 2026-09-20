@@ -5,6 +5,8 @@ using Zapret2Pilot.Broker.Hosting;
 using Zapret2Pilot.Runtime.Hosting;
 using Zapret2Pilot.Runtime.Kernel;
 using Zapret2Pilot.Runtime.Supervisor;
+using Zapret2Pilot.Runtime.State;
+using Zapret2Pilot.Storage.Sqlite;
 
 namespace Zapret2Pilot.Broker.Tests.Hosting;
 
@@ -30,6 +32,19 @@ public sealed class BrokerAuthorityCompositionTests
         Assert.Single(
             builder.Services,
             static descriptor => descriptor.ServiceType == typeof(IRuntimeSupervisor));
+        Assert.Single(
+            builder.Services,
+            static descriptor => descriptor.ServiceType == typeof(IRuntimeKernelStateStore));
+
+        Assert.DoesNotContain(
+            builder.Services,
+            static descriptor => descriptor.ServiceType == typeof(SqliteStorageOptions));
+        Assert.DoesNotContain(
+            builder.Services,
+            static descriptor => descriptor.ServiceType == typeof(SqliteConnectionFactory));
+        Assert.DoesNotContain(
+            builder.Services,
+            static descriptor => descriptor.ServiceType == typeof(SqliteDbInitializer));
 
         // RuntimeHealthMonitor and RuntimeSupervisor are the two hosted
         // runtime services. Their factories resolve the corresponding
