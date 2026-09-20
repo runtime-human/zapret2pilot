@@ -208,6 +208,70 @@ public sealed class BrokerFakeRuntimeLifecycleTests
 
 
     [Fact]
+    public static async Task UnexpectedFakeRuntimeExitIsRecoveredToStopped()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using BrokerFakeRuntimeFixture fixture = BrokerFakeRuntimeFixture.Create();
+        using IHost host = fixture.BuildHost();
+
+        using CancellationTokenSource budget =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(30));
+
+        await host.StartAsync(budget.Token);
+
+        BrokerRuntimeDispatcher dispatcher =
+            host.Services.GetRequiredService<BrokerRuntimeDispatcher>();
+        RuntimeKernelLoop loop =
+            host.Services.GetRequiredService<RuntimeKernelLoop>();
+        RuntimeLockFileStore lockFileStore =
+            host.Services.GetRequiredService<RuntimeLockFileStore>();
+
+        SessionIds session = SessionIds.Create();
+
+        BrokerResponseEnvelope startResponse = await dispatcher.DispatchAsync(
+            CreateRequest(
+                session,
+                sequence: 1,
+                new StartPreparedPlanRequest(
+                    fixture.PreparedPlanId,
+                    new ContractGeneration(loop.CurrentState.Generation.Value))),
+            budget.Token);
+
+        Assert.Equal(BrokerResponseStatus.Accepted, startResponse.Status);
+        Assert.Equal(RuntimeKernelStatus.Running, loop.CurrentState.Status);
+        Assert.NotNull(loop.CurrentState.LastStartResult);
+
+        int processId = loop.CurrentState.LastStartResult!.ProcessId;
+        using (Process process = Process.GetProcessById(processId))
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(budget.Token);
+        }
+
+        // RuntimeHealthMonitor observes the unexpected exit on its bounded
+        // polling interval and forwards an Exited observation into the sole
+        // RuntimeKernelLoop. The Kernel then owns the cleanup transition.
+        await WaitForStatusAsync(
+            loop,
+            RuntimeKernelStatus.Stopped,
+            TimeSpan.FromSeconds(5),
+            budget.Token);
+
+        Assert.False(
+            File.Exists(lockFileStore.LockFilePath),
+            "Unexpected runtime exit must be followed by ownership metadata cleanup.");
+        Assert.False(
+            fixture.HasLiveFakeRuntimeProcess(),
+            "Unexpected-exit recovery left the FakeRuntime process alive.");
+    }
+
+    [Fact]
     public static async Task AppProcessLossStopsRuntimeBeforeBrokerTermination()
     {
         if (!OperatingSystem.IsWindows())
