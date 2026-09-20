@@ -27,7 +27,7 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
     private readonly BrokerPipeServerOptions options;
     private readonly IBrokerNamedPipeFactory pipeFactory;
     private readonly IBrokerPeerIdentityResolver peerResolver;
-    private readonly BrokerAuthenticatedSession session;
+    private readonly IBrokerAuthenticatedSession session;
     private readonly IBrokerAppSessionLeaseBinder leaseBinder;
     private readonly ILogger<WindowsBrokerPipeServer> logger;
     private readonly CancellationTokenSource serverCts = new();
@@ -39,7 +39,7 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
         BrokerPipeServerOptions options,
         IBrokerNamedPipeFactory pipeFactory,
         IBrokerPeerIdentityResolver peerResolver,
-        BrokerAuthenticatedSession session,
+        IBrokerAuthenticatedSession session,
         IBrokerAppSessionLeaseBinder leaseBinder,
         ILogger<WindowsBrokerPipeServer> logger)
     {
