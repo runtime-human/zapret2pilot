@@ -49,6 +49,16 @@ public static class BrokerHostBuilder
             BrokerProtocolLimits.MaxInFlightQueries,
             BrokerProtocolLimits.MaxConcurrentMutations));
         builder.Services.AddSingleton<IBrokerLifetimeController, BrokerLifetimeController>();
+
+        builder.Services.AddSingleton<BrokerAppSessionLeaseHolder>();
+        builder.Services.AddSingleton<IBrokerAppSessionLease>(
+            static sp => sp.GetRequiredService<BrokerAppSessionLeaseHolder>());
+        builder.Services.AddSingleton<IBrokerAppSessionLeaseBinder>(
+            static sp => sp.GetRequiredService<BrokerAppSessionLeaseHolder>());
+        builder.Services.AddSingleton<BrokerSessionLifetimeService>();
+        builder.Services.AddSingleton<IHostedService>(
+            static sp => sp.GetRequiredService<BrokerSessionLifetimeService>());
+
         builder.Services.AddSingleton<BrokerRuntimeDispatcher>();
         builder.Services.AddSingleton<IBrokerRequestDispatcher>(
             static sp => sp.GetRequiredService<BrokerRuntimeDispatcher>());
