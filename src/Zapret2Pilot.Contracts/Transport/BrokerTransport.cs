@@ -12,6 +12,7 @@ public static class BrokerProtocolLimits
     public const int MaxFrameBytes = 65_536;
     public const int MaxChallengeFrameBytes = 1_024;
     public const int MaxPreAuthHelloFrameBytes = 4_096;
+    public const int MaxBootstrapFrameBytes = 4_096;
     public const int MaxConcurrentConnections = 2;
     public const int MaxAuthenticatedConnections = 1;
     public const int MaxPreAuthChallenges = MaxConcurrentConnections;
