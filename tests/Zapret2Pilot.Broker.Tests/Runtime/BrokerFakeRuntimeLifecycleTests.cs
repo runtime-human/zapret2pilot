@@ -248,7 +248,6 @@ public sealed class BrokerFakeRuntimeLifecycleTests
         private readonly string root;
         private readonly PreparedPlanId preparedPlanId;
         private readonly IHost host;
-        private long nextSequence;
 
         private BrokerRuntimeHarness(
             string root,
