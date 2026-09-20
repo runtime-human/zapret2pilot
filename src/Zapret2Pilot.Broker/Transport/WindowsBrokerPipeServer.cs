@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -404,9 +405,24 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
         }
     }
 
-    private static void RemoveCompleted(HashSet<Task> inFlight)
+    private void RemoveCompleted(HashSet<Task> inFlight)
     {
-        inFlight.RemoveWhere(static task => task.IsCompleted);
+        Task[] completed = inFlight
+            .Where(static task => task.IsCompleted)
+            .ToArray();
+
+        foreach (Task task in completed)
+        {
+            _ = inFlight.Remove(task);
+
+            if (task.IsFaulted
+                && task.Exception is AggregateException aggregate)
+            {
+                LogRequestDispatchFailed(
+                    logger,
+                    aggregate.GetBaseException());
+            }
+        }
     }
 
     [LoggerMessage(
@@ -464,6 +480,14 @@ public sealed partial class WindowsBrokerPipeServer : IHostedService, IDisposabl
         Level = LogLevel.Debug,
         Message = "One or more Broker responses could not be written after transport disconnect.")]
     private static partial void LogPendingResponseDrainFailed(
+        ILogger logger,
+        Exception exception);
+
+    [LoggerMessage(
+        EventId = 1809,
+        Level = LogLevel.Warning,
+        Message = "A Broker request dispatch or response write failed.")]
+    private static partial void LogRequestDispatchFailed(
         ILogger logger,
         Exception exception);
 }
